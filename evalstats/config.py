@@ -416,32 +416,45 @@ class AutoSimultaneousCIRule:
 
 AUTO_SIMULTANEOUS_CI_METHOD_TABLE: tuple[AutoSimultaneousCIRule, ...] = (
     AutoSimultaneousCIRule(
-        data_kind="binary", max_n=50,
-        method="sidak",
-        reason=(
-            "Binary data, N < 50: Sidak's closed-form, independence-based "
-            "adjustment stays well-calibrated and avoids the joint "
-            "bootstrap's small-N instability."
-        ),
-    ),
-    AutoSimultaneousCIRule(
         data_kind="binary", max_n=None,
-        method="boot",
-        reason=(
-            "Binary data, N >= 50: joint bootstrap with an effective alpha "
-            "(_joint_bootstrap_scaled_simultaneous_cis) accounts for "
-            "correlation between comparisons that Sidak cannot."
-        ),
-    ),
-    AutoSimultaneousCIRule(
-        data_kind="numeric", max_n=30,
         method="sidak",
-        reason="Numeric data, N < 30: Sidak.",
+        reason=(
+            "Binary data, every N: Sidak. See the numeric rule below -- the "
+            "reasoning is not data-kind specific, and binary is where the "
+            "joint bootstrap failed hardest (worst-case family coverage 0.50 "
+            "at n=15 and 0.74 at n=30 on the expanded scenario suite, against "
+            "Sidak's 0.94)."
+        ),
     ),
     AutoSimultaneousCIRule(
         data_kind="numeric", max_n=None,
-        method="boot",
-        reason="Numeric data, N >= 30: joint bootstrap with effective alpha.",
+        method="sidak",
+        reason=(
+            "Numeric data, every N: Sidak, and it is now the only rule -- the "
+            "small-N/large-N split this table used to encode is gone.\n\n"
+            "Sidak was the only construction whose WORST-CASE family coverage "
+            "held across the expanded scenario suite (min 0.913-0.943 for "
+            "every eval type and N). The joint bootstrap ('boot') is better "
+            "centred on average and 3-5%% narrower, but its worst case "
+            "collapses: 0.50 on sparse/lopsided binary at n=15, and it "
+            "under-covers Likert at every N (0.943 pooled, degrading with k) "
+            "because its alpha_eff step converts a bootstrap critical value "
+            "through the NORMAL cdf while the Likert pairwise formula (NIG) "
+            "is a t interval at df=2*a_n.\n\n"
+            "The width Sidak gives up is small and bounded. Tukey's "
+            "studentized range is the optimal equal-width procedure for "
+            "all-pairwise comparisons, and it beats Sidak by only 1.8-3.0%% "
+            "-- a bound that holds here because the shared-arm contrast "
+            "correlation really is 0.5 (measured 0.498-0.500 across the real "
+            "eval corpora), which is the structure that bound assumes. Tukey "
+            "itself needs normality/homoscedasticity (and sphericity in the "
+            "repeated-measures form that applies to paired evals), which "
+            "binary and Likert data violate. So Sidak sits within ~3%% of the "
+            "achievable optimum while making no distributional assumption at "
+            "all.\n\n"
+            "'boot'/'boot_cal'/'max_t'/'bonferroni' all remain reachable via "
+            "an explicit prefer= argument for anyone who wants them."
+        ),
     ),
 )
 

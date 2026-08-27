@@ -238,13 +238,15 @@ class TestCompoundStructuralPlumbing:
             # Shaffer's correction can only make p-values >= the uncorrected ones.
             assert r_shaffer.p_value >= r_none.p_value - 1e-12
 
-    def test_default_auto_reaches_boot_at_n_ge_30(self):
-        """The compound path's default (method="auto", prefer="auto") now
-        mirrors the paper's decision tree: at N >= 30 (numeric, non-lopsided)
-        it resolves to "boot" (joint bootstrap with an effective alpha)
-        widening whichever closed-form PPI method resolved (ppi_logit_t here),
-        not a silent, permanent Bonferroni downgrade. See
-        _ppi_alpha_eff_from_M_b / resolve_auto_simultaneous_ci_method."""
+    def test_default_auto_reaches_sidak(self):
+        """The compound path's default (method="auto", prefer="auto") mirrors
+        the paper's decision tree, which is now Sidak at every N and eval
+        type -- widening whichever closed-form PPI method resolved
+        (ppi_logit_t here), not a silent Bonferroni downgrade. "boot" is no
+        longer an auto-resolved outcome anywhere; it stays reachable via the
+        private _run_alignment_ppi(prefer="boot"), exercised by
+        test_romano_wolf_reuses_joint_resample_shared_with_boot. See
+        resolve_auto_simultaneous_ci_method."""
         evaldata = _make_multiarm_continuous(n_entities=3, n_items=200, n_labeled=80, seed=13)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -257,7 +259,7 @@ class TestCompoundStructuralPlumbing:
             )
         bundle = result._primary_bundle()
         assert bundle.resolved_method in ("ppi_logit_t", "ppi_t_interval")
-        assert bundle.pairwise.simultaneous_ci_method == "boot"
+        assert bundle.pairwise.simultaneous_ci_method == "sidak"
 
     def test_default_auto_reaches_sidak_below_n_threshold(self):
         """Below the tree's N threshold, "auto" resolves to "sidak" (a pure
@@ -277,10 +279,10 @@ class TestCompoundStructuralPlumbing:
         bundle = result._primary_bundle()
         assert bundle.pairwise.simultaneous_ci_method == "sidak"
 
-    def test_method_bootstrap_t_uses_boot_not_max_t_under_auto(self):
-        """Forcing method="bootstrap_t" under the default prefer="auto" now
-        gets the SAME "boot" (joint-bootstrap-with-effective-alpha) treatment
-        as every other method, not a special full max-T construction --
+    def test_method_bootstrap_t_uses_auto_tree_not_max_t(self):
+        """Forcing method="bootstrap_t" under the default prefer="auto" gets
+        the SAME auto-tree treatment (now Sidak) as every other method, not a
+        special full max-T construction --
         max_t is never an auto-resolved outcome (matches evalstats' decision
         tree, which has no max-T node at all, and the non-PPI
         _simultaneous_cis_router's identical convention: max_t is reachable
@@ -296,7 +298,7 @@ class TestCompoundStructuralPlumbing:
                 rng=_rng(14),
             )
         bundle = result._primary_bundle()
-        assert bundle.pairwise.simultaneous_ci_method == "boot"
+        assert bundle.pairwise.simultaneous_ci_method == "sidak"
         for pr in bundle.pairwise.results.values():
             assert np.isfinite(pr.ci_low) and np.isfinite(pr.ci_high)
             assert pr.ci_low <= pr.ci_high
@@ -328,9 +330,9 @@ class TestCompoundStructuralPlumbing:
         messages = [str(w.message) for w in caught]
         assert any("unknown keyword argument 'prefer'" in m for m in messages), messages
         bundle = result._primary_bundle()
-        # Still resolves to "boot" via the auto tree -- prefer="max_t" was
+        # Still resolves via the auto tree (now Sidak) -- prefer="max_t" was
         # NOT honored, confirming it has no effect through compare().
-        assert bundle.pairwise.simultaneous_ci_method == "boot"
+        assert bundle.pairwise.simultaneous_ci_method == "sidak"
 
     def test_explicit_max_t_reachable_via_private_function(self):
         """max_t is a real, working construction -- just not reachable from
@@ -389,7 +391,11 @@ class TestCompoundStructuralPlumbing:
                 rng=_rng(15),
             )
         bundle = result._primary_bundle()
-        assert bundle.pairwise.simultaneous_ci_method == "bonferroni"
+        # Since the auto tree resolves to Sidak, which needs none of the
+        # shared-labeled-item structure max-T does, insufficient overlap no
+        # longer costs the whole comparison a Bonferroni downgrade -- it just
+        # uses Sidak. (Under the old boot default this asserted "bonferroni".)
+        assert bundle.pairwise.simultaneous_ci_method == "sidak"
         messages = [str(w.message) for w in caught]
         assert not any("Falling back to Bonferroni" in m for m in messages), messages
 
@@ -601,20 +607,33 @@ class TestRomanoWolfPvalues:
         assert result_rw._primary_bundle().pairwise.correction_method == "romano_wolf"
 
     def test_romano_wolf_reuses_joint_resample_shared_with_boot(self):
-        """When BOTH simultaneous_ci=True (resolving to "boot") and
-        correction="romano_wolf" apply together (the realistic compound
-        case), both must still produce fully valid output -- exercises that
-        sharing the one joint bootstrap resample between the two
-        constructions doesn't corrupt either."""
+        """When BOTH the joint bootstrap ("boot") and correction="romano_wolf"
+        apply together, both must still produce fully valid output -- this
+        exercises that sharing the one joint bootstrap resample between the
+        two constructions doesn't corrupt either.
+
+        "boot" is no longer an auto-resolved outcome (the tree is Sidak
+        everywhere), and compare() does not forward prefer= on the PPI path
+        (see test_prefer_kwarg_is_not_forwarded_through_compare), so this
+        drives the private _run_alignment_ppi directly -- the same route
+        test_explicit_max_t_reachable_via_private_function uses. Without
+        that, the resample-sharing path would no longer be covered at all."""
+        from evalstats.api import _run_alignment_ppi
+
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=206)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30,
                 simultaneous_ci=True, correction="romano_wolf",
                 rng=_rng(206),
+            )
+            _run_alignment_ppi(
+                result, df=evaldata._df.copy(), metric_col="llm_score",
+                factor_col="model", item_col="item", alignment_result=ar,
+                alpha=0.05, n_boot=1000, correction="romano_wolf",
+                method="bootstrap", rng=_rng(206), prefer="boot",
             )
         bundle = result._primary_bundle()
         assert bundle.pairwise.simultaneous_ci_method == "boot"

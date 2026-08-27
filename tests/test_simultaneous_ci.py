@@ -536,8 +536,8 @@ def test_newcombe_uses_auto_simultaneous_ci_default():
         rng=_rng(40), n_bootstrap=200,
     )
     assert report.simultaneous_ci is True
-    # binary, N=50 -> "boot" row of AUTO_SIMULTANEOUS_CI_METHOD_TABLE
-    assert report.pairwise.simultaneous_ci_method == "boot"
+    # AUTO_SIMULTANEOUS_CI_METHOD_TABLE is now Sidak at every N and data kind
+    assert report.pairwise.simultaneous_ci_method == "sidak"
 
 
 def test_seeded_compare_prompts_simultaneous_ci():
@@ -682,10 +682,11 @@ def test_bonferroni_degenerate_constant_nonzero_offset_covers_zero():
 
 # --- Router tests ---
 
-def test_router_returns_boot_by_default_for_unbounded_n_ge_30():
-    """Router's "auto" default (fig:fwer-decision-tree) picks the joint
-    bootstrap ("boot") for unbounded numeric data at N>=30, regardless of
-    whether the point-estimate method is bootstrap-compatible."""
+def test_router_returns_sidak_by_default_for_unbounded_n_ge_30():
+    """Router's "auto" default is Sidak at every N -- the small-N/large-N
+    split is gone (see AUTO_SIMULTANEOUS_CI_METHOD_TABLE). The joint
+    bootstrap remains reachable via prefer="boot"; see
+    test_router_boot_still_reachable_when_preferred."""
     scores = _rng(70).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
@@ -693,6 +694,21 @@ def test_router_returns_boot_by_default_for_unbounded_n_ge_30():
         scores, results, pairs, labels,
         method="bootstrap", ci=0.95, n_bootstrap=300,
         rng=_rng(70), statistic="mean",
+    )
+    assert used == "sidak"
+    assert len(cis) == len(pairs)
+
+
+def test_router_boot_still_reachable_when_preferred():
+    """Sidak being the default must not make the joint bootstrap
+    unreachable -- prefer="boot" still routes to it."""
+    scores = _rng(70).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used, _ = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="bootstrap", ci=0.95, n_bootstrap=300,
+        rng=_rng(70), statistic="mean", prefer="boot",
     )
     assert used == "boot"
     assert len(cis) == len(pairs)
@@ -768,11 +784,10 @@ def test_router_max_stat_for_all_bootstrap_methods_when_preferred(method):
     assert used == "max_t", f"Expected max_t for method={method!r}, got {used!r}"
 
 
-def test_simultaneous_ci_method_field_boot_for_bootstrap():
-    """PairwiseMatrix.simultaneous_ci_method follows the "auto" table by
-    default (fig:fwer-decision-tree) -- unbounded numeric, N=30 -> "boot".
-    Pass prefer="bonferroni"/"max_t" to all_pairwise() to force a specific
-    construction instead."""
+def test_simultaneous_ci_method_field_follows_auto_table():
+    """PairwiseMatrix.simultaneous_ci_method follows the "auto" table, which
+    is now Sidak everywhere. Pass prefer="boot"/"bonferroni"/"max_t" to
+    all_pairwise() to force a specific construction instead."""
     scores = _rng(80).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
     mat = all_pairwise(
@@ -780,7 +795,7 @@ def test_simultaneous_ci_method_field_boot_for_bootstrap():
         rng=_rng(80), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci is True
-    assert mat.simultaneous_ci_method == "boot"
+    assert mat.simultaneous_ci_method == "sidak"
 
 
 def test_simultaneous_ci_method_field_sidak():
@@ -1137,7 +1152,7 @@ def test_router_unbounded_degenerate_pair_not_zero_width_on_boot_route():
     with pytest.warns(UserWarning, match="zero variance"):
         mat = all_pairwise(
             scores, ["a", "b", "c"], method="t_interval",
-            n_bootstrap=400, rng=_rng(0),
+            n_bootstrap=400, rng=_rng(0), prefer="boot",
         )
     assert mat.simultaneous_ci_method == "boot"
     deg = mat.results[("a", "b")]
