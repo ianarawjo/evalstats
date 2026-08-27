@@ -30,6 +30,8 @@ from ..tests import (
     _paired_signflip_pvalue,
 )
 from .resampling import (
+    _logit_t_alpha_crit_batch,
+    _nig_alpha_crit_batch,
     bca_interval_1d,
     bayes_bootstrap_means_1d,
     bayes_bootstrap_diffs_nested,
@@ -2015,6 +2017,194 @@ def _joint_bootstrap_critical_value(
     return float(np.quantile(M_b, ci))
 
 
+#: Resample cap for _calibrated_joint_critical_value -- see its use there.
+_CALIBRATED_JOINT_MAX_RESAMPLES = 1500
+
+
+def _scipy_stats_norm_ppf(a: float) -> float:
+    """z such that 2*(1-Phi(z)) == a -- the inverse of the alpha_eff step in
+    _calibrated_joint_simultaneous_cis, so an exactly-calibrated alpha survives
+    the round trip through that conversion unchanged."""
+    from scipy import stats as _st
+    return float(_st.norm.ppf(a / 2.0))
+
+
+def _calibrated_joint_critical_value(
+    scores: np.ndarray,
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    ci: float,
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    ci_func: "Callable[[np.ndarray, float], tuple[float, float]]",
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+    alpha_ref: float = 0.05,
+) -> Optional[float]:
+    """Joint critical value studentized by *ci_func's own* centre and scale.
+
+    :func:`_joint_bootstrap_critical_value` standardizes each replicate by the
+    BOOTSTRAP standard error of the point estimate, then
+    :func:`_joint_bootstrap_scaled_simultaneous_cis` converts the resulting
+    *c* to ``alpha_eff = 2(1-Phi(c))`` and evaluates ``ci_func`` there. That
+    composition is only exact when ``ci_func(., a)`` has coverage exactly
+    ``1-a``. When the formula is marginally conservative -- Bonett-Price's
+    Laplace adjustment measures ``1-a+delta`` with delta up to +4.3pp at
+    n=10, decaying to ~+0.2pp by n=100 -- the simultaneous interval inherits
+    that conservatism on top of the multiplicity widening.
+
+    This variant removes that assumption by reading the centre and scale off
+    ``ci_func`` itself on every replicate::
+
+        lo, hi = ci_func(resampled_diffs_r, alpha_ref)
+        m = (lo + hi) / 2                       # the formula's own centre
+        s = (hi - lo) / (2 z_{alpha_ref/2})     # the formula's own scale
+        z_r = |theta_r - m| / s
+
+    so the returned quantile of ``max_r z_r`` is calibrated against the
+    construction's actual finite-sample behaviour, including any centre shift
+    (Bonett-Price shrinks the point estimate by n/(n+2), which the bootstrap-SE
+    route ignores entirely). Stays method-agnostic: ``ci_func`` is only ever
+    called as ``(diffs, alpha)``.
+
+    Costs ``n_bootstrap * k`` calls to *ci_func* -- linear, not the nested
+    ``B^2`` a naive recalibration would need, because for an interval whose
+    half-width is proportional to the normal quantile the level at which a
+    replicate just covers has a closed form.
+
+    Returns ``None`` when there are no pairs or every pair is degenerate.
+    """
+    from scipy import stats as _scipy_stats
+
+    k = len(pairs)
+    if k == 0:
+        return None
+
+    z_ref = float(_scipy_stats.norm.ppf(1.0 - alpha_ref / 2.0))
+    label_to_idx = {label: idx for idx, label in enumerate(labels)}
+    flat = scores.mean(axis=2) if scores.ndim == 3 else scores  # (N, M)
+    pair_indices = [(label_to_idx[a], label_to_idx[b]) for (a, b) in pairs]
+    diffs_mat = np.stack([flat[i] - flat[j] for (i, j) in pair_indices], axis=0)  # (k, M)
+    M = diffs_mat.shape[1]
+    point_ests = diffs_mat.mean(axis=1) if statistic == "mean" else np.median(diffs_mat, axis=1)
+
+    # Same degeneracy rule as _joint_bootstrap_critical_value: a pair with no
+    # spread contributes an unbounded standardized deviation and would other-
+    # wise dominate every replicate's max.
+    spread = np.ptp(diffs_mat, axis=1)
+    valid = spread > 1e-12
+    if not np.any(valid):
+        return None
+
+    # The calibration only needs a (1-alpha) quantile of a max over k pairs,
+    # which stabilizes well before the resample count `boot` uses for its SE.
+    # Capped because this loop costs n_cal * k calls into ci_func (Python-level,
+    # since ci_func is an arbitrary callable), vs `boot`'s fully vectorized
+    # resample -- uncapped at n_bootstrap=5000 it runs ~100x slower than boot
+    # for no measurable gain in the quantile.
+    n_cal = int(min(n_bootstrap, _CALIBRATED_JOINT_MAX_RESAMPLES))
+    input_idx = rng.integers(0, M, size=(n_cal, M))
+
+    # Fast path: a formula may publish `centre_scale_batch`, evaluating its own
+    # centre and scale over a whole (n_cal, M) resample matrix in one numpy
+    # call instead of n_cal scalar calls per pair. Two wins, not one:
+    #   - ~485x faster on the inner loop (this is otherwise 1500 * k Python
+    #     calls; at k=20 that is 285k of them);
+    #   - EXACT, where the fallback is not. The fallback recovers scale as
+    #     (hi - lo) / (2 z_ref), which understates it whenever the interval
+    #     clipped at its bounds -- exactly the sparse small-n case this
+    #     calibration exists for.
+    # EXACT path: a formula may publish `alpha_crit_batch`, giving the level at
+    # which each resample's interval just covers a target. That is the quantity
+    # this calibration actually wants, and it needs no reference-distribution
+    # assumption of ours: the formula answers in its own parameterization
+    # (Bonett-Price normal on the difference scale, NIG t at df=2*a_n, logit-t t
+    # at df=n-1 on the LOGIT scale). Joint coverage at a' is P(a' <= min_r
+    # alpha_crit), so alpha* is the alpha-quantile of those per-replicate minima.
+    # The centre/scale route below cannot express the logit-t case at all -- it
+    # assumes symmetry on the difference scale -- so it is an approximation
+    # there, not just a slower path.
+    acrit = getattr(ci_func, "alpha_crit_batch", None)
+    if acrit is not None:
+        a_min = np.ones(n_cal, dtype=float)
+        for r in range(k):
+            if not valid[r]:
+                continue
+            a_r = np.asarray(acrit(diffs_mat[r][input_idx], float(point_ests[r])), dtype=float)
+            np.minimum(a_min, a_r, out=a_min)
+        alpha_star = float(np.quantile(a_min, 1.0 - ci))
+        alpha_star = min(max(alpha_star, 1e-12), 1.0 - 1e-12)
+        return -float(_scipy_stats_norm_ppf(alpha_star))
+
+    batch = getattr(ci_func, "centre_scale_batch", None)
+    if batch is not None:
+        z_max = np.zeros(n_cal)
+        for r in range(k):
+            if not valid[r]:
+                continue
+            centre, scale = batch(diffs_mat[r][input_idx], alpha_ref)
+            centre = np.asarray(centre, dtype=float)
+            scale = np.asarray(scale, dtype=float)
+            ok = np.isfinite(centre) & np.isfinite(scale) & (scale > 1e-12)
+            if not np.any(ok):
+                continue
+            z_r = np.zeros(n_cal)
+            z_r[ok] = np.abs(point_ests[r] - centre[ok]) / scale[ok]
+            np.maximum(z_max, z_r, out=z_max)
+    else:
+        z_max = np.empty(n_cal)
+        for b in range(n_cal):
+            idx = input_idx[b]
+            worst = 0.0
+            for r in range(k):
+                if not valid[r]:
+                    continue
+                lo, hi = ci_func(diffs_mat[r][idx], alpha_ref)
+                if not (np.isfinite(lo) and np.isfinite(hi)):
+                    continue
+                scale = (hi - lo) / (2.0 * z_ref)
+                if not np.isfinite(scale) or scale <= 1e-12:
+                    continue
+                centre = 0.5 * (lo + hi)
+                worst = max(worst, abs(point_ests[r] - centre) / scale)
+            z_max[b] = worst
+    if not np.any(z_max > 0.0):
+        return None
+    return float(np.quantile(z_max, ci))
+
+
+def _calibrated_joint_simultaneous_cis(
+    scores: np.ndarray,
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    ci: float,
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    ci_func: "Callable[[np.ndarray, float], tuple[float, float]]",
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """``boot``, but with the joint level calibrated against *ci_func's* own
+    finite-sample behaviour rather than the nominal normal quantile -- see
+    :func:`_calibrated_joint_critical_value`. Same output contract as
+    :func:`_joint_bootstrap_scaled_simultaneous_cis`.
+    """
+    from scipy import stats as _scipy_stats
+
+    if not pairs:
+        return {}
+    c = _calibrated_joint_critical_value(
+        scores=scores, pairs=pairs, labels=labels, ci=ci, n_bootstrap=n_bootstrap,
+        rng=rng, ci_func=ci_func, statistic=statistic,
+    )
+    if c is None:
+        return {}
+    alpha_eff = float(2.0 * (1.0 - _scipy_stats.norm.cdf(c)))
+    alpha_eff = min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
+    return {pair: ci_func(results[pair].per_input_diffs, alpha_eff) for pair in pairs}
+
+
 def _joint_bootstrap_scaled_simultaneous_cis(
     scores: np.ndarray,
     results: dict[tuple[str, str], "PairedDiffResult"],
@@ -2224,22 +2414,34 @@ def canonical_pairwise_ci_func(data_kind: str, diff_bounds, method: Optional[str
                 return rescaled_ci(_f, diffs, alpha, _lo, _hi)
             return ci_func
 
+    def _attach(f, provider):
+        try:
+            f.alpha_crit_batch = provider
+        except AttributeError:
+            pass
+        return f
+
     if method == "bonett_price":
         return bonett_price_paired_ci_from_diffs
     if method in ("mj_floor", "tango"):
         return mj_floor_paired_ci_from_diffs
     if method == "nig" and _bounded is not None:
-        return _bounded(functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0))
+        return _attach(_bounded(functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)),
+                       functools.partial(_nig_alpha_crit_batch, b0=_NIG_PAIRED_DIFF_B0,
+                                         lo=_lo_b, hi=_hi_b))
     if method == "logit_t" and _bounded is not None:
-        return _bounded(logit_t_ci_1d)
+        return _attach(_bounded(logit_t_ci_1d),
+                       functools.partial(_logit_t_alpha_crit_batch, lo=_lo_b, hi=_hi_b))
 
     if data_kind == "binary":
         return bonett_price_paired_ci_from_diffs
     if data_kind in ("bounded_01", "likert") and _bounded is not None:
-        return _bounded(
-            functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
-            if data_kind == "likert" else logit_t_ci_1d
-        )
+        if data_kind == "likert":
+            return _attach(_bounded(functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)),
+                           functools.partial(_nig_alpha_crit_batch, b0=_NIG_PAIRED_DIFF_B0,
+                                             lo=_lo_b, hi=_hi_b))
+        return _attach(_bounded(logit_t_ci_1d),
+                       functools.partial(_logit_t_alpha_crit_batch, lo=_lo_b, hi=_hi_b))
     return None
 
 
@@ -2376,7 +2578,7 @@ def _simultaneous_cis_router(
         if cis:
             return cis, "max_t", max_t_pvalues
 
-    elif prefer in ("auto", "sidak", "boot") and len(pairs) > 1:
+    elif prefer in ("auto", "sidak", "boot", "boot_cal") and len(pairs) > 1:
         # fig:fwer-decision-tree's Sidak/boot branch is explicitly scoped to
         # "Family of comparisons (k>=3)" -- with a single pair (k=2, one
         # comparison), there's no family to control FWER across, and
@@ -2423,6 +2625,13 @@ def _simultaneous_cis_router(
             cis = _sidak_simultaneous_cis(results=results, pairs=pairs, ci=ci, ci_func=ci_func)
             if cis:
                 return cis, "sidak", {}
+        elif resolved == "boot_cal":
+            cis = _calibrated_joint_simultaneous_cis(
+                scores=scores, results=results, pairs=pairs, labels=labels,
+                ci=ci, n_bootstrap=n_bootstrap, rng=rng, ci_func=ci_func, statistic=statistic,
+            )
+            if cis:
+                return cis, "boot_cal", {}
         elif resolved == "boot":
             cis = _joint_bootstrap_scaled_simultaneous_cis(
                 scores=scores, results=results, pairs=pairs, labels=labels,

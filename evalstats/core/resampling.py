@@ -1900,6 +1900,7 @@ def bonett_price_paired_ci(
     )
 
 
+
 def newcombe_mover_paired_ci(
     values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
 ) -> tuple[float, float]:
@@ -2291,6 +2292,125 @@ def bonett_price_paired_ci_from_diffs(diffs: np.ndarray, alpha: float = 0.05) ->
     values_a = (d == 1).astype(float)
     values_b = (d == -1).astype(float)
     return bonett_price_paired_ci(values_a, values_b, alpha)
+
+
+def _bonett_price_centre_scale_batch(diffs_2d: np.ndarray, alpha: float = 0.05):
+    """Vectorized (centre, scale) for :func:`bonett_price_paired_ci_from_diffs`
+    over a WHOLE matrix of resampled difference vectors at once.
+
+    ``diffs_2d`` is ``(B, M)`` -- B resamples of the same pair's per-item
+    differences. Returns ``(centre, scale)``, each shape ``(B,)``, such that
+    the interval at level *a* is ``centre +/- z_{a/2} * scale`` (before the
+    formula's clip to [-1, 1]).
+
+    Exists for :func:`~evalstats.core.paired._calibrated_joint_critical_value`,
+    whose calibration needs the construction's own centre and scale on every
+    resample. Calling the scalar formula B times per pair is ~485x slower and,
+    worse, recovers the scale as ``(hi - lo) / (2 z)`` -- which is WRONG
+    whenever the interval clipped at +/-1, precisely the sparse small-n case
+    the calibration is for. This computes both analytically from the counts,
+    so it is exact and never sees the clip.
+
+    Bonett-Price depends on the data only through ``(n10, n01, n)``, so the
+    whole batch reduces to two count reductions along the item axis. The
+    ``alpha`` argument is accepted (and ignored) because centre and scale are
+    alpha-free for this Wald-form interval -- the signature matches the
+    protocol so other formulas can supply an alpha-dependent version.
+    """
+    d = np.asarray(diffs_2d)
+    n = d.shape[1]
+    if n == 0:
+        z = np.zeros(d.shape[0])
+        return z, z
+    n10 = (d == 1).sum(axis=1)
+    n01 = (d == -1).sum(axis=1)
+    p12 = (n10 + 1.0) / (n + 2.0)
+    p21 = (n01 + 1.0) / (n + 2.0)
+    centre = p12 - p21
+    scale = np.sqrt(np.maximum(p12 + p21 - centre * centre, 0.0) / (n + 2.0))
+    return centre, scale
+
+
+def _alpha_crit_symmetric(target, centre, scale, sf):
+    """Level at which a symmetric interval ``centre +/- q(alpha/2)*scale`` just
+    covers *target*, given the reference distribution's survival function *sf*.
+
+    Covering means ``|target-centre| <= q(alpha/2)*scale``; since ``q`` falls as
+    alpha rises, the crossing level is ``2*sf(|target-centre|/scale)``.
+    """
+    centre = np.asarray(centre, dtype=float)
+    scale = np.asarray(scale, dtype=float)
+    out = np.ones(centre.shape, dtype=float)
+    ok = np.isfinite(centre) & np.isfinite(scale) & (scale > 1e-12)
+    if np.any(ok):
+        z = np.abs(target - centre[ok]) / scale[ok]
+        out[ok] = np.clip(2.0 * sf(z), 1e-12, 1.0)
+    return out
+
+
+def _bonett_price_alpha_crit_batch(diffs_2d, target):
+    """alpha_crit for Bonett-Price -- symmetric on the difference scale, normal
+    reference (see :func:`bonett_price_paired_ci_from_diffs`)."""
+    centre, scale = _bonett_price_centre_scale_batch(diffs_2d)
+    return _alpha_crit_symmetric(target, centre, scale, stats.norm.sf)
+
+
+def _logit_t_alpha_crit_batch(values_2d, target, lo=0.0, hi=1.0):
+    """alpha_crit for :func:`logit_t_ci_1d` (optionally through
+    :func:`~evalstats.core.stats_utils.rescaled_ci` bounds *lo*/*hi*).
+
+    logit-t is symmetric on the LOGIT scale with a t reference, not on the
+    value scale -- so the crossing level is computed there and the target is
+    mapped through the same transform. Degenerate rows (zero-variance
+    resamples, which the scalar path hands to ``degenerate_sample_ci``) return
+    1.0, i.e. they never bind the joint minimum, matching that path's skip.
+    """
+    span = float(hi - lo)
+    v = (np.asarray(values_2d, dtype=float) - lo) / span
+    y = (float(target) - lo) / span
+    n = v.shape[1]
+    out = np.ones(v.shape[0], dtype=float)
+    if n <= 1:
+        return out
+    x_bar = v.mean(axis=1)
+    se = v.std(axis=1, ddof=1) / np.sqrt(n)
+    ok = (np.ptp(v, axis=1) > 0.0) & (se > 0.0) & np.isfinite(se) & (x_bar > 0.0) & (x_bar < 1.0)
+    ok &= (y > 0.0) & (y < 1.0)
+    if not np.any(ok):
+        return out
+    g = np.log(x_bar[ok] / (1.0 - x_bar[ok]))
+    se_g = se[ok] / (x_bar[ok] * (1.0 - x_bar[ok]))
+    z = np.abs(np.log(y / (1.0 - y)) - g) / se_g
+    out[ok] = np.clip(2.0 * stats.t.sf(z, df=n - 1), 1e-12, 1.0)
+    return out
+
+
+def _nig_alpha_crit_batch(values_2d, target, b0=0.0625, m0=0.5, k0=1.0, a0=2.0, lo=0.0, hi=1.0):
+    """alpha_crit for :func:`nig_ci_1d` -- symmetric on the (rescaled) value
+    scale with a t reference at ``df = 2*a_n``. Mirrors that function's
+    posterior update exactly; see it for the parameterization."""
+    span = float(hi - lo)
+    v = (np.asarray(values_2d, dtype=float) - lo) / span
+    y = (float(target) - lo) / span
+    n = v.shape[1]
+    out = np.ones(v.shape[0], dtype=float)
+    if n <= 0:
+        return out
+    xbar = v.mean(axis=1)
+    ss = ((v - xbar[:, None]) ** 2).sum(axis=1)
+    kn = k0 + n
+    mn = (k0 * m0 + n * xbar) / kn
+    an = a0 + n / 2.0
+    bn = b0 + 0.5 * ss + (k0 * n * (xbar - m0) ** 2) / (2.0 * kn)
+    scale = np.sqrt(np.maximum(bn / (an * kn), 0.0))
+    return _alpha_crit_symmetric(y, mn, scale, lambda z: stats.t.sf(z, df=2.0 * an))
+
+
+#: Optional fast path consumed by
+#: evalstats.core.paired._calibrated_joint_critical_value. Formulas without
+#: one fall back to per-resample scalar calls there.
+bonett_price_paired_ci_from_diffs.centre_scale_batch = _bonett_price_centre_scale_batch
+bonett_price_paired_ci_from_diffs.alpha_crit_batch = _bonett_price_alpha_crit_batch
 
 
 def mj_floor_paired_ci_from_diffs(diffs: np.ndarray, alpha: float, floor: float = 0.25) -> tuple[float, float]:

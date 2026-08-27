@@ -150,6 +150,7 @@ with warnings.catch_warnings():
     from evalstats.core.paired import (
         pairwise_differences, all_pairwise, friedman_nemenyi,
         _bonferroni_simultaneous_cis, _simultaneous_cis_router, _max_stat_simultaneous_cis,
+    _calibrated_joint_simultaneous_cis,
         _sidak_simultaneous_cis, _joint_bootstrap_scaled_simultaneous_cis,
     )
     from evalstats.core.stats_utils import correct_pvalues, rescaled_ci
@@ -289,6 +290,7 @@ from ..methods import (
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
     CORR_SIDAK,
+    CORR_BOOT_CAL,
     CORR_BOOT,
     CANONICAL_SIMULTANEOUS_CI_METHODS,
     CORR_NONE,
@@ -2822,7 +2824,7 @@ def _run_simultaneous_ci_cell(
     # the returned SimultaneousCIResult rows either way (see the loop over
     # `all_methods` below), so gating its computation here changes runtime,
     # not results.
-    need = {m: (m in all_methods) for m in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name)}
+    need = {m: (m in all_methods) for m in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name, CORR_BOOT_CAL.name)}
     agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in all_methods for cond in ("null", "alt")}
     agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
     agg_width_sq: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
@@ -2966,9 +2968,26 @@ def _run_simultaneous_ci_cell(
                     )
                     agg_time[(CORR_BOOT.name, condition)] += time.perf_counter() - _t0
 
+                # boot_cal: same joint-bootstrap idea as `boot`, but the
+                # critical value is studentized by ci_func's OWN centre and
+                # scale per replicate rather than by the bootstrap SE, so the
+                # resulting level absorbs whatever finite-sample behaviour the
+                # formula has (Bonett-Price is marginally conservative by up
+                # to +4.3pp at n=10, which plain `boot` inherits). Its own
+                # resample, like `boot`'s -- gated the same way.
+                boot_cal_cis: dict = {}
+                if has_canonical and need[CORR_BOOT_CAL.name]:
+                    _t0 = time.perf_counter()
+                    boot_cal_cis = _calibrated_joint_simultaneous_cis(
+                        scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
+                        ci=ci, n_bootstrap=n_bootstrap, rng=rng, ci_func=ci_func, statistic=statistic,
+                    )
+                    agg_time[(CORR_BOOT_CAL.name, condition)] += time.perf_counter() - _t0
+
                 for method_name, cis in (
                     ("none", none_cis), ("bonferroni", bonf_cis), ("max_t", maxt_cis),
                     (CORR_SIDAK.name, sidak_cis), (CORR_BOOT.name, boot_cis),
+                    (CORR_BOOT_CAL.name, boot_cal_cis),
                 ):
                     if not cis:
                         continue
@@ -14196,7 +14215,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 output_paths.append(violin_vs_n_path)
                 print(f"Saved plot: {violin_vs_n_path}")
 
-            for cm_name in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name):
+            for cm_name in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name, CORR_BOOT_CAL.name):
                 cm_null_rows = [r for r in sci_results if r.ci_method == cm_name and r.condition == "null"]
                 if not cm_null_rows:
                     continue

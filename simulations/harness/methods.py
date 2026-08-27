@@ -520,7 +520,13 @@ SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
 # above -- see its comment for the p-value-side analogue.
 # ---------------------------------------------------------------------------
 CORR_SIDAK = Method("sidak", "#31a354")
-CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
+#: `boot`, but with the joint level calibrated against the per-pair CI
+#: formula's OWN finite-sample behaviour instead of the nominal normal
+#: quantile -- see evalstats.core.paired._calibrated_joint_critical_value.
+#: Exists because `boot`'s alpha_eff step assumes ci_func(., a) covers
+#: exactly 1-a, which Bonett-Price does not (delta up to +4.3pp at n=10).
+CORR_BOOT_CAL = Method("boot_cal", "#756bb1")
+CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT, CORR_BOOT_CAL]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
