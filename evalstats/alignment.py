@@ -229,25 +229,30 @@ class AlignmentResult:
     def _summary_simple(self) -> None:
         self._header()
 
-        if self.bias_check is not None:
+        # This check compares a correlation against ICC(2,1), so the only thing
+        # it can see is a systematic shift or compression of the judge's raw
+        # scores. PPI absorbs that either way (verified: a judge compressed to
+        # 0.55x with a +0.9 offset understates a true +0.50 effect as +0.27 raw,
+        # and the corrected estimate recovers +0.51), so the result never changes
+        # whether to correct. Only the FAILING branch is printed here, because it
+        # says something about the judge worth knowing; a passing result is not
+        # evidence that correction can be skipped -- the bias PPI is most needed
+        # for errs in different directions across conditions, which is invisible
+        # to any pooled statistic including this one. Both branches stay in
+        # summary(verbose=True), where the surrounding text supplies that context.
+        if self.bias_check is not None and not self.bias_check["passed"]:
             bc = self.bias_check
-            if not bc["passed"]:
-                print(
-                    f"⚠ Possible judge bias: {bc['corr_label']} = "
-                    f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f} "
-                    "— the judge ranks items like humans do, but its raw scores "
-                    "look shifted or compressed relative to human scores."
-                )
-                print(
-                    "  Treat raw judge scores with caution; consider "
-                    "recalibrating (compare(alignment=...)) before using them "
-                    "directly. Run .summary(verbose=True) for the full check."
-                )
-            else:
-                print(
-                    f"✓ No sign of judge bias: {bc['corr_label']} and ICC(2,1) "
-                    "roughly agree."
-                )
+            print(
+                f"⚠ Possible judge scale bias: {bc['corr_label']} = "
+                f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f} "
+                "— the judge ranks items like humans do, but its raw scores "
+                "look shifted or compressed relative to human scores."
+            )
+            print(
+                "  This affects raw judge scores only; a PPI-corrected "
+                "comparison (compare(alignment=...)) already absorbs it. "
+                "Run .summary(verbose=True) for the full check."
+            )
             print()
 
         rep = self.representativeness
@@ -686,8 +691,24 @@ def _compute_alignment_metrics(
     *,
     alpha: float = 0.05,
     rng: np.random.Generator,
+    ci: bool = True,
 ) -> dict:
     metrics: dict = {}
+
+    # ci=False skips every bootstrap CI on the alignment metrics and reports
+    # NaN bounds, keeping only the (deterministic, closed-form) point
+    # estimates. Each CI is 2000 resamples of its metric, so this is the bulk
+    # of judge_alignment()'s cost. Intended for callers that consume only the
+    # estimates -- notably compare(alignment=...), whose PPI correction reads
+    # the point estimates alone -- and for large simulation sweeps.
+    if ci:
+        _ci2, _cigap = _bootstrap_ci_2, _bootstrap_ci_gap
+    else:
+        def _ci2(fn, a, b, **_kw):
+            return float(fn(a, b)), float("nan"), float("nan")
+
+        def _cigap(fn_corr, fn_icc, a, b, **_kw):
+            return float(fn_corr(a, b)) - float(fn_icc(a, b)), float("nan"), float("nan")
 
     if score_type == "binary":
         def agree(a, b):
@@ -701,7 +722,7 @@ def _compute_alignment_metrics(
             )
             return (p_o - p_e) / (1.0 - p_e) if p_e < 1.0 else 1.0
 
-        est, lo, hi = _bootstrap_ci_2(agree, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(agree, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_pct_agreement(est, lo, hi, len(llm), "Percent agreement")
         metrics["percent_agreement"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -718,7 +739,7 @@ def _compute_alignment_metrics(
             "interpretation": interp,
             "example": example,
         }
-        est, lo, hi = _bootstrap_ci_2(kappa, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(kappa, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Cohen's κ")
         metrics["cohens_kappa"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -746,7 +767,7 @@ def _compute_alignment_metrics(
             r, _ = spearmanr(a, b)
             return float(r)
 
-        est, lo, hi = _bootstrap_ci_2(pe, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
         metrics["pearson_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -768,7 +789,7 @@ def _compute_alignment_metrics(
             "interpretation": interp,
             "example": example,
         }
-        est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -818,7 +839,7 @@ def _compute_alignment_metrics(
             return float(r)
 
         if k >= 2:
-            est, lo, hi = _bootstrap_ci_2(wk, llm, human, alpha=alpha, rng=rng)
+            est, lo, hi = _ci2(wk, llm, human, alpha=alpha, rng=rng)
             band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
             metrics["weighted_kappa"] = {
                 "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -837,7 +858,7 @@ def _compute_alignment_metrics(
                 "interpretation": interp,
                 "example": example,
             }
-        est, lo, hi = _bootstrap_ci_2(pe, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
         metrics["pearson_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -858,7 +879,7 @@ def _compute_alignment_metrics(
             "interpretation": interp,
             "example": example,
         }
-        est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -879,7 +900,7 @@ def _compute_alignment_metrics(
         }
 
         if k >= 2:
-            icc_est, icc_lo, icc_hi = _bootstrap_ci_2(_icc_21, llm, human, alpha=alpha, rng=rng)
+            icc_est, icc_lo, icc_hi = _ci2(_icc_21, llm, human, alpha=alpha, rng=rng)
             band, interp, example = _interpret_icc(icc_est, icc_lo, icc_hi, len(llm), "ICC(2,1)")
             metrics["icc_21"] = {
                 "estimate": icc_est, "ci_low": icc_lo, "ci_high": icc_hi,
@@ -902,7 +923,7 @@ def _compute_alignment_metrics(
                 "example": example,
             }
 
-            gap_est, gap_lo, gap_hi = _bootstrap_ci_gap(wk, _icc_21, llm, human, alpha=alpha, rng=rng)
+            gap_est, gap_lo, gap_hi = _cigap(wk, _icc_21, llm, human, alpha=alpha, rng=rng)
             metrics["_bias_check"] = _build_bias_check(
                 "Weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
                 icc_est, gap_est, gap_lo, gap_hi,
@@ -917,7 +938,7 @@ def _compute_alignment_metrics(
             r, _ = spearmanr(a, b)
             return float(r)
 
-        est, lo, hi = _bootstrap_ci_2(pe, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
         metrics["pearson_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -931,7 +952,7 @@ def _compute_alignment_metrics(
             "interpretation": interp,
             "example": example,
         }
-        est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
+        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
@@ -947,7 +968,7 @@ def _compute_alignment_metrics(
             "example": example,
         }
 
-        icc_est, icc_lo, icc_hi = _bootstrap_ci_2(_icc_21, llm, human, alpha=alpha, rng=rng)
+        icc_est, icc_lo, icc_hi = _ci2(_icc_21, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_icc(icc_est, icc_lo, icc_hi, len(llm), "ICC(2,1)")
         metrics["icc_21"] = {
             "estimate": icc_est, "ci_low": icc_lo, "ci_high": icc_hi,
@@ -970,7 +991,7 @@ def _compute_alignment_metrics(
             "example": example,
         }
 
-        gap_est, gap_lo, gap_hi = _bootstrap_ci_gap(pe, _icc_21, llm, human, alpha=alpha, rng=rng)
+        gap_est, gap_lo, gap_hi = _cigap(pe, _icc_21, llm, human, alpha=alpha, rng=rng)
         metrics["_bias_check"] = _build_bias_check(
             "Pearson r", metrics["pearson_r"]["estimate"],
             icc_est, gap_est, gap_lo, gap_hi,
@@ -1428,6 +1449,7 @@ def _judge_alignment_core(
     human_groundtruth: str,
     alpha: float,
     n_total: int,
+    ci: bool = True,
     all_llm: Optional[np.ndarray] = None,
     slice_df: Optional[pd.DataFrame] = None,
     slice_labeled_mask: Optional[pd.Series] = None,
@@ -1460,7 +1482,7 @@ def _judge_alignment_core(
 
     rng = np.random.default_rng(42)
     alignment_metrics = _compute_alignment_metrics(
-        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng
+        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng, ci=ci
     )
     bias_check = alignment_metrics.pop("_bias_check", None)
 
@@ -1610,6 +1632,7 @@ def _judge_alignment_from_evaldata(
     human_groundtruth: str,
     alpha: float,
     selection: str = "unknown",
+    ci: bool = True,
 ) -> AlignmentResult:
     df = evaldata._df
 
@@ -1668,7 +1691,7 @@ def _judge_alignment_from_evaldata(
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=df, slice_labeled_mask=labeled_mask,
         slice_exclude_cols=frozenset({llm_metric, human_groundtruth}) | structural_cols,
-        labeled_mask=labeled_mask.to_numpy(), selection=selection,
+        labeled_mask=labeled_mask.to_numpy(), selection=selection, ci=ci,
         warn_stacklevel=4,
     )
 
@@ -1684,6 +1707,7 @@ def _judge_alignment_from_arrays(
     alpha: float,
     selection: str = "unknown",
     test: Optional[str] = None,
+    ci: bool = True,
 ) -> AlignmentResult:
     judge_full = np.asarray(judge_scores, dtype=float)
     human_full = np.asarray(human_scores, dtype=float)
@@ -1751,7 +1775,7 @@ def _judge_alignment_from_arrays(
         llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=None, slice_labeled_mask=None,
-        labeled_mask=position_mask, selection=selection, test=test,
+        labeled_mask=position_mask, selection=selection, test=test, ci=ci,
         warn_stacklevel=4,
     )
 
@@ -2521,8 +2545,19 @@ def judge_alignment(
     test: Optional[str] = None,
     alpha: float = 0.05,
     selection: str = "unknown",
+    ci: bool = True,
 ) -> "AlignmentResult | PairwiseAlignmentResult":
     """Validate how well an LLM judge aligns with human graders.
+
+    Parameters
+    ----------
+    ci : bool, default True
+        Whether to bootstrap confidence intervals for the alignment metrics.
+        ``ci=False`` returns the point estimates with NaN bounds and skips
+        roughly 2000 resamples per metric -- the bulk of this function's
+        runtime. Use it when only the estimates are consumed (for example
+        building the ``alignment=`` argument to :func:`compare`, whose PPI
+        correction reads point estimates only), or in large sweeps.
 
     Three call forms:
 
@@ -2700,7 +2735,7 @@ def judge_alignment(
             )
         return _judge_alignment_from_evaldata(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-            selection=selection,
+            selection=selection, ci=ci,
         )
 
     if human_scores is None:
@@ -2714,7 +2749,7 @@ def judge_alignment(
         judge_scores_or_evaldata, human_scores,
         all_judge_scores=all_judge_scores, score_type=score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-        selection=selection, test=test,
+        selection=selection, test=test, ci=ci,
     )
 
 
