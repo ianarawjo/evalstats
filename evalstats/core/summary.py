@@ -614,6 +614,23 @@ def _consistency_color(icc: float) -> str:
 # Multi-model summary
 # ---------------------------------------------------------------------------
 
+def _display_order(bundle) -> "np.ndarray":
+    """Indices giving a stable, readable display order: descending mean,
+    label as tiebreak.
+
+    These orderings used to read ``rank_dist.expected_ranks``/``p_best``,
+    which forced the (opt-in) rank bootstrap purely to decide row order --
+    see ``core.ranking.LazyRankDistribution``. Mean order is free, already
+    what the leaderboard sorts by elsewhere, and deterministic.
+    """
+    means = np.asarray(bundle.robustness.mean, dtype=float)
+    labels = list(bundle.labels)
+    return np.array(
+        sorted(range(len(labels)), key=lambda i: (-means[i], labels[i])),
+        dtype=int,
+    )
+
+
 def _print_multi_model_summary(
     bundle: MultiModelBundle,
     *,
@@ -702,21 +719,23 @@ def _print_multi_model_summary(
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
     _print_model_template_matrix(bundle)
 
-    # Shared by the (optional) P(Best) block below and the unconditional
-    # "Mean Performance" listing further down -- computed once here so the
-    # latter doesn't depend on show_rank_probabilities being True.
-    p_best = bundle.cross_model.rank_dist.p_best
-    expected_ranks = bundle.cross_model.rank_dist.expected_ranks
-    rank_labels = bundle.cross_model.rank_dist.labels
+    # The unconditional "Mean Performance" listing orders by mean, so it
+    # needs nothing from the rank distribution. P(Best)/E[Rank] are read
+    # only inside the show_rank_probabilities block below, which keeps the
+    # rank bootstrap genuinely opt-in.
+    rank_labels = bundle.cross_model.labels
     rank_pairs = [_split_model_template_label(label) for label in rank_labels]
     rank_bar_width = 14
     n_ranked_items = len(rank_labels)
     model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
     template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
-    top_indices = np.argsort(-p_best)
+    top_indices = _display_order(bundle.cross_model)
     n_show = len(top_indices)
 
     if show_rank_probabilities:
+        p_best = bundle.cross_model.rank_dist.p_best
+        expected_ranks = bundle.cross_model.rank_dist.expected_ranks
+        pbest_indices = np.argsort(-p_best)
         _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
         print(
             f"  {'Model':<{model_col_width}s} "
@@ -724,7 +743,7 @@ def _print_multi_model_summary(
             f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
             f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
         )
-        for idx in top_indices[:n_show]:
+        for idx in pbest_indices[:n_show]:
             model_label, template_label = rank_pairs[idx]
             model_label = _truncate_label(model_label, model_col_width)
             template_label = _truncate_label(template_label, template_col_width)
@@ -836,7 +855,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # Labels are formatted as "model / template" by get_flat_result().
     cell_mean: dict[tuple[str, str], float] = {}
     for label, m in zip(
-        cross.rank_dist.labels,
+        cross.labels,
         cross.robustness.mean,
     ):
         parts = label.split(" / ", 1)
@@ -853,7 +872,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # estimate should not read as a decisive winner when the pairwise CIs
     # show it isn't distinguishable from its neighbors; that would defeat
     # the point of reporting calibrated intervals in the first place.
-    cross_labels_all = list(cross.rank_dist.labels)
+    cross_labels_all = list(cross.labels)
     cross_means_all = cross.robustness.mean
     sort_idx = list(np.argsort(-cross_means_all))
     labels_sorted = [cross_labels_all[i] for i in sort_idx]
@@ -919,7 +938,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     """Print executive leaderboard for cross-model (model/template) pairs."""
     cross = bundle.cross_model
-    labels = list(cross.rank_dist.labels)
+    labels = list(cross.labels)
     n = len(labels)
     if n < 2:
         return
@@ -1079,14 +1098,10 @@ def _prepare_paired_pairwise_rows(
 
     # Canonical left/right ordering based on expected-rank order keeps rows
     # readable by preventing arbitrary A/B flips between adjacent rows.
+    _labels_for_order = list(bundle.labels)
     rank_order = {
-        label: idx
-        for idx, (_, label) in enumerate(
-            sorted(
-                zip(bundle.rank_dist.expected_ranks, bundle.rank_dist.labels),
-                key=lambda item: (float(item[0]), item[1]),
-            )
-        )
+        _labels_for_order[i]: idx
+        for idx, i in enumerate(_display_order(bundle))
     }
 
     if pair_results:
@@ -1263,13 +1278,8 @@ def _prepare_paired_pairwise_rows(
         if eff_p_source is not None:
             print(f"{_DIM}  stars: * p<0.01, ** p<0.001, *** p<0.0001{_RESET}")
         print()
-        labels_sorted = [
-            label
-            for _, label in sorted(
-                zip(bundle.rank_dist.expected_ranks, bundle.rank_dist.labels),
-                key=lambda item: (float(item[0]), item[1]),
-            )
-        ]
+        _cd_labels = list(bundle.labels)
+        labels_sorted = [_cd_labels[i] for i in _display_order(bundle)]
         _print_critical_difference_groups(
             bundle.pairwise,
             labels_sorted=labels_sorted,
@@ -2419,12 +2429,17 @@ def _gradient_interval_line(
 ) -> str:
     """Render a one-line gradient CI plot using Unicode block characters.
 
-    Opacity mapping (outermost → innermost):
-      beyond 99.9% CI → ' ' (invisible)
-      99% – 99.9% CI  → '░' (10 % opacity)
-      95% – 99% CI    → '▒' (medium)
-      90% – 95% CI    → '▓' (high)
-      inside 90% CI   → '█' (fully opaque)
+    Opacity mapping (outermost → innermost), for the default
+    ``GRADIENT_CI_ALPHAS`` of (0.32, 0.10, 0.05, 0.01):
+      beyond 99% CI  → ' ' (invisible)
+      95% – 99% CI   → '░' (10 % opacity)
+      90% – 95% CI   → '▒' (medium)
+      68% – 90% CI   → '▓' (high)
+      inside 68% CI  → '█' (fully opaque)
+
+    Bands are paired to ``sorted(multi_ci)`` positionally, so a caller passing a
+    different alpha ladder gets the same outermost-to-innermost shading at
+    whatever levels it supplied.
 
     The ±1σ spread dots ('·') appear only where they peek beyond all CI bands.
     Falls back to ``_ascii_interval_line`` when fewer than 2 CI levels are present.
@@ -2471,7 +2486,12 @@ def _gradient_interval_line(
             chars[i] = char
 
     ref_idx = to_idx(reference)
-    mean_idx = to_idx(mean)
+    # No marker is drawn at the mean, deliberately. A point marker invites the
+    # reader to treat one value as the answer and the interval around it as
+    # decoration, which is the reading gradient plots exist to avoid
+    # (Correll & Gleicher, "Error bars considered harmful"). `mean` is still a
+    # parameter because _ascii_interval_line, the <2-band fallback above, does
+    # mark it.
     chars[ref_idx] = "│"
 
     # The reference line can obscure the tail of a CI band when the tail
@@ -3465,7 +3485,7 @@ def _print_executive_summary(
     (instead of the bare "Verdict") so it reads as scoped to the primary
     metric alone, rather than as the final word once a second axis exists.
     """
-    labels = list(bundle.rank_dist.labels)
+    labels = list(bundle.labels)
     n = len(labels)
     if n < 2:
         return
@@ -3802,7 +3822,7 @@ def _print_next_steps_guidance(
         return
 
     # Entity-level grouping — mirrors the executive summary leaderboard
-    labels = list(bundle.rank_dist.labels)
+    labels = list(bundle.labels)
     means = bundle.robustness.mean
     sort_idx = list(np.argsort(-means))
     labels_sorted = [labels[i] for i in sort_idx]

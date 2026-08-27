@@ -12,7 +12,9 @@ from typing import Literal, Optional
 _alpha: float = 0.05
 
 # Alpha levels used to build the gradient CI bands in terminal plots.
-# Ordered narrowest→widest: 90%, 95%, 99%, 99.9% CI.
+# Ordered widest→narrowest by CI: alpha 0.32, 0.10, 0.05, 0.01 give the
+# 68%, 90%, 95%, and 99% intervals. The terminal legend prints them as
+# [99%/95%/90%/68%]; keep this list and that legend in step.
 GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
 
