@@ -1119,17 +1119,67 @@ def _make_multiarm_true_means_fn(
     return _true_means
 
 
+def _make_multiarm_ramp_true_means_fn(
+    generate_scores: Callable[[np.random.Generator, int, int, int, float], np.ndarray],
+) -> Callable[[int, float], np.ndarray]:
+    """``true_means`` for the "ramp" effect mode, where arm *i* is shifted by
+    ``i * delta`` rather than only arm 0 carrying it.
+
+    The arm-0 variant caches two scalars (baseline and shifted); a ramp needs
+    one per arm, since every arm sits at a different shift. Each is estimated
+    by the same large-sample Monte Carlo as
+    :func:`_make_multiarm_true_means_fn` -- clipping and rounding move the
+    realized mean away from the raw additive shift, so the shift cannot just
+    be added to the baseline. Cached per (k, delta), and computed lazily.
+    """
+    cache: dict[tuple[int, float], np.ndarray] = {}
+
+    def _true_means(k: int, delta: float) -> np.ndarray:
+        key = (int(k), float(delta))
+        if key not in cache:
+            # Draw the whole k-arm array once and take each arm's mean. The
+            # per-arm shortcut the arm0 variant uses (generate_scores with
+            # k=1) does NOT work here: at k=1 the ramp is arange(1)*delta,
+            # i.e. zero, so every arm would come back at baseline.
+            draw = generate_scores(np.random.default_rng(1000 + int(k)), 120_000, 1, int(k), delta)
+            cache[key] = np.asarray(draw[:, :, 0].mean(axis=1), dtype=float)
+        return cache[key].copy()
+
+    return _true_means
+
+
 def build_multiarm_sources(
     *, suite: str = "standard", icc: float = 0.20, cohens_d: float = 0.3, eval_types: list[str] | None = None,
+    effect_mode: str = "arm0",
 ) -> list[MultiArmSource]:
+    """Build k-arm scenarios over the shape catalog.
+
+    effect_mode:
+      "arm0" (default) -- arm 0 carries the whole shift, arms 1..k-1 sit at
+        baseline. What cases/pvalues.py's multiarm and simultaneous_ci sweeps
+        use; ``delta`` is the shift itself.
+      "ramp" -- arm *i* is shifted by ``i * delta``, so the arms form a graded
+        ladder and arm 0 vs arm k-1 is the widest gap. Used by
+        cases/compare_e2e.py, whose power column measures the extreme pair on
+        a leaderboard. ``delta`` is the per-arm STEP, not the total shift.
+    The signature of ``generate_scores`` is identical either way -- only the
+    interpretation of ``delta`` changes -- so nothing downstream needs to know
+    which mode built the source.
+    """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
     eval_types = list(eval_types) if eval_types is not None else list(EVAL_TYPES)
 
+    if effect_mode not in ("arm0", "ramp"):
+        raise ValueError(f"Unknown effect_mode: {effect_mode!r}")
+
     def _make_generator(shape: ShapeSpec):
         def _gen(rng: np.random.Generator, n: int, runs: int, k: int, delta: float) -> np.ndarray:
-            effects = np.zeros(k)
-            effects[0] = delta
+            if effect_mode == "ramp":
+                effects = np.arange(k, dtype=float) * delta
+            else:
+                effects = np.zeros(k)
+                effects[0] = delta
             return sample_group_truth(shape, n, runs, k, icc, rng, effects=effects)
         return _gen
 
@@ -1140,7 +1190,10 @@ def build_multiarm_sources(
             alt_delta = cohens_d * group_total_std(shape, icc)
             sources.append(MultiArmSource(
                 label=shape.label, eval_type=eval_type, generate_scores=generate_scores,
-                alt_delta=alt_delta, true_means=_make_multiarm_true_means_fn(generate_scores, alt_delta),
+                alt_delta=alt_delta,
+                true_means=(_make_multiarm_ramp_true_means_fn(generate_scores)
+                            if effect_mode == "ramp"
+                            else _make_multiarm_true_means_fn(generate_scores, alt_delta)),
             ))
     return sources
 
