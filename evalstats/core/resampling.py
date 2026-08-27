@@ -2271,6 +2271,28 @@ def mj_floor_paired_ci(
     return mj_floor_paired_ci_from_diffs(a_bin - b_bin, alpha, floor)
 
 
+def bonett_price_paired_ci_from_diffs(diffs: np.ndarray, alpha: float = 0.05) -> tuple[float, float]:
+    """:func:`bonett_price_paired_ci` from a-minus-b diffs.
+
+    The Bonett-Price interval depends on the raw pairs only through the two
+    discordant counts and n (see that function: p12/p21 are built from n10,
+    n01 and n), and ``diffs`` in ``{-1, 0, 1}`` determines all three -- so
+    rebuilding a representative pair of binary arrays and delegating gives
+    bit-identical output while keeping ONE copy of the formula.
+
+    Exists so simultaneous-CI constructions (Sidak, joint-bootstrap scaling)
+    can widen the SAME interval the non-simultaneous pairwise path reports
+    for binary data, reusing each comparison's stored ``per_input_diffs``.
+    Before this, the simultaneous path had no diffs-based Bonett-Price to
+    call and widened ``mj_floor`` instead, so the simultaneous and pairwise
+    CIs for binary data were built from two different formulas.
+    """
+    d = np.asarray(diffs).ravel()
+    values_a = (d == 1).astype(float)
+    values_b = (d == -1).astype(float)
+    return bonett_price_paired_ci(values_a, values_b, alpha)
+
+
 def mj_floor_paired_ci_from_diffs(diffs: np.ndarray, alpha: float, floor: float = 0.25) -> tuple[float, float]:
     """Floored May & Johnson score CI for the paired binary difference,
     from a-minus-b diffs.

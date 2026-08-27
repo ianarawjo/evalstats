@@ -43,6 +43,7 @@ from .resampling import (
     newcombe_mover_paired_ci,
     mj_floor_paired_ci,
     tango_scc_paired_ci,
+    bonett_price_paired_ci_from_diffs,
     mj_floor_paired_ci_from_diffs,
     mj_floor_paired_ci_multirun_effective,
     mj_floor_paired_ci_multirun_cluster,
@@ -2188,6 +2189,60 @@ _SIMULTANEOUS_CI_BOOTSTRAP_METHODS = {
 }
 
 
+def canonical_pairwise_ci_func(data_kind: str, diff_bounds, method: Optional[str] = None):
+    """The alpha-parameterized per-pair CI formula evalstats reports for
+    *data_kind*, as a ``(diffs, alpha) -> (lo, hi)`` callable.
+
+    SINGLE SOURCE OF TRUTH for "which interval does a pairwise difference
+    get?". The simultaneous-CI constructions (Sidak, joint-bootstrap
+    scaling) must widen the SAME formula the non-simultaneous pairwise path
+    would otherwise show, or the two disagree about what a comparison's
+    interval even is. Simulation harnesses must call this rather than
+    re-listing the formulas, which is how they drift: cases/pvalues.py's
+    ``_canonical_ci_func`` had Likert on logit-t after Likert gained its own
+    NIG row, and binary on mj_floor after binary moved to Bonett-Price, so
+    the published simultaneous-CI numbers were measured on formulas the
+    library no longer used for those data kinds.
+
+    Returns ``None`` for "unbounded", whose construction needs a degenerate
+    -sample fallback the caller supplies (there are no bounds to fall back
+    on -- see the router's else-branch).
+    """
+    # PREFER the already-resolved pairwise method. The main path resolves
+    # method="auto" ONCE (router.analyze -> config.resolve_auto_analyze_methods)
+    # and hands the concrete name down; keying off it here means the
+    # simultaneous CI widens the very interval the pairwise row reports,
+    # instead of a second, independently-derived opinion about this data.
+    # data_kind is only the fallback, for resampling methods (bootstrap, bca,
+    # ...) that have no closed form to widen.
+    _bounded = None
+    if diff_bounds is not None:
+        _lo_b, _hi_b = diff_bounds
+
+        def _bounded(fn):
+            def ci_func(diffs, alpha, _lo=_lo_b, _hi=_hi_b, _f=fn):
+                return rescaled_ci(_f, diffs, alpha, _lo, _hi)
+            return ci_func
+
+    if method == "bonett_price":
+        return bonett_price_paired_ci_from_diffs
+    if method in ("mj_floor", "tango"):
+        return mj_floor_paired_ci_from_diffs
+    if method == "nig" and _bounded is not None:
+        return _bounded(functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0))
+    if method == "logit_t" and _bounded is not None:
+        return _bounded(logit_t_ci_1d)
+
+    if data_kind == "binary":
+        return bonett_price_paired_ci_from_diffs
+    if data_kind in ("bounded_01", "likert") and _bounded is not None:
+        return _bounded(
+            functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
+            if data_kind == "likert" else logit_t_ci_1d
+        )
+    return None
+
+
 def _simultaneous_cis_router(
     scores: np.ndarray,
     results: dict[tuple[str, str], "PairedDiffResult"],
@@ -2343,20 +2398,8 @@ def _simultaneous_cis_router(
                 data_kind, n_items, lopsided_binary=lopsided,
             )
 
-        if data_kind == "binary":
-            ci_func = mj_floor_paired_ci_from_diffs
-        elif data_kind == "bounded_01":
-            diff_lo, diff_hi = diff_bounds  # type: ignore[misc]
-
-            def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi):
-                return rescaled_ci(logit_t_ci_1d, diffs, alpha, _lo, _hi)
-        elif data_kind == "likert":
-            diff_lo, diff_hi = diff_bounds  # type: ignore[misc]
-            _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
-
-            def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi, _fn=_nig_paired):
-                return rescaled_ci(_fn, diffs, alpha, _lo, _hi)
-        else:
+        ci_func = canonical_pairwise_ci_func(data_kind, diff_bounds, method)
+        if ci_func is None:
             # Unbounded: t_interval_ci_1d still returns (mean, mean) on a
             # constant difference vector -- the marginal contract that
             # degenerate_sample_ci deliberately left alone, since with no
