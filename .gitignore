@@ -44,3 +44,6 @@ coefs.csv
 examples/.cache/
 lit_review/api_key.txt
 simulations/papers
+
+# Simulation and LaTeX scratch logs (drift.log, texput.log, ...)
+*.log
