@@ -333,7 +333,7 @@ class _GroupComparisonResultAsBundle:
     """Minimal ``AnalysisBundle``-compatible view over a
     ``GroupComparisonResult``, so ``core.summary._print_executive_summary``
     (built for the paired path) can render the between-subjects executive
-    summary leaderboard unmodified. It only ever reads ``.rank_dist.labels``,
+    summary leaderboard unmodified. It only ever reads ``.labels``,
     ``.robustness.{mean,ci_low,ci_high}``, ``.pairwise`` (a
     ``PairwiseMatrix``-compatible lookup), ``.seed_variance`` (always
     ``None`` here -- no run/seed axis exists for between-subjects data, by
@@ -343,8 +343,7 @@ class _GroupComparisonResultAsBundle:
     """
 
     def __init__(self, result: "GroupComparisonResult"):
-        from types import SimpleNamespace
-        self.rank_dist = SimpleNamespace(labels=result.labels)
+        self.labels = list(result.labels)
         self.robustness = _GroupStatsAsRobustness(result.groups)
         self.pairwise = _GroupDiffResultsAsPairwiseMatrix(result.pairwise)
         self.seed_variance = None

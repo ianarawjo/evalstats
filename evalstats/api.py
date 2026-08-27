@@ -424,7 +424,7 @@ class ComparisonResult:
         if not isinstance(self._analysis, MultiModelBundle):
             return None
         cross = self._analysis.cross_model
-        labels = list(cross.rank_dist.labels)
+        labels = list(cross.labels)
         if len(labels) < 2:
             return None
         means = cross.robustness.mean
@@ -2076,8 +2076,12 @@ def _run_alignment_ppi(
     # bundle.rank_dist was built from the raw, uncorrected LLM scores and does
     # not reflect the correction above — without this, P(Best)/E[Rank] would
     # silently stay frozen at pre-correction values even as means/CIs shift.
-    from evalstats.core.ranking import ppi_bootstrap_ranks
-    bundle.rank_dist = ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, rng)
+    from evalstats.core.ranking import LazyRankDistribution, ppi_bootstrap_ranks
+    bundle.rank_dist = LazyRankDistribution(
+        labels, n_boot,
+        lambda _rng: ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, _rng),
+        rng=rng,
+    )
     bundle.ppi_applied = True
     bundle.alignment_result = alignment_result
 

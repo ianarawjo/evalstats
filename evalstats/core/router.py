@@ -30,7 +30,7 @@ from .bundles import (
     AnalysisResult,
 )
 from .paired import all_pairwise
-from .ranking import bootstrap_ranks
+from .ranking import LazyRankDistribution, bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
 from ..config import get_alpha_ci, resolve_auto_analyze_methods
 
@@ -1104,9 +1104,16 @@ def _analyze_single(
         multi_ci=include_multi_ci,
         score_range=resolved_score_range,
     )
-    rank_dist = bootstrap_ranks(
-        run_scores, labels,
-        n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+    # Deferred: nothing here computes the rank bootstrap unless a caller
+    # actually reads rank_probs/expected_ranks/p_best. See
+    # LazyRankDistribution -- .labels/.n_bootstrap stay free.
+    rank_dist = LazyRankDistribution(
+        labels, n_bootstrap,
+        lambda _rng: bootstrap_ranks(
+            run_scores, labels,
+            n_bootstrap=n_bootstrap, rng=_rng, statistic=statistic,
+        ),
+        rng=rng,
     )
 
     seed_var = None

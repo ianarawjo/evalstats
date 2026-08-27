@@ -76,6 +76,71 @@ class RankDistribution:
     n_bootstrap: int
 
 
+class LazyRankDistribution(RankDistribution):
+    """A ``RankDistribution`` whose bootstrap is deferred until the rank
+    arrays are actually read.
+
+    ``labels`` and ``n_bootstrap`` answer immediately -- a lot of code
+    (``core/summary.py`` especially) reads ``rank_dist.labels`` purely as the
+    canonical label list and must not pay for a rank bootstrap to get it.
+    Reading ``rank_probs``/``expected_ranks``/``p_best`` runs the bootstrap
+    once and caches it, so P(Best)/E[Rank] cost is paid only by callers that
+    actually want those numbers -- matching the opt-in story
+    ``ResultReport._show_rank_probabilities`` already tells for the *output*.
+
+    The generator state is snapshotted at construction rather than the live
+    ``rng`` being held, so a deferred bootstrap draws exactly what an eager
+    one would have drawn. Note the parent ``rng`` is NOT advanced when the
+    ranks go uncomputed, so downstream draws differ from the old
+    always-compute behaviour; the rank distribution itself is unchanged.
+    """
+
+    def __init__(self, labels, n_bootstrap, compute, rng=None):
+        self.labels = list(labels)
+        self.n_bootstrap = n_bootstrap
+        self._compute = compute
+        self._resolved: Optional[RankDistribution] = None
+        self._state = None
+        if rng is not None:
+            try:
+                self._state = (type(rng.bit_generator), rng.bit_generator.state)
+            except Exception:
+                self._state = None
+
+    def _resolve(self) -> RankDistribution:
+        if self._resolved is None:
+            rng = None
+            if self._state is not None:
+                bg_type, state = self._state
+                rng = np.random.Generator(bg_type())
+                rng.bit_generator.state = state
+            self._resolved = self._compute(rng)
+        return self._resolved
+
+    @property
+    def computed(self) -> bool:
+        """True once the bootstrap has actually run."""
+        return self._resolved is not None
+
+    @property
+    def rank_probs(self) -> np.ndarray:
+        return self._resolve().rank_probs
+
+    @property
+    def expected_ranks(self) -> np.ndarray:
+        return self._resolve().expected_ranks
+
+    @property
+    def p_best(self) -> np.ndarray:
+        return self._resolve().p_best
+
+    def __repr__(self) -> str:
+        if self._resolved is None:
+            return (f"LazyRankDistribution(labels={self.labels!r}, "
+                    f"n_bootstrap={self.n_bootstrap}, computed=False)")
+        return repr(self._resolved)
+
+
 def bootstrap_ranks(
     scores: np.ndarray,
     labels: list[str],

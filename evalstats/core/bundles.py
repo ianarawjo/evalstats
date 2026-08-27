@@ -138,6 +138,19 @@ class AnalysisBundle:
     ppi_applied: bool = False
     alignment_result: Optional["AlignmentResult"] = None
 
+    @property
+    def labels(self) -> list[str]:
+        """Canonical entity labels for this bundle.
+
+        The single source of truth is ``benchmark.template_labels`` -- the
+        same list ``core.router`` feeds to every downstream construction.
+        Read this rather than ``rank_dist.labels``: the rank distribution is
+        opt-in work (see ``core.ranking.LazyRankDistribution``), so treating
+        it as the label registry both inverts the dependency and can force a
+        bootstrap nobody asked for.
+        """
+        return list(self.benchmark.template_labels)
+
     def summary(self, **kwargs) -> None:
         """Print the console summary for this bundle.
 
