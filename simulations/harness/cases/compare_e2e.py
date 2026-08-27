@@ -791,7 +791,13 @@ def _run_cell(
             if ppi_frac is not None:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    ar = judge_alignment(evaldata, llm_metric="score", human_groundtruth="human_score")
+                    # ci=False: compare()'s PPI correction reads only the
+                    # alignment POINT ESTIMATES, so the per-metric bootstrap
+                    # CIs judge_alignment() computes by default are pure cost
+                    # here -- verified output-identical, and ~72% of a PPI
+                    # cell's runtime.
+                    ar = judge_alignment(evaldata, llm_metric="score",
+                                         human_groundtruth="human_score", ci=False)
                     kwargs["alignment"] = {"score": ar}
             if classical_rank:
                 kwargs.update(CLASSICAL_RANK_KWARGS)

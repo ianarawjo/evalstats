@@ -174,11 +174,17 @@ def main() -> None:
         try:
             written.append(save_ppi_label_efficiency_lookup_grid(
                 pm_points, str(out / "labeleff_lookup_grid.png")))
+            # compact 1x4 row -- the version the paper prints
+            written.append(save_ppi_label_efficiency_lookup_grid(
+                pm_points, str(out / "labeleff_lookup_row.png"), compact=True))
         except Exception as exc:
             print(f"  (lookup grid skipped: {type(exc).__name__}: {exc})")
         try:
             written.append(save_ppi_label_efficiency_noise_family_plot(
                 pm_points, str(out / "labeleff_plot_noisefamily.png")))
+            # compact version -- the one the paper prints
+            written.append(save_ppi_label_efficiency_noise_family_plot(
+                pm_points, str(out / "labeleff_noisefamily_compact.png"), compact=True))
         except Exception as exc:
             print(f"  (noise-family figure skipped: {type(exc).__name__}: {exc})")
 
