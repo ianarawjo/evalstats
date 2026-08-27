@@ -19,7 +19,7 @@ per-judge comparison.
 
 Real per-app N=300 here (not 50 like the original single-judge dataset),
 so unlike that first pass, this script doesn't need to caveat working at a
-small scale -- the labeling budget (N_LAB=15/app) stays modest by design
+small scale -- the labeling budget (N_LAB=30/app) stays modest by design
 (that's the point of the demo), but the underlying pool is now genuinely
 large.
 
@@ -31,7 +31,7 @@ mechanism):
     TikTok -> FlipFlop        (the app under study)
     Google Maps -> Wavelength (its closest raw-judge "competitor")
     Instagram -> Snippet
-    Facebook -> Bubblegum
+    Facebook -> Razzletazz
 
 Run:
     .venv/bin/python -m simulations.paper_flipflop_example
@@ -57,9 +57,11 @@ APP_ID_TO_REAL_NAME = {
 }
 REAL_NAME_TO_FICTIONAL = {
     "TikTok": "FlipFlop", "Google Maps": "Wavelength",
-    "Instagram": "Snippet", "Facebook": "Bubblegum",
+    "Instagram": "Snippet", "Facebook": "Razzletazz",
 }
-N_LAB = 15  # matches the paper's `evalstats label ... --n-lab 15`
+N_LAB = 30  # matches the paper's `evalstats label ... --n-lab 30`
+PAPER_SEED = 8  # the draw shown in the paper: kappa .78, Pearson .79, Spearman .75,
+                # ICC .78, and theta .46 / p 1.0 / gap -0.41 on FlipFlop-Wavelength
 
 
 def load(data_dir: str) -> pd.DataFrame:
@@ -169,7 +171,7 @@ def main():
 
     print()
     print(f"=== evalstats: PPI-corrected compare(design='unpaired'), n_lab={N_LAB}/app, real labels ===")
-    lab_df = sample_labels(df, N_LAB, seed=42)
+    lab_df = sample_labels(df, N_LAB, seed=PAPER_SEED)
     evaldata = es.load_from(lab_df)
     ar = judge_alignment(
         evaldata, llm_metric="satisfaction_score", human_groundtruth="human_score",
