@@ -223,7 +223,67 @@ def _ppi_gain_se(results, et, n_lab):
     return float(np.sqrt(a * (1 - a) / den + b * (1 - b) / sden) * 100.0)
 
 
-def _panel_ppi_budget(ax, results, show_err=False):
+#: Spearman rho^2 of judge against truth, measured on compare_e2e's own DGP
+#: (all shapes, judge bias applied, at DEFAULT_ICC). Spearman rather than
+#: Pearson because the path under test is rank-based -- Friedman/Wilcoxon --
+#: which is the choice the paper's Table "which rho" prescribes. Reproduce with
+#: _apply_judge_noise over _tier_shapes and scipy.stats.spearmanr; the DGP's
+#: own docstring targets ~0.64 on each eval type's FIRST shape, so pooling all
+#: of them lands lower.
+JUDGE_RHO2 = {"binary": 0.526, "continuous": 0.454, "likert": 0.590}
+
+
+def _predicted_gain(results, et):
+    """Paper's label-efficiency prediction, as a power gain at each budget.
+
+    The multiplier 1/(1 - rho^2 (1 - N_lab/N)) says PPI with N_lab labels
+    should behave like a human-only sample of `multiplier x N_lab`. Turning
+    that into a power gain needs the labels-only power curve, which this run
+    measures directly: read the observed subset-only power at `multiplier x
+    N_lab` and subtract the observed power at N_lab. So this is the paper's
+    formula supplying the x-shift, and the simulation supplying the curve --
+    no fitted parameters.
+
+    Interpolated in log(labels). Where multiplier x N_lab exceeds the largest
+    budget actually run, the read is an extrapolation off the end of the
+    measured curve and is flagged by the caller.
+    """
+    r2 = JUDGE_RHO2.get(et)
+    if r2 is None:
+        return []
+    ks = _ref_ks([r for r in results if r.eval_type == et])
+    groups: dict[tuple[int, float], list] = {}
+    for r in results:
+        if (r.eval_type != et or r.is_null or not r.ppi_config.startswith("frac=")
+                or (ks and r.k not in ks)):
+            continue
+        groups.setdefault((r.n_items, float(r.ppi_config.split("=", 1)[1])), []).append(r)
+
+    curve: dict[int, float] = {}
+    for (n_items, frac), rs in groups.items():
+        sden = sum(x.subset_n_ok for x in rs)
+        if sden:
+            curve[int(round(frac * n_items))] = sum(x.subset_extreme_reject for x in rs) / sden
+    if len(curve) < 2:
+        return []
+    xs = np.log(sorted(curve))
+    ys = [curve[k] for k in sorted(curve)]
+    cap = max(curve)
+
+    out = []
+    for (n_items, frac), rs in groups.items():
+        sden = sum(x.subset_n_ok for x in rs)
+        if not sden:
+            continue
+        n_lab = int(round(frac * n_items))
+        base = sum(x.subset_extreme_reject for x in rs) / sden
+        mult = 1.0 / (1.0 - r2 * (1.0 - frac))
+        pred = float(np.interp(np.log(mult * n_lab), xs, ys))
+        out.append((n_lab, (pred - base) * 100.0, mult * n_lab > cap))
+    return out
+
+
+def _panel_ppi_budget(ax, results, show_err=False, predict=False):
     """Gain against the absolute labelling budget -- see _ppi_cells."""
     for et in ET_ORDER:
         cells = _ppi_cells(results, et)
@@ -243,9 +303,24 @@ def _panel_ppi_budget(ax, results, show_err=False):
         else:
             ax.plot(xs, ys, marker=ET_MARK[et], ms=3.2, lw=1.3,
                     color=ET_COLOR[et], label=et, zorder=3)
+    if predict:
+        for et in ET_ORDER:
+            pr = _predicted_gain(results, et)
+            if not pr:
+                continue
+            xs = sorted({c[0] for c in pr})
+            ys = [float(np.mean([c[1] for c in pr if c[0] == x])) for x in xs]
+            ax.plot(xs, ys, ls=":", lw=1.1, color=ET_COLOR[et], alpha=0.9, zorder=4,
+                    marker="", label="_nolegend_")
     ax.axhline(0, color="black", ls="--", lw=0.9)
     ax.set_ylabel("PPI power gain\n(percentage points)")
     ax.set_title("pooled over N and budget %", fontsize=6.5, pad=2)
+    if predict:
+        h = ax.get_legend_handles_labels()[0]
+        import matplotlib.pyplot as _plt
+        h = list(h) + [_plt.Line2D([], [], color="0.35", ls=":", lw=1.1)]
+        ax.legend(h, ET_ORDER + ["predicted"], frameon=False, handletextpad=0.4,
+                  borderpad=0.2, labelspacing=0.2, loc="upper right")
 
 
 def _by_n(rows, fn):
@@ -470,7 +545,8 @@ def power_views(results, out, width, height):
     return out
 
 
-def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", ppi_err=False):
+def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n",
+          ppi_err=False, ppi_predict=False):
     import matplotlib.pyplot as plt
     if style == "full":
         fig, axgrid = plt.subplots(2, 3, figsize=(width, height))
@@ -489,7 +565,7 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", p
         _panel_cov_by_ppi(axes[3], results, t)
         _panel_type1(axes[4], results, alpha, by_ppi=True)
         axes[4].set_title("plain FWER vs PPI+FWER", fontsize=6.5, pad=2)
-        _panel_ppi_budget(axes[5], results, show_err=ppi_err)
+        _panel_ppi_budget(axes[5], results, show_err=ppi_err, predict=ppi_predict)
         lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
         panel_sizes = [cov_ns, sorted({r.n_items for r in results if r.k == 2}),
                        cov_ns, cov_ns, cov_ns, lab_ns]
@@ -531,7 +607,7 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", p
     else:
         _panel_type1(axes[1], results, alpha)
         if ppi_x == "budget":
-            _panel_ppi_budget(axes[2], results, show_err=ppi_err)
+            _panel_ppi_budget(axes[2], results, show_err=ppi_err, predict=ppi_predict)
             lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
             panel_sizes = [cov_ns, cov_ns, lab_ns]
         else:
@@ -581,6 +657,9 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
     ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--ppi-predict", action="store_true",
+                    help="Overlay the paper's label-efficiency prediction "
+                         "1/(1-rho^2(1-N_lab/N)) on the budget panel (dotted).")
     ap.add_argument("--ppi-err", action="store_true",
                     help="Draw Monte-Carlo error bars on the budget panel. They are "
                          "CONSERVATIVE (independence-assuming) because the paired joint "
@@ -616,7 +695,7 @@ def main():
         pf = None if str(a.ppi_frac).lower() == "all" else float(a.ppi_frac)
         out = multi(results, a.out, a.style, w,
                     a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf,
-                    a.ppi_x, a.ppi_err)
+                    a.ppi_x, a.ppi_err, a.ppi_predict)
     print(f"wrote {out}")
 
 
