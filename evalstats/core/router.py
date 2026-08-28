@@ -30,7 +30,7 @@ from .bundles import (
     AnalysisResult,
 )
 from .paired import all_pairwise
-from .ranking import bootstrap_ranks
+from .ranking import LazyRankDistribution, bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
 from ..config import get_alpha_ci, resolve_auto_analyze_methods
 
@@ -106,6 +106,7 @@ def analyze(
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     ci_style: Literal["gradient", "line"] = "gradient",
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -175,14 +176,20 @@ def analyze(
           The backend is controlled by the ``backend`` parameter.
         * ``'wilson'`` — Binary-only frequentist mode. Uses Wilson score
             intervals for point-advantage CIs and Newcombe score intervals
-            (+ exact McNemar p-values) for pairwise comparisons.
+            (+ McNemar mid-p p-values) for pairwise comparisons.
         * ``'newcombe'`` — Binary-only frequentist mode. Alias of
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
-            Newcombe score intervals (+ exact McNemar p-values), while
+            Newcombe score intervals (+ McNemar mid-p p-values), while
             point-advantage CIs use Wilson score intervals.
+        * ``'mj_floor'`` — Binary-only frequentist mode. Pairwise
+            comparisons use the floored May & Johnson (1997) score interval
+            (+ McNemar mid-p p-values), while point-advantage CIs use Wilson
+            score intervals. This is what ``'auto'`` selects for binary
+            pairwise comparisons.
         * ``'tango'`` — Binary-only frequentist mode. Pairwise comparisons
-            use Tango score intervals (+ exact McNemar p-values), while
-            point-advantage CIs use Wilson score intervals.
+            use the exact Tango (1998) score interval (+ McNemar mid-p
+            p-values), while point-advantage CIs use Wilson score intervals.
+            Single-run data only; it has no multi-run form.
     backend : str
         LMM fitting backend (only used when ``method='lmm'``):
         ``'statsmodels'`` (default, pure Python, no R required) or
@@ -267,10 +274,25 @@ def analyze(
         The eval metric's true ``(min, max)`` range, e.g. ``(0, 1)`` for
         normalised accuracy or ``(1, 5)`` for a Likert scale. Only used for
         numeric (non-binary) data routed to a bounds-dependent method (the
-        ``'auto'`` default, or explicit ``method='logit_t'``); ignored
-        otherwise. Declaring this explicitly is strongly recommended for
-        any metric whose natural range isn't already exactly ``[0, 1]``,
-        since evalstats has no reliable way to infer it on its own.
+        ``'auto'`` default, or explicit ``method='logit_t'``/``'nig'``);
+        ignored otherwise. Declaring this explicitly is strongly
+        recommended for any metric whose natural range isn't already
+        exactly ``[0, 1]``, since evalstats has no reliable way to infer
+        it on its own.
+    eval_type : {"likert", "continuous"}, optional
+        Only used with ``method='auto'`` and a known/declared
+        ``score_range``. Distinguishes discrete/ordinal data (a Likert
+        scale, an integer percentage grade) from genuinely continuous
+        data within the same bounded range. When omitted (default),
+        evalstats auto-detects discreteness from the data's own
+        quantization grid and emits a ``UserWarning`` if it switches to
+        the Likert treatment -- pass this explicitly to silence that
+        warning either way. This changes every pairwise-comparison CI
+        (NIG instead of logit-t) -- single-run, seeded/multi-run, and the
+        k>=3 simultaneous-CI construction alike -- see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row for the
+        validation. Marginal/robustness CIs still use logit-t for likert
+        data, pending their own dedicated validation.
 
         When omitted, evalstats always prints a ``UserWarning`` announcing
         what it assumed and which method it picked as a result:
@@ -334,7 +356,7 @@ def analyze(
 
     include_multi_ci = ci_style == "gradient"
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "sign_test", "t_interval", "logit_t"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "mj_floor", "newcombe", "tango", "permutation", "sign_test", "t_interval", "logit_t"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -362,6 +384,7 @@ def analyze(
         p_value_method=resolved_p_value_method,
         include_multi_ci=include_multi_ci,
         score_range=score_range,
+        eval_type=eval_type,
     )
 
     # ------------------------------------------------------------------
@@ -742,6 +765,142 @@ def analyze_factorial(
 # Internal analysis runners
 # ---------------------------------------------------------------------------
 
+def resolve_auto_robustness_method(
+    run_scores: np.ndarray,
+    *,
+    score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
+    stacklevel: int = 2,
+) -> tuple[str, str, Optional[tuple[float, float]], str]:
+    """Auto-detect data kind (binary / likert / bounded_01 / unbounded) and
+    resolve it to concrete (pairwise_method, robustness_method,
+    resolved_score_range, data_kind).
+
+    This is the exact "method='auto'" routing logic ``analyze()``/``compare()``
+    use internally, factored out so the quick-primitive functions
+    (``mean_ci``/``summarize`` in ``evalstats.quick``) can reuse it directly
+    rather than re-deriving calibration choices in a second place that could
+    silently drift out of sync with ``compare()``'s.
+
+    Parameters
+    ----------
+    run_scores : np.ndarray
+        Shape ``(N, M)`` or ``(N, M, R)``. Only the shape and values matter
+        here (dtype/range/binary-ness detection and R for seeded routing) --
+        not which entity is which.
+    score_range : (float, float), optional
+        Explicit ``[lo, hi]`` bounds, forwarded to :func:`resolve_score_bounds`.
+    eval_type : {"likert", "continuous"}, optional
+        Hint disambiguating discrete/ordinal (Likert-style) data from
+        continuous bounded data when both look the same from the raw
+        values alone. When omitted, discrete/ordinal data is auto-detected
+        from its own quantization grid (see :func:`detect_quantization_step`).
+        Ignored (with a warning) for binary data, which always uses the
+        binary methods regardless of this hint.
+    stacklevel : int
+        Forwarded to any ``UserWarning`` raised here, so it points at the
+        caller's caller appropriately regardless of how many wrapper frames
+        sit between the actual user call and this function.
+
+    Returns
+    -------
+    tuple[str, str, tuple[float, float] or None, str]
+        ``(pairwise_method, robustness_method, resolved_score_range, data_kind)``.
+    """
+    from .resampling import binary_routing_applies, resolve_score_bounds, detect_quantization_step
+
+    if run_scores.ndim == 3:
+        R = run_scores.shape[2]
+        N = run_scores.shape[1]
+    else:
+        R = 1
+        N = run_scores.shape[1]
+
+    if eval_type not in (None, "likert", "continuous"):
+        raise ValueError(f"eval_type must be 'likert', 'continuous', or None, got {eval_type!r}")
+
+    resolved_score_range: Optional[tuple[float, float]] = None
+    # An explicitly passed score_range wider than [0, 1] overrides binary
+    # auto-detection (and says so) -- see binary_routing_applies.
+    if binary_routing_applies(run_scores, score_range, stacklevel=stacklevel + 1):
+        data_kind = "binary"
+        if eval_type is not None:
+            warnings.warn(
+                f"eval_type={eval_type!r} was given, but the data was "
+                "auto-detected as binary (0/1) -- binary data always uses "
+                "the binary methods regardless of eval_type, so this hint "
+                "was ignored.",
+                UserWarning,
+                stacklevel=stacklevel,
+            )
+    else:
+        # resolve_score_bounds returns a [lo, hi] range (with a
+        # UserWarning if it had to auto-detect [0, 1] rather than being
+        # told explicitly) when one can be reliably established, or None
+        # when the data falls outside [0, 1] and no score_range was
+        # given -- there's no safe way to infer a metric's true bounds
+        # from an arbitrary numeric sample's own min/max. In the None
+        # case, auto silently downgrades to the bounds-agnostic
+        # "unbounded" (t_interval) row below, but says so loudly.
+        resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=stacklevel + 1)
+        if resolved_score_range is not None:
+            if eval_type == "likert":
+                data_kind = "likert"
+            elif eval_type == "continuous":
+                data_kind = "bounded_01"
+            else:
+                # No explicit hint: auto-detect discrete/ordinal (Likert-
+                # style) data from its own quantization grid rather than
+                # assuming continuous -- see detect_quantization_step's
+                # docstring and config.AUTO_ANALYZE_METHOD_TABLE's
+                # "likert" row for why this matters (NIG vs logit-t).
+                step = detect_quantization_step(run_scores)
+                if step is not None:
+                    data_kind = "likert"
+                    warnings.warn(
+                        f"Bounded numeric evaluation data was auto-detected "
+                        f"as discrete/ordinal (grid step={step:g} within "
+                        f"range {resolved_score_range}). For pairwise "
+                        "comparisons (single-run and multi-run alike), "
+                        "evalstats uses NIG (validated as better-calibrated "
+                        "than logit-t there for this kind of data); "
+                        "marginal/robustness CIs on this data still use "
+                        "logit-t, the same as continuous data, pending "
+                        "their own validation -- see "
+                        "config.AUTO_ANALYZE_METHOD_TABLE's 'likert' row. "
+                        "Pass eval_type='likert' explicitly to silence this "
+                        "warning, or eval_type='continuous' if this "
+                        "discreteness is coincidental (e.g. a metric that "
+                        "happens to only take a few values in your sample).",
+                        UserWarning,
+                        stacklevel=stacklevel,
+                    )
+                else:
+                    data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+            # Direct warn() call, one frame shallower than the
+            # resolve_score_bounds() delegation above (no extra frame in
+            # between) -- stacklevel here, not stacklevel + 1.
+            warnings.warn(
+                "Numeric evaluation data outside [0, 1] was auto-detected "
+                "with no explicit score_range, so evalstats is using "
+                "method='t_interval' (a bounds-agnostic default) rather "
+                "than the better-calibrated logit-t/NIG methods. If you "
+                "know this eval metric's true (min, max) range, pass it "
+                "explicitly, e.g. score_range=(1, 5) for a Likert scale "
+                "or score_range=(0, 100) for a percentage grade.",
+                UserWarning,
+                stacklevel=stacklevel,
+            )
+    # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
+    # (which method is chosen for which data kind / N / seeded combination).
+    pairwise_method, robustness_method = resolve_auto_analyze_methods(
+        data_kind, N, seeded=R >= 3,
+    )
+    return pairwise_method, robustness_method, resolved_score_range, data_kind
+
+
 def _analyze_single(
     result: BenchmarkResult,
     shape: BenchmarkShape,
@@ -761,6 +920,7 @@ def _analyze_single(
     p_value_method: Optional[str] = None,
     include_multi_ci: bool = True,
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -850,41 +1010,12 @@ def _analyze_single(
     pairwise_method = method
     robustness_method = method
     resolved_score_range: Optional[tuple[float, float]] = None
+    # Only the "auto" branch resolves a data kind; stays None otherwise so
+    # the bundle records "no resolution happened" rather than a guess.
+    data_kind: Optional[str] = None
     if method == "auto":
-        from .resampling import is_binary_scores, resolve_score_bounds
-        R = run_scores.shape[2]
-        N = run_scores.shape[1]
-        if is_binary_scores(run_scores):
-            data_kind = "binary"
-        else:
-            # resolve_score_bounds returns a [lo, hi] range (with a
-            # UserWarning if it had to auto-detect [0, 1] rather than being
-            # told explicitly) when one can be reliably established, or None
-            # when the data falls outside [0, 1] and no score_range was
-            # given -- there's no safe way to infer a metric's true bounds
-            # from an arbitrary numeric sample's own min/max. In the None
-            # case, auto silently downgrades to the bounds-agnostic
-            # "unbounded" (t_interval) row below, but says so loudly.
-            resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=2)
-            if resolved_score_range is not None:
-                data_kind = "bounded_01"
-            else:
-                data_kind = "unbounded"
-                warnings.warn(
-                    "Numeric evaluation data outside [0, 1] was auto-detected "
-                    "with no explicit score_range, so evalstats is using "
-                    "method='t_interval' (a bounds-agnostic default) rather "
-                    "than the better-calibrated logit-t method. If you know "
-                    "this eval metric's true (min, max) range, pass it "
-                    "explicitly, e.g. score_range=(1, 5) for a Likert scale "
-                    "or score_range=(0, 100) for a percentage grade.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
-        # (which method is chosen for which data kind / N / seeded combination).
-        pairwise_method, robustness_method = resolve_auto_analyze_methods(
-            data_kind, N, seeded=R >= 3,
+        pairwise_method, robustness_method, resolved_score_range, data_kind = resolve_auto_robustness_method(
+            run_scores, score_range=score_range, eval_type=eval_type, stacklevel=2,
         )
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
@@ -897,7 +1028,7 @@ def _analyze_single(
         # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         robustness_method = "wilson"
-    elif method in {"wilson", "newcombe", "tango"}:
+    elif method in {"wilson", "newcombe", "tango", "mj_floor", "bonett_price"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -905,11 +1036,11 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        if method == "tango":
-            pairwise_method = "tango"
+        if method in ("tango", "mj_floor", "bonett_price"):
+            pairwise_method = method
         else:
             # In analyze(), explicit frequentist binary methods route to:
-            #   - pairwise Newcombe + exact McNemar p-values
+            #   - pairwise Newcombe + McNemar mid-p p-values
             #   - single-sample marginal Wilson score CIs
             pairwise_method = "newcombe"
         robustness_method = "wilson"
@@ -927,6 +1058,32 @@ def _analyze_single(
                 "(e.g. score_range=(1, 5) for a Likert scale), or use a "
                 "different method (e.g. method='t_interval')."
             )
+    elif method == "nig":
+        from .resampling import resolve_score_bounds
+        resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=2)
+        if resolved_score_range is None:
+            raise ValueError(
+                "method='nig' requires data with an inferable [lo, hi] "
+                "range, but the scores fall outside [0, 1] and no "
+                "score_range was given. Pass score_range=(lo, hi) explicitly "
+                "(e.g. score_range=(1, 5) for a Likert scale), or use a "
+                "different method (e.g. method='t_interval')."
+            )
+
+    # eval_type resolved for the simultaneous-CI widening formula: reuse
+    # the "auto" branch's already-made data_kind decision so it isn't
+    # independently re-detected (and re-warned about) inside all_pairwise
+    # -> _simultaneous_cis_router; for an explicit (non-"auto") method,
+    # just pass through whatever eval_type the caller gave (possibly None,
+    # in which case _simultaneous_cis_router does its own detection).
+    if method == "auto":
+        resolved_eval_type = (
+            "likert" if data_kind == "likert"
+            else "continuous" if data_kind == "bounded_01"
+            else None
+        )
+    else:
+        resolved_eval_type = eval_type
 
     pairwise = all_pairwise(
         run_scores, labels,
@@ -934,6 +1091,7 @@ def _analyze_single(
         correction=correction, rng=rng, statistic=statistic,
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
         multi_ci=include_multi_ci, score_range=resolved_score_range,
+        eval_type=resolved_eval_type,
     )
     robustness = robustness_metrics(
         run_scores, labels,
@@ -946,9 +1104,16 @@ def _analyze_single(
         multi_ci=include_multi_ci,
         score_range=resolved_score_range,
     )
-    rank_dist = bootstrap_ranks(
-        run_scores, labels,
-        n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+    # Deferred: nothing here computes the rank bootstrap unless a caller
+    # actually reads rank_probs/expected_ranks/p_best. See
+    # LazyRankDistribution -- .labels/.n_bootstrap stay free.
+    rank_dist = LazyRankDistribution(
+        labels, n_bootstrap,
+        lambda _rng: bootstrap_ranks(
+            run_scores, labels,
+            n_bootstrap=n_bootstrap, rng=_rng, statistic=statistic,
+        ),
+        rng=rng,
     )
 
     seed_var = None
@@ -965,6 +1130,7 @@ def _analyze_single(
         resolved_method=pairwise_method,
         resolved_ci_method=robustness_method,
         resolved_score_range=resolved_score_range,
+        resolved_data_kind=data_kind,
         p_value_method=p_value_method,
     )
 
@@ -1039,10 +1205,11 @@ def _analyze_multi_model(
     p_value_method: Optional[str] = None,
     include_multi_ci: bool = True,
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
 ) -> MultiModelBundle:
     from .resampling import is_binary_scores
 
-    fallback_binary_methods = {"wilson", "newcombe", "tango"}
+    fallback_binary_methods = {"wilson", "newcombe", "tango", "mj_floor", "bonett_price"}
 
     def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
         """Fallback only for frequentist binary methods on auxiliary non-binary views."""
@@ -1066,6 +1233,7 @@ def _analyze_multi_model(
         p_value_method=p_value_method,
         include_multi_ci=include_multi_ci,
         score_range=score_range,
+        eval_type=eval_type,
     )
 
     per_model: Dict[str, AnalysisBundle] = {}

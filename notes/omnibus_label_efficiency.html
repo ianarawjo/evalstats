@@ -1,0 +1,392 @@
+<title>Omnibus Label-Efficiency Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  :root {
+    --paper:#F4F6F3; --surface:#FFFFFF; --surface-alt:#EBEEEA;
+    --ink:#14181C; --ink-soft:#4A555D; --ink-faint:#7A858D;
+    --rule:#D3D9D4; --rule-strong:#B4BDB6;
+    --accent:#0B6E70; --accent-soft:#E0EDEC;
+    --ok:#2C6E49; --ok-bg:#E2EFE7; --warn:#8A5A00; --bad:#A33A1E; --bad-bg:#F6E4DE;
+    --shadow:0 1px 2px rgba(20,24,28,.06), 0 6px 18px rgba(20,24,28,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#0E1315; --surface:#161D20; --surface-alt:#1D262A;
+      --ink:#E4EAE6; --ink-soft:#A3B0AE; --ink-faint:#778583;
+      --rule:#2A3539; --rule-strong:#3C4A4E;
+      --accent:#5CC5C0; --accent-soft:#16302F;
+      --ok:#6FC08D; --ok-bg:#16301F; --warn:#D9A441; --bad:#E08163; --bad-bg:#34190F;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0E1315; --surface:#161D20; --surface-alt:#1D262A;
+    --ink:#E4EAE6; --ink-soft:#A3B0AE; --ink-faint:#778583;
+    --rule:#2A3539; --rule-strong:#3C4A4E;
+    --accent:#5CC5C0; --accent-soft:#16302F;
+    --ok:#6FC08D; --ok-bg:#16301F; --warn:#D9A441; --bad:#E08163; --bad-bg:#34190F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.3);
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 17px; line-height: 1.6; margin: 0; padding: 0 1.5rem 5rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 49rem; margin: 0 auto; }
+  .wide { max-width: 66rem; margin: 0 auto; }
+  h1, h2, h3, .ui { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  .mono, code { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
+
+  header.mast { border-bottom: 2px solid var(--ink); padding: 3.5rem 0 1.2rem; margin-bottom: 2rem; }
+  .eyebrow { font-family:"IBM Plex Mono",monospace; font-size:.72rem; letter-spacing:.14em;
+             text-transform:uppercase; color:var(--accent); margin:0 0 .9rem; }
+  h1 { font-size: clamp(1.9rem,4.6vw,2.6rem); line-height:1.1; font-weight:600;
+       letter-spacing:-.02em; margin:0 0 .8rem; text-wrap:balance; }
+  .standfirst { font-size:1.12rem; color:var(--ink-soft); margin:0; max-width:40rem; }
+
+  section { margin: 3rem 0 0; }
+  h2 { font-size:1.4rem; font-weight:600; letter-spacing:-.01em; margin:0 0 .8rem; text-wrap:balance; }
+  h2 .kicker { display:block; font-family:"IBM Plex Mono",monospace; font-size:.7rem;
+               font-weight:500; letter-spacing:.14em; text-transform:uppercase;
+               color:var(--ink-faint); margin-bottom:.4rem; }
+  h3 { font-size:1rem; font-weight:600; margin:1.8rem 0 .4rem; }
+  p { margin: 0 0 1rem; }
+  code { font-size:.87em; background:var(--surface-alt); border-radius:3px; padding:.1em .35em; }
+  strong { font-weight:600; }
+
+  .formula { background:var(--surface); border:1px solid var(--rule); border-left:3px solid var(--accent);
+             border-radius:4px; padding:1rem 1.25rem; margin:1.2rem 0;
+             font-family:"IBM Plex Mono",monospace; font-size:.85rem; line-height:1.85; overflow-x:auto; }
+  .formula .an { color:var(--ink-faint); font-size:.78rem; }
+
+  .answer { background:var(--accent-soft); border-radius:5px; padding:1rem 1.25rem; margin:1.1rem 0; }
+  .answer p { margin:0; font-size:.98rem; line-height:1.55; }
+  .answer .lbl { font-family:"IBM Plex Sans",sans-serif; font-size:.72rem; font-weight:600;
+                 letter-spacing:.08em; color:var(--accent);
+                 display:block; margin-bottom:.4rem; }
+
+  .tablewrap { overflow-x:auto; border:1px solid var(--rule); border-radius:6px;
+               background:var(--surface); box-shadow:var(--shadow); margin:1.2rem 0 .5rem; }
+  table { border-collapse:collapse; width:100%; font-size:.86rem; }
+  caption { caption-side:top; text-align:left; font-family:"IBM Plex Sans",sans-serif;
+            font-size:.77rem; color:var(--ink-faint); padding:.8rem 1rem .55rem; }
+  th, td { padding:.45rem .8rem; text-align:left; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  /* NB: no text-transform -- uppercasing turns Greek rho into a capital Rho,
+     which is visually identical to a Latin P and misreads the headers. */
+  thead th { font-family:"IBM Plex Sans",sans-serif; font-size:.72rem; font-weight:600;
+             letter-spacing:.05em; color:var(--ink-faint);
+             border-bottom:1px solid var(--rule-strong); background:var(--surface-alt); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.label { font-family:"IBM Plex Mono",monospace; font-size:.79rem; color:var(--ink-soft); }
+  tbody tr:last-child td { border-bottom:none; }
+  .hit { color:var(--ok); font-weight:600; }
+  .miss { color:var(--bad); font-weight:600; }
+  .mid { color:var(--warn); font-weight:500; }
+  .bite { color:var(--bad); font-weight:700; background:var(--bad-bg); }
+  .tnote { font-size:.83rem; color:var(--ink-faint); margin:0 0 1.2rem; line-height:1.5; }
+
+  .verdict { display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule);
+             border-radius:6px; overflow:hidden; box-shadow:var(--shadow); margin:1.2rem 0; }
+  .vrow { background:var(--surface); display:grid; grid-template-columns:13rem 1fr;
+          gap:1.1rem; padding:.95rem 1.2rem; align-items:baseline; }
+  @media (max-width:44rem){ .vrow{ grid-template-columns:1fr; gap:.35rem; } }
+  .vname { font-family:"IBM Plex Mono",monospace; font-size:.82rem; color:var(--ink); }
+  .vrho { font-size:.95rem; color:var(--ink-soft); }
+  .vrho b { color:var(--ink); font-weight:600; }
+
+  footer { margin-top:3.5rem; border-top:2px solid var(--ink); padding-top:1.3rem;
+           font-size:.86rem; color:var(--ink-soft); }
+  footer h2 { font-size:1.05rem; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important;} }
+</style>
+
+<div class="wrap">
+  <header class="mast">
+    <p class="eyebrow">Monte Carlo verification · evalstats</p>
+    <h1>Which ρ do the four PPI omnibus tests actually follow?</h1>
+    <p class="standfirst">The N<sub>eff</sub> equation itself is exact for all four. Only the choice of ρ is in question — and for the two repeated-measures tests, the paper names the wrong one. A second finding: ρ is a fixed property of the judge only for the mean-based tests.</p>
+  </header>
+
+  <section>
+    <h2><span class="kicker">Setup</span>The equation, and how it was tested</h2>
+    <p>The claim under test is</p>
+    <div class="formula">
+      N<sub>eff</sub> = N<sub>lab</sub> / ( 1 − ρ² · (1 − N<sub>lab</sub>/N) )
+    </div>
+    <p>This form is not an approximation here. All four shipped corrections estimate a vector <code>H + λ·R</code> (human-labeled term plus power-tuned rectifier), and minimising over λ gives exactly the expression above — so the equation is right by construction, and everything reduces to <em>which ρ</em> goes in it.</p>
+    <p>To answer that without assuming an answer, each test's multiplier M = N<sub>eff</sub>/N<sub>lab</sub> was measured by Monte Carlo, then the equation was <strong>inverted</strong> to recover the ρ² the data actually implies:</p>
+    <div class="formula">
+      ρ²<sub>implied</sub> = ( 1 − 1/M ) / ( 1 − N<sub>lab</sub>/N )
+    </div>
+    <p>Whichever candidate recipe equals ρ²<sub>implied</sub> is the ρ that test follows. Every table below reports both that and the N<sub>eff</sub> each recipe would have told a researcher to expect, against the N<sub>eff</sub> actually measured. Throughout: N = 1000, N<sub>lab</sub> = 100, judge quality held fixed at within-condition ρ = 0.8, 8000 replicates per cell.</p>
+
+    <div class="verdict">
+      <div class="vrow"><div class="vname">anova_oneway</div>
+        <div class="vrho">Pearson, <b>within each condition</b> — as the paper says. Use a pooled within-condition correlation, not an average of per-condition ones.</div></div>
+      <div class="vrow"><div class="vname">kruskalwallis</div>
+        <div class="vrho">Spearman, <b>within each condition</b> — as the paper says, with the same pooling caveat and a mild drift at large effects.</div></div>
+      <div class="vrow"><div class="vname">anova_oneway(repeated)</div>
+        <div class="vrho">Pearson on <b>doubly-centred</b> scores — participant means <em>and</em> condition means removed. Not row-centring alone.</div></div>
+      <div class="vrow"><div class="vname">friedman</div>
+        <div class="vrho">Pearson on <b>doubly-centred within-subject ranks</b>. Not the average per-participant Spearman.</div></div>
+    </div>
+  </section>
+
+  <!-- ─────────────── anova_oneway ─────────────── -->
+  <section>
+    <h2><span class="kicker">Method 1 of 4</span>One-way ANOVA, independent groups</h2>
+    <div class="answer">
+      <span class="lbl">The ρ it follows</span>
+      <p>The Pearson correlation between judge and human scores <strong>within a condition</strong>, pooled across conditions — centre each condition's scores on that condition's own mean, stack them, take one correlation. The paper's recipe is correct; only its aggregation step needs tightening.</p>
+    </div>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>ρ²<sub>implied</sub> recovered by inverting the N<sub>eff</sub> equation, vs. each candidate. Parenthesised numbers are the N<sub>eff</sub> that candidate predicts.</caption>
+      <thead><tr><th>Judge</th><th class="num">d</th><th class="num">N<sub>eff</sub> measured</th><th class="num">ρ²<sub>implied</sub></th>
+      <th class="num">paper: avg per-condition r</th><th class="num">pooled within-condition</th></tr></thead>
+      <tbody>
+        <tr><td class="label">clean</td><td class="num">0.5</td><td class="num">235</td><td class="num">0.638</td><td class="num hit">0.642 (237)</td><td class="num hit">0.642 (237)</td></tr>
+        <tr><td class="label">clean</td><td class="num">1.0</td><td class="num">235</td><td class="num">0.638</td><td class="num hit">0.642 (237)</td><td class="num hit">0.642 (237)</td></tr>
+        <tr><td class="label">uneven quality</td><td class="num">0.5</td><td class="num">141</td><td class="num">0.325</td><td class="num miss">0.450 (168)</td><td class="num hit">0.329 (142)</td></tr>
+        <tr><td class="label">uneven slope</td><td class="num">0.5</td><td class="num">207</td><td class="num">0.574</td><td class="num hit">0.565 (203)</td><td class="num hit">0.581 (210)</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>Effect-invariant, as it should be: the judge did not change between d = 0.5 and d = 1.0, and ρ²<sub>implied</sub> does not move (0.638 both times). Within-condition centring is what makes that work — it removes the between-condition signal that the judge and humans share.</p>
+    <p>The one gap is aggregation. "Use a weighted average" of per-condition correlations is fine when the judge is equally good everywhere, but when one condition is harder for the judge (here, 3× noisier) averaging over-predicts by 19% — 168 effective labels against a real 141. The algebra calls for summing covariances and variances, not averaging correlations, which is one pooled correlation on condition-centred scores. That lands on 142.</p>
+  </section>
+
+  <!-- ─────────────── kruskalwallis ─────────────── -->
+  <section>
+    <h2><span class="kicker">Method 2 of 4</span>Kruskal–Wallis</h2>
+    <div class="answer">
+      <span class="lbl">The ρ it follows</span>
+      <p>Spearman <strong>within a condition</strong> — the paper's recipe, correct to within a few percent for a homogeneous judge. Two caveats: it drifts optimistic at large effects, and under uneven judge quality no pooling fix exists (ranking within a condition equalises variances, so pooled and averaged coincide); the harmonic mean of per-condition ρ<sub>S</sub>² is the better estimate there.</p>
+    </div>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>As above. "Harmonic" = harmonic mean of the per-condition ρ<sub>S</sub>².</caption>
+      <thead><tr><th>Judge</th><th class="num">d</th><th class="num">N<sub>eff</sub> measured</th><th class="num">ρ²<sub>implied</sub></th>
+      <th class="num">paper: avg per-condition ρ<sub>S</sub></th><th class="num">harmonic</th></tr></thead>
+      <tbody>
+        <tr><td class="label">clean</td><td class="num">0.5</td><td class="num">220</td><td class="num">0.606</td><td class="num hit">0.620 (226)</td><td class="num hit">0.620 (226)</td></tr>
+        <tr><td class="label">clean</td><td class="num">1.0</td><td class="num">209</td><td class="num">0.578</td><td class="num mid">0.620 (226)</td><td class="num mid">0.620 (226)</td></tr>
+        <tr><td class="label">uneven quality</td><td class="num">0.5</td><td class="num">142</td><td class="num">0.330</td><td class="num miss">0.431 (163)</td><td class="num hit">0.312 (139)</td></tr>
+        <tr><td class="label">squashed (nonlinear)</td><td class="num">0.5</td><td class="num">156</td><td class="num">0.398</td><td class="num hit">0.385 (153)</td><td class="num hit">0.383 (153)</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>Unlike the parametric ANOVA, ρ²<sub>implied</sub> is not quite effect-invariant: 0.606 at d = 0.5 falls to 0.578 at d = 1.0, so the recipe runs 8% optimistic on N<sub>eff</sub> at the larger effect. That is the same rank-nonlinearity that hits Friedman much harder, in mild form. For planning purposes the paper's recipe is serviceable; treat it as a ceiling rather than a point estimate.</p>
+  </section>
+
+  <!-- ─────────────── anova_rm ─────────────── -->
+  <section>
+    <h2><span class="kicker">Method 3 of 4</span>Repeated-measures ANOVA</h2>
+    <div class="answer">
+      <span class="lbl">The ρ it follows</span>
+      <p>Pearson on <strong>doubly-centred</strong> scores: subtract each participant's own mean <em>and</em> each condition's mean, from both the judge's and the humans' scores, then correlate the residuals across participants. The paper stops after the participant means, which leaves the condition effect inside the correlation.</p>
+    </div>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>The judge is identical in every row; only the design changes. A correct recipe must therefore stay flat.</caption>
+      <thead><tr><th>Judge</th><th class="num">k</th><th class="num">d</th><th class="num">N<sub>eff</sub> measured</th><th class="num">ρ²<sub>implied</sub></th>
+      <th class="num">paper: row-centred</th><th class="num">doubly-centred</th></tr></thead>
+      <tbody>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">0.0</td><td class="num">239</td><td class="num">0.646</td><td class="num hit">0.640 (236)</td><td class="num hit">0.640 (236)</td></tr>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">0.5</td><td class="num">239</td><td class="num">0.646</td><td class="num mid">0.689 (263)</td><td class="num hit">0.640 (236)</td></tr>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">1.0</td><td class="num">239</td><td class="num">0.646</td><td class="num miss">0.780 (336)</td><td class="num hit">0.640 (236)</td></tr>
+        <tr><td class="label">clean</td><td class="num">5</td><td class="num">1.0</td><td class="num">240</td><td class="num">0.648</td><td class="num miss">0.862 (445)</td><td class="num hit">0.641 (236)</td></tr>
+        <tr><td class="label">uneven quality</td><td class="num">4</td><td class="num">0.5</td><td class="num">150</td><td class="num">0.372</td><td class="num miss">0.456 (170)</td><td class="num hit">0.372 (150)</td></tr>
+        <tr><td class="label">squashed</td><td class="num">4</td><td class="num">0.5</td><td class="num">128</td><td class="num">0.243</td><td class="num miss">0.320 (140)</td><td class="num hit">0.247 (129)</td></tr>
+      </tbody>
+    </table></div></div>
+    <p><strong>The evidence is the flatness.</strong> The same judge is used in all six rows, so the true ρ² cannot depend on the design — and ρ²<sub>implied</sub> doesn't move: 0.646, 0.646, 0.646, 0.648. The doubly-centred recipe tracks it exactly. The paper's row-centred recipe climbs 0.640 → 0.862 purely because the condition effect grew, and by k = 5, d = 1.0 it promises 445 effective labels where 100 human labels actually buy 240.</p>
+    <p><strong>Why.</strong> Row-centring removes the participant but not the between-condition means. Those means are shared by judge and humans — they move together perfectly — so pooling across cells scores them as agreement. But they contribute no variance <em>across participants</em>, and cross-participant variance is the only variance the test's denominator sees. The recipe ends up crediting the judge for reproducing the very effect being tested. Removing the condition means too is the fix, and it is exactly what "covariance across participants" means formally.</p>
+  </section>
+
+  <!-- ─────────────── friedman ─────────────── -->
+  <section>
+    <h2><span class="kicker">Method 4 of 4</span>Friedman</h2>
+    <div class="answer">
+      <span class="lbl">The ρ it follows</span>
+      <p>Pearson on <strong>doubly-centred within-subject ranks</strong>: rank each participant's k conditions for judge and humans alike, subtract each condition's mean rank across participants, correlate the residuals. Still a rank correlation — but <em>not</em> the average per-participant Spearman the paper specifies.</p>
+    </div>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>Same judge in the first four rows; only the design changes.</caption>
+      <thead><tr><th>Judge</th><th class="num">k</th><th class="num">d</th><th class="num">N<sub>eff</sub> measured</th><th class="num">ρ²<sub>implied</sub></th>
+      <th class="num">paper: avg per-subject ρ<sub>S</sub></th><th class="num">doubly-centred ranks</th></tr></thead>
+      <tbody>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">0.0</td><td class="num">161</td><td class="num">0.422</td><td class="num hit">0.409 (158)</td><td class="num hit">0.409 (158)</td></tr>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">0.5</td><td class="num">154</td><td class="num">0.388</td><td class="num mid">0.454 (169)</td><td class="num hit">0.394 (155)</td></tr>
+        <tr><td class="label">clean</td><td class="num">3</td><td class="num">1.0</td><td class="num">146</td><td class="num">0.348</td><td class="num miss">0.568 (204)</td><td class="num hit">0.356 (147)</td></tr>
+        <tr><td class="label">clean</td><td class="num">5</td><td class="num">1.0</td><td class="num">156</td><td class="num">0.398</td><td class="num miss">0.752 (310)</td><td class="num hit">0.392 (154)</td></tr>
+        <tr><td class="label">uneven quality</td><td class="num">4</td><td class="num">0.5</td><td class="num">132</td><td class="num">0.270</td><td class="num miss">0.347 (145)</td><td class="num hit">0.272 (132)</td></tr>
+        <tr><td class="label">contaminated noise</td><td class="num">4</td><td class="num">0.5</td><td class="num">174</td><td class="num">0.471</td><td class="num miss">0.562 (202)</td><td class="num hit">0.468 (173)</td></tr>
+      </tbody>
+    </table></div></div>
+
+    <h3>The evidence that it is not the average per-participant Spearman</h3>
+    <p>The two quantities do not merely differ in size — <strong>they move in opposite directions</strong>, which no amount of rescaling can reconcile. Holding the judge fixed and raising the effect from d = 0 to d = 1.0 at k = 3:</p>
+    <div class="formula">
+      ρ²<sub>implied</sub>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 0.422 → 0.388 → 0.348&nbsp;&nbsp;<span class="an">falls</span><br>
+      avg per-subject ρ<sub>S</sub>²&nbsp; 0.409 → 0.454 → 0.568&nbsp;&nbsp;<span class="an">rises</span><br>
+      doubly-centred ρ²&nbsp; 0.409 → 0.394 → 0.356&nbsp;&nbsp;<span class="an">falls, and matches</span>
+    </div>
+    <p>At the null the two candidates coincide (0.409) — which is why the error is invisible in a null calibration check and only appears once there is a real effect to detect. At k = 5, d = 1.0 the paper's recipe reaches 0.752 against an implied 0.398: it would promise 310 effective labels where 100 human labels buy 156. Across all six rows the doubly-centred recipe stays within 3% of ρ²<sub>implied</sub> (median under 1%), while the average per-participant Spearman runs 17% to 89% high everywhere except the null, where the two candidates are indistinguishable.</p>
+    <p><strong>Why Friedman's ρ falls with the effect.</strong> The rank atom <em>saturates</em>. As conditions separate almost every participant's row lands in the true order, so the residual variation is carried by rare order flips — and the human's flip mass shrinks faster than the judge's, because the judge's difference carries extra variance and so sits further out on a wider distribution at the same threshold. The two sides' flips decouple, and the correlation goes with them. The average per-participant Spearman moves the other way for the obvious reason: judge and humans increasingly reproduce the same true ordering, and that shared ordering counts as agreement.</p>
+    <p>Four predictions from that mechanism, all confirmed. <strong>ρ² → 0</strong>: at d = 4 it reaches 0.083 and the multiplier is 1.08, i.e. PPI buys essentially nothing. <strong>The human's ranks go deterministic faster</strong>: P(row in true order) is 0.9951 vs the judge's 0.9758 at d = 4, and the flip-mass ratio (1−p<sub>h</sub>)/(1−p<sub>f</sub>) falls monotonically from 1.00 to 0.20. <strong>A noiseless judge shows no drift whatsoever</strong> — multiplier 10.2–10.4, ρ² ≈ 1.00 at every d out to 4 — which is the decisive control: the rank transform alone does not cause drift, judge–human decoupling does. And <strong>drift scales with judge noise</strong>: −32% at r = 0.95, −59% at 0.8, −75% at 0.6. A further prediction made before measuring also held: under t₃ errors the drift collapses from −62% to −13%, since polynomial tails keep the two flip masses comparable.</p>
+    <p>Practical consequence for the paper: <strong>a pilot with a strong manipulation overstates what the same judge buys in a study with a subtler one.</strong> Friedman's judge-quality number is not portable across effect sizes.</p>
+  </section>
+
+  <section>
+    <h2><span class="kicker">The general rule</span>ρ is fixed for mean tests and drifts for every rank test</h2>
+    <p>Friedman is the extreme case, not a special one. Running the same axis across every method family — judge held fixed at r = 0.8, only the true effect moving — splits them exactly:</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>ρ² recovered by inverting the measured multiplier. The judge never changes; a ρ that is a property of the judge alone would be flat.</caption>
+      <thead><tr><th>Method</th><th class="num">d=0</th><th class="num">d=0.5</th><th class="num">d=1.0</th><th class="num">d=2.0</th><th class="num">drift</th></tr></thead>
+      <tbody>
+        <tr><td class="label">ttest</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num hit">−0.0%</td></tr>
+        <tr><td class="label">paired_t</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num hit">+0.0%</td></tr>
+        <tr><td class="label">anova_rm</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num hit">+0.0%</td></tr>
+        <tr><td class="label">mwu</td><td class="num">0.6043</td><td class="num">0.5997</td><td class="num">0.5839</td><td class="num">0.5267</td><td class="num mid">−12.8%</td></tr>
+        <tr><td class="label">kruskal</td><td class="num">0.6082</td><td class="num">0.5985</td><td class="num">0.5766</td><td class="num">0.5235</td><td class="num mid">−13.9%</td></tr>
+        <tr><td class="label">wilcoxon</td><td class="num">0.6250</td><td class="num">0.6163</td><td class="num">0.5859</td><td class="num">0.4664</td><td class="num miss">−25.4%</td></tr>
+        <tr><td class="label">friedman</td><td class="num">0.4181</td><td class="num">0.3907</td><td class="num">0.3591</td><td class="num">0.2583</td><td class="num miss">−38.2%</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>The split is <strong>mean versus rank</strong>, not omnibus versus pairwise. The three mean-type methods are invariant to four decimal places — for the repeated one the invariance is exact algebra, not numerics: the effect enters its atom as an additive constant that cancels out of every variance, so the measured multiplier is bit-for-bit identical at every d. Every rank or dominance estimand drifts down.</p>
+    <p><strong>This does not contradict PPI theory.</strong> The variance reduction is 1 − ρ² where ρ correlates <em>influence functions</em>. For a mean, ψ(y) = y − μ, so ρ is the plain Pearson correlation and a location shift cannot move it. Rank and dominance estimands have ψ involving the CDF, whose shape changes as groups separate. The drift is what theory predicts once it is applied to a nonlinear functional. What fails is the weaker, unstated assumption that <strong>ρ is a property of the judge alone</strong> — for rank estimands it is a property of the judge <em>and</em> the design.</p>
+    <p>So the paper should not present ρ<sub>S</sub>² as a portable judge score for its rank-based tests. Measure it at the effect size being planned for, or treat a pilot value as an upper bound.</p>
+
+    <h3>The same issue is already live in the simulation harness</h3>
+    <p><code>wilcoxon</code> and <code>mwu</code> are in <code>_METHOD_CORR_KIND</code> today, and <code>_method_rho2</code> builds its cell at <code>effect_size=0.0</code> with no effect-size term in the cache key. Their recipes are effect-invariant by construction — Spearman cannot see a location shift — so they sit flat at 0.6175 and 0.6169 across the whole range while the truth falls away beneath them:</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>N<sub>eff</sub> the shipped recipe predicts, against the N<sub>eff</sub> measured. N = 1000, N<sub>lab</sub> = 100.</caption>
+      <thead><tr><th>Method</th><th class="num">d</th><th class="num">true ρ²</th><th class="num">recipe ρ²</th><th class="num">N<sub>eff</sub> true</th><th class="num">N<sub>eff</sub> recipe</th><th class="num">error</th></tr></thead>
+      <tbody>
+        <tr><td class="label">wilcoxon</td><td class="num">0.0</td><td class="num">0.6250</td><td class="num">0.6175</td><td class="num">229</td><td class="num">225</td><td class="num hit">−1.5%</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.5859</td><td class="num">0.6175</td><td class="num">212</td><td class="num">225</td><td class="num mid">+6.4%</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.4664</td><td class="num">0.6175</td><td class="num">172</td><td class="num">225</td><td class="num miss">+30.6%</td></tr>
+        <tr><td class="label">mwu</td><td class="num">0.0</td><td class="num">0.6043</td><td class="num">0.6169</td><td class="num">219</td><td class="num">225</td><td class="num hit">+2.5%</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.5839</td><td class="num">0.6169</td><td class="num">211</td><td class="num">225</td><td class="num mid">+6.7%</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.5267</td><td class="num">0.6169</td><td class="num">190</td><td class="num">225</td><td class="num miss">+18.2%</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>It went unnoticed because <code>PPI_LABEL_EFF_EFFECT_FRACS</code> sweeps 0.15–0.35, where the drift is about 0.3%. The existing invariance validation is not wrong — it is scoped to small effects, and the null is precisely where an effect-invariant recipe and the truth coincide, so no null-only check could have caught it.</p>
+  </section>
+
+  <section>
+    <h2><span class="kicker">Blast radius</span>Where the drift actually bites</h2>
+    <p>A drift that only appears where the study is already saturated costs nothing. So the exhibit below reports two things per cell of the (d, N<sub>lab</sub>) plane: the <strong>error</strong> a planner suffers by using the paper's frozen named correlation instead of the truth, and the <strong>power</strong> of the corrected test there. A cell only matters if the error is material <em>and</em> the decision is still live.</p>
+
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>err / power per cell. Judge held at r = 0.8, N = 1000, k = 3. Error depends on N<sub>lab</sub> as well as d, through the (1 − N<sub>lab</sub>/N) factor. ✱ marks a cell where the error exceeds 10% while power is still below 0.99. Each recipe is evaluated as a practitioner would compute it, on data containing the effect.</caption>
+      <thead><tr><th>Test</th><th class="num">d</th><th class="num">true ρ²</th>
+      <th class="num">N<sub>lab</sub>=15</th><th class="num">N<sub>lab</sub>=50</th><th class="num">N<sub>lab</sub>=200</th></tr></thead>
+      <tbody>
+        <tr><td class="label">friedman</td><td class="num">0.25</td><td class="num">0.415</td><td class="num">+1.0% / 0.24</td><td class="num">+0.9% / 0.68</td><td class="num">+0.7% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.391</td><td class="num bite">+11.6% / 0.72 ✱</td><td class="num miss">+10.9% / 1.00</td><td class="num">+8.2% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.376</td><td class="num bite">+27.1% / 0.97 ✱</td><td class="num miss">+25.2% / 1.00</td><td class="num miss">+18.5% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.359</td><td class="num miss">+47.0% / 1.00</td><td class="num miss">+43.4% / 1.00</td><td class="num miss">+30.8% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.310</td><td class="num miss">+120.2% / 1.00</td><td class="num miss">+107.6% / 1.00</td><td class="num miss">+69.3% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.258</td><td class="num miss">+247.3% / 1.00</td><td class="num miss">+211.1% / 1.00</td><td class="num miss">+119.1% / 1.00</td></tr>
+
+        <tr><td class="label">wilcoxon</td><td class="num">0.25</td><td class="num">0.623</td><td class="num">−1.3% / 0.17</td><td class="num">−1.2% / 0.47</td><td class="num">−0.8% / 0.93</td></tr>
+        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.616</td><td class="num">+0.4% / 0.54</td><td class="num">+0.3% / 0.96</td><td class="num">+0.2% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.605</td><td class="num">+3.2% / 0.86</td><td class="num">+2.9% / 1.00</td><td class="num">+2.0% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.586</td><td class="num">+8.0% / 0.98</td><td class="num">+7.3% / 1.00</td><td class="num">+5.0% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.535</td><td class="num miss">+20.9% / 1.00</td><td class="num miss">+19.1% / 1.00</td><td class="num miss">+13.1% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.466</td><td class="num miss">+38.1% / 1.00</td><td class="num miss">+34.8% / 1.00</td><td class="num miss">+23.9% / 1.00</td></tr>
+
+        <tr><td class="label">kruskal</td><td class="num">0.25</td><td class="num">0.606</td><td class="num">+3.0% / 0.43</td><td class="num">+2.8% / 0.93</td><td class="num">+1.9% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.599</td><td class="num">+4.9% / 0.96</td><td class="num">+4.4% / 1.00</td><td class="num">+3.1% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.589</td><td class="num">+7.3% / 1.00</td><td class="num">+6.7% / 1.00</td><td class="num">+4.6% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.577</td><td class="num miss">+10.4% / 1.00</td><td class="num">+9.5% / 1.00</td><td class="num">+6.5% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.551</td><td class="num miss">+16.8% / 1.00</td><td class="num miss">+15.4% / 1.00</td><td class="num miss">+10.6% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.524</td><td class="num miss">+23.7% / 1.00</td><td class="num miss">+21.7% / 1.00</td><td class="num miss">+14.9% / 1.00</td></tr>
+
+        <tr><td class="label">mwu</td><td class="num">0.25</td><td class="num">0.604</td><td class="num">+3.6% / 0.16</td><td class="num">+3.3% / 0.47</td><td class="num">+2.2% / 0.93</td></tr>
+        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.600</td><td class="num">+4.6% / 0.52</td><td class="num">+4.2% / 0.96</td><td class="num">+2.9% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.593</td><td class="num">+6.3% / 0.86</td><td class="num">+5.8% / 1.00</td><td class="num">+4.0% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.584</td><td class="num">+8.5% / 0.98</td><td class="num">+7.8% / 1.00</td><td class="num">+5.4% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.558</td><td class="num miss">+15.0% / 1.00</td><td class="num miss">+13.7% / 1.00</td><td class="num">+9.4% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.527</td><td class="num miss">+22.9% / 1.00</td><td class="num miss">+21.0% / 1.00</td><td class="num miss">+14.4% / 1.00</td></tr>
+      </tbody>
+    </table></div></div>
+
+    <div class="answer">
+      <span class="lbl">The boundary, stated exactly</span>
+      <p>The answer splits by test. For <strong>Mann–Whitney, Wilcoxon and Kruskal–Wallis the two regions are disjoint</strong>: the largest planning error in any cell whose power is below 0.99 is +8.5% (mwu), +8.0% (wilcoxon), +4.9% (kruskal). For <strong>Friedman they overlap</strong>: three cells (✱ above, plus d = 0.5 at N<sub>lab</sub> = 30, error +11.3% at power 0.96) carry an error above 10% while the test outcome is still in doubt, reaching <strong>+27.1% at power 0.97</strong>.</p>
+    </div>
+
+    <p>So the "negligible in practice" claim holds for three of the four rank tests and <strong>fails for Friedman</strong>. For the three it survives as a bounded statement rather than a reassurance: the recipe is accurate to under 9% wherever the outcome is still in doubt, and only becomes badly wrong once the study is saturated at every budget considered here. "The drift is small" is not defensible for any of them — at d = 2 it reaches +38% for Wilcoxon — but it is at least confined to designs where nothing hinges on it.</p>
+
+    <h3>Why Friedman breaks the pattern: its recipe is not shift-invariant</h3>
+    <p>The other three recipes are Spearman correlations of a quantity the effect merely <em>shifts</em> — the paired differences for Wilcoxon, condition-centred scores for Mann–Whitney and Kruskal–Wallis. Ranks cannot see a location shift, so those recipes return the same number whether they are computed on near-null data or on data with a large effect. Measured across d = 0 → 2 they are flat to four decimal places. That is why it does not matter where a practitioner computes them, and why their error stays modest: it is only the truth that moves away beneath a stationary estimate.</p>
+    <p>Friedman's recipe is different in kind. "Average the per-participant Spearman correlations" is computed on <em>within-row ranks</em>, and a condition effect changes the distribution of those ranks rather than shifting a variable. So it is not shift-invariant, and measured on data containing the effect — which is what the paper instructs — it <strong>rises by 94%</strong> across the same range (0.411 → 0.797) while the truth falls from 0.418 to 0.258. The recipe and the target move in opposite directions, and the error compounds from both ends: +47% at d = 1.0, +247% at d = 2.0.</p>
+    <p class="tnote">This corrects an earlier version of this exhibit, which evaluated every recipe at its null value. That is harmless for the three shift-invariant recipes — null and on-data agree exactly — but it understated Friedman's error several-fold and reported no biting cells. The figures above use each recipe as a practitioner would actually compute it.</p>
+
+    <p>Two qualifications that apply throughout. The error is <em>not</em> negligible for <strong>estimation</strong> — a reported N<sub>eff</sub>, or a CI width on a dominance probability, is wrong by the full amount at moderate-to-large effects regardless of whether the test rejects. And the grid stops at N<sub>lab</sub> = 15, the library's own minimum; for the three well-behaved tests the margin is thin enough that a different judge quality or a design outside this grid could open it.</p>
+
+    <h3>Power here is measured, not assumed</h3>
+    <p>Power was first obtained through the N<sub>eff</sub> identity — PPI at N<sub>lab</sub> should have the precision of a human-only analysis at N<sub>eff</sub> — which is thousands of times cheaper than driving the corrected test. That proxy was then checked against the real corrected test at four cells, and <em>it failed at one</em>: wilcoxon at d = 0.5, N<sub>lab</sub> = 15 read 0.541 by proxy against 0.410 measured directly. The N<sub>eff</sub> identity is asymptotic, and N<sub>lab</sub> = 15 is exactly where the library warns about small-sample behaviour. Since the proxy errs <em>optimistic</em> about power — the direction that could hide a biting cell — every cell with error above 10% was re-measured with the actual corrected test at its smallest N<sub>lab</sub>. All nine came back at power ≥ 0.996 (eight at 1.000; wilcoxon at d = 1.5, N<sub>lab</sub> = 15 at 0.996), so the disjointness above rests on direct measurement rather than the proxy.</p>
+    <p>That closest cell is worth naming rather than rounding away. At 250 replicates, 0.996 is not statistically separable from the 0.99 threshold, so the two regions <em>touch</em> at the boundary rather than clearing it comfortably. The claim that survives is that no cell was found where a material planning error coincides with a live decision — not that a comfortable margin separates them.</p>
+  </section>
+
+  <section>
+    <h2><span class="kicker">Transport</span>A judge's ρ² is not portable across effect sizes</h2>
+    <p>The drift has a second consequence that survives the power argument entirely, because it has nothing to do with whether a test rejects: <strong>a judge validated once does not certify the same N<sub>eff</sub> elsewhere.</strong> Measuring ρ² correctly on a pilot at one effect and planning a study at another leaves exactly the drift between them as error.</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>Wilcoxon: N<sub>eff</sub> error from planning at d<sub>target</sub> using a pilot measured at d<sub>pilot</sub>, with the effect-adaptive recipe. N<sub>lab</sub> = 100. Bottom row is the frozen named correlation for contrast.</caption>
+      <thead><tr><th>pilot at</th><th class="num">target 0.25</th><th class="num">0.5</th><th class="num">0.75</th><th class="num">1.0</th><th class="num">1.5</th><th class="num">2.0</th></tr></thead>
+      <tbody>
+        <tr><td class="label">d = 0.25</td><td class="num">—</td><td class="num">+1.4%</td><td class="num">+3.7%</td><td class="num miss">+7.6%</td><td class="num miss">+18.1%</td><td class="num miss">+32.1%</td></tr>
+        <tr><td class="label">d = 0.5</td><td class="num hit">−1.4%</td><td class="num">—</td><td class="num">+2.3%</td><td class="num miss">+6.1%</td><td class="num miss">+16.5%</td><td class="num miss">+30.3%</td></tr>
+        <tr><td class="label">d = 1.0</td><td class="num hit">−7.1%</td><td class="num hit">−5.8%</td><td class="num hit">−3.6%</td><td class="num">—</td><td class="num miss">+9.8%</td><td class="num miss">+22.8%</td></tr>
+        <tr><td class="label">d = 2.0</td><td class="num hit">−24.3%</td><td class="num hit">−23.2%</td><td class="num hit">−21.5%</td><td class="num hit">−18.5%</td><td class="num hit">−10.6%</td><td class="num">—</td></tr>
+        <tr><td class="label">frozen recipe</td><td class="num">−1.1%</td><td class="num">+0.3%</td><td class="num">+2.6%</td><td class="num miss">+6.4%</td><td class="num miss">+16.8%</td><td class="num miss">+30.7%</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>The sign is set purely by the direction of transport. Green is conservative (under-predicts N<sub>eff</sub>, so you over-label); red is anti-conservative. <strong>A strong pilot planning a subtler study is safe; a weak pilot planning a stronger one is not</strong> — and the frozen recipe behaves like a pilot permanently stuck at d ≈ 0.3, so it is anti-conservative at every target above that. This is the finding I would promote out of a footnote: it indicts the standard workflow of validating a judge once, on whatever data was handy, and reusing that number as a constant.</p>
+
+    <h3>The fix: correlate influence functions, not scores</h3>
+    <p>Three of the four named correlations are shift-invariant, which is precisely why they cannot follow a moving target — they are frozen snapshots of the influence-function correlation at the null. Friedman's is worse than frozen: being computed on within-row ranks it is not shift-invariant at all, and moves <em>away</em> from the target rather than merely standing still. Computing the influence functions as plug-ins on the observed data instead makes them adapt automatically. Testing that directly, with the Hájek projection ψ(i) = #{j : D<sub>i</sub>+D<sub>j</sub> &gt; 0}/n for Wilcoxon and empirical placements F<sub>Y</sub>(x) for Mann–Whitney:</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>Ratio of each recipe's ρ² to the true ρ². A recipe that tracks stays at 1.00 down the column.</caption>
+      <thead><tr><th>Test</th><th class="num">d</th><th class="num">true ρ²</th><th class="num">plug-in IF</th><th class="num">ratio</th><th class="num">frozen named</th><th class="num">ratio</th></tr></thead>
+      <tbody>
+        <tr><td class="label">wilcoxon</td><td class="num">0.0</td><td class="num">0.625</td><td class="num">0.615</td><td class="num hit">0.98</td><td class="num">0.615</td><td class="num hit">0.98</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.586</td><td class="num">0.576</td><td class="num hit">0.98</td><td class="num">0.615</td><td class="num mid">1.05</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.466</td><td class="num">0.466</td><td class="num hit">1.00</td><td class="num">0.615</td><td class="num miss">1.32</td></tr>
+        <tr><td class="label">mwu</td><td class="num">0.0</td><td class="num">0.604</td><td class="num">0.618</td><td class="num hit">1.02</td><td class="num">0.618</td><td class="num hit">1.02</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.584</td><td class="num">0.598</td><td class="num hit">1.02</td><td class="num">0.618</td><td class="num mid">1.06</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.527</td><td class="num">0.541</td><td class="num hit">1.03</td><td class="num">0.618</td><td class="num miss">1.17</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>The plug-in tracks flat (0.98–1.00 for Wilcoxon, 1.02–1.03 for Mann–Whitney) while the named recipe walks off to 1.32 and 1.17. Mann–Whitney's constant ~2% overshoot is a level, not a drift — plausibly the placement estimator's own small-sample bias, and not chased down here. This is the same result as the doubly-centred recipes for the repeated-measures tests: those <em>are</em> plug-in influence functions, which is why they tracked the decline where the named correlation could not. The named correlations are best understood as the null-case shortcut, correct at d = 0 and degrading from there.</p>
+  </section>
+
+  <!-- ─────────────── recommendations ─────────────── -->
+  <section>
+    <h2><span class="kicker">Edits</span>What to change in the footnote</h2>
+    <div class="wide"><div class="tablewrap"><table>
+      <thead><tr><th>Test</th><th>Replace</th><th>With</th></tr></thead>
+      <tbody>
+        <tr><td class="label">anova_oneway</td><td>compute within each condition and use a weighted average</td><td>centre each condition on its own mean, <strong>pool</strong>, and take one correlation</td></tr>
+        <tr><td class="label">kruskalwallis</td><td>compute within each condition and use a weighted average</td><td>same, but where judge quality is uneven use the <strong>harmonic mean</strong> of per-condition ρ<sub>S</sub>²</td></tr>
+        <tr><td class="label">anova_oneway(rep)</td><td>subtract each participant's own mean</td><td>subtract each participant's own mean <strong>and each condition's mean</strong></td></tr>
+        <tr><td class="label">friedman</td><td>average the per-participant Spearman correlations</td><td>rank within participant, <strong>subtract each condition's mean rank</strong>, correlate residuals across participants</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>Two additions rather than edits. First, <strong>the equation presumes power-tuned PPI</strong>: at a fixed λ = 1 it fails outright, and PPI is worse than ignoring the judge in over half the cells tested. Second, <strong>for repeated-measures tests N<sub>lab</sub> and N count participants, not labeled cells</strong> — the same run that needs N<sub>lab</sub> = 100 prints <code>n_labeled = 300</code> in its alignment header, and labeling must cover complete participant rows (at k = 3 on a 300-cell budget, row-wise labeling yields 100 usable participants against ~1 for a random scatter).</p>
+  </section>
+
+  <footer>
+    <h2>Evidence base, and what it does not cover</h2>
+    <p><strong>Measurement.</strong> Each cell resamples fresh data 8000 times and records the atom vector's components directly, so the multiplier is a measured variance ratio rather than a linearised prediction; the aggregation is the contrast-space trace the shipped F-statistics use in their own denominators. Candidate ρ² values come from a separate 300,000-participant population draw, so they are independent of the replicate simulation they are compared against. The atom re-implementation was verified against the shipped pipelines non-circularly — <code>_ppi_anova_repeated_f_stat</code> and <code>_ppi_friedman_f_stat</code> expose <code>f_corr</code> and <code>denom</code>, from which ‖P·atom‖² is recoverable from the return value alone; it matches to 2×10⁻¹⁶.</p>
+    <p><strong>Coverage.</strong> k ∈ {3,4,5,7}; d ∈ {0 … 4}; judge pathologies covering per-condition bias, per-condition noise, per-condition slope, monotone squashing, subject-level bias, contaminated and t₃ error. Across all of them the recommended recipes hold to ±4% (median ~1%).</p>
+    <p><strong>The effect-size result specifically</strong> was checked by three routes that fail independently. (1) <em>Split-sample λ</em> — λ estimated on one half of the replicates and the variance evaluated on the other half, so "argmin evaluated at its own argmin" optimism cannot manufacture a trend. (2) <em>Oracle λ</em> from a separately seeded run. (3) <em>The library's own analytic variance</em>, with no replicate Monte Carlo at all: <code>_ppi_friedman_f_stat</code>'s <code>denom</code> yields trace(P·Var·P) directly, compared against the human-only covariance the library itself forms. Friedman's ρ² across d = 0 → 3 reads 0.406 → 0.158 (split-sample), 0.406 → 0.158 (oracle), 0.404 → 0.104 (library analytic); route 3 sits slightly lower throughout because it includes the λ-uncertainty inflation term, which is the conservative direction. Over the same range <code>anova_rm</code> is bit-for-bit constant on all three. Additional controls: subject variance is exactly irrelevant (identical to 4 dp at σ_u = 1 vs 4), as within-row ranks require; and the effect pattern matters (linear spacing drifts −62%, one raised condition −23%).</p>
+    <p><strong>Limits.</strong> All synthetic — no real judge data. Judge quality is fixed at ρ = 0.8 in the tables above; the full sweep covered 0.5–0.97. The multiplier is a precision measure, validated end-to-end against power at one design point per test, not swept. Monte Carlo precision on a variance ratio at 8000 replicates is roughly ±1.6%, so differences under ~3% between candidates should not be read as real. Two earlier weaknesses were found and corrected in a second pass: an end-to-end Friedman check had run at d = 0.11, where the competing recipes nearly coincide and so cannot be distinguished, and the recipe comparison had been run only at k = 3, which understated the error.</p>
+  </footer>
+</div>

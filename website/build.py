@@ -2,7 +2,7 @@
 """
 Build all site pages from source files in website/src/ and website/notebooks/.
 
-Top-level pages (index, choose, resources, principles, roadmap, …):
+Top-level pages (index, resources, principles, roadmap, …):
   - Source body lives in website/src/<slug>.html
   - Shared nav/footer/head are injected automatically
   - Add a new page: create src/<slug>.html + entry in PAGE_CONFIGS
@@ -32,7 +32,7 @@ NOTEBOOKS_DIR = os.path.join(WEBSITE_DIR, "notebooks")
 BUILD_DIR = os.path.join(WEBSITE_DIR, "build")
 OUT_DIR = os.path.join(BUILD_DIR, "investigations")
 
-STATIC_FILES = ["choose.css", "index.css", "inv.css", "nb.css", "dark.js"]
+STATIC_FILES = ["index.css", "inv.css", "nb.css", "dark.js"]
 STATIC_DIRS = ["media"]
 
 sys.path.insert(0, WEBSITE_DIR)
@@ -186,10 +186,7 @@ INDEX_JSON_LD = {
 # active_key matches the page config's "active_nav" field; use None for anchor-only links.
 _NAV_LINKS = [
     ("Why Statistics",   "{p}index.html#why-statistics",  None),
-    ("Core Principles",  "{p}index.html#principles",      None),
-    ("Simulation Study", "{p}index.html#simulation",      None),
-    ("Recommendations", "{p}index.html#recommendations", None),
-    ("Choose a Method",  "{p}choose.html",                "choose"),
+    ("Core Principles",  "{p}principles.html",            "principles"),
     ("Which Method?",    "{p}which-method.html",          "which-method"),
     ("Resources",        "{p}resources.html",             "resources"),
     ("evalstats",      "{p}index.html#evalstats",     None),
@@ -200,13 +197,13 @@ def make_site_nav_html(prefix="./", active=None):
     """Build the top navigation bar HTML.
 
     prefix: "./" for top-level pages, "../" for investigation pages.
-    active: active_key string for the current page (e.g. "choose", "resources").
+    active: active_key string for the current page (e.g. "which-method", "resources").
     """
     items = []
-    # for text, href_tmpl, key in _NAV_LINKS:
-    #     href = href_tmpl.replace("{p}", prefix)
-    #     active_cls = ' class="active"' if (key and key == active) else ""
-    #     items.append(f'      <li><a href="{href}"{active_cls}>{text}</a></li>')
+    for text, href_tmpl, key in _NAV_LINKS:
+        href = href_tmpl.replace("{p}", prefix)
+        active_cls = ' class="active"' if (key and key == active) else ""
+        items.append(f'      <li><a href="{href}"{active_cls}>{text}</a></li>')
     items_html = "\n".join(items)
     return f"""\
 <nav class="site-nav">
@@ -403,17 +400,6 @@ PAGE_CONFIGS = [
         ),
     },
     {
-        "slug":        "choose",
-        "title_tag":   "Choose Your Statistical Method \u2014 Stats for LLM Evals",
-        "type":        "full",
-        "css":         "choose.css",
-        "active_nav":  "choose",
-        "description": (
-            "An interactive decision tool to help you pick the right statistical method "
-            "for analyzing LLM evaluation results, based on your data type and research question."
-        ),
-    },
-    {
         "slug":           "resources",
         "title_tag":      "Resources \u2014 Stats for LLM Evals",
         "title":          "Resources",
@@ -435,7 +421,7 @@ PAGE_CONFIGS = [
         "title":          "Principles",
         "type":           "article",
         "css":            "inv.css",
-        "active_nav":     None,
+        "active_nav":     "principles",
         "eyebrow":        "Guide",
         "subtitle":       "Declaring some principles and philosophy to guide our choices.",
         "active_sidebar": "principles",

@@ -1,11 +1,11 @@
 """Scoped-down binary factorial calibration check for evalstats.tests.
-_ppi_paired_tango's new power_tune=True path, following up on
+_ppi_paired_mj_floor's new power_tune=True path, following up on
 investigate_tango_ppi_plus_plus.py's one-off head-to-head (which found
 large power gains and no Type-I inflation across an n_lab x noise grid).
 
 Crosses bias_magnitude x label_mechanism x n -- specifically targeting MNAR
 labeling, the known failure mode for other PPI rectifiers in this codebase
-(mwu_mnar_experimental, kruskal_mnar_experimental, friedman all show real
+(kruskal_mnar_experimental, friedman all show real
 MCAR-cost or MNAR-residual tradeoffs). Deliberately small (18 cells) and
 closed-form (no bootstrap), so this runs in well under a minute even at a
 few thousand reps/cell -- NOT the full --factorial-check-binary sweep.
@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-from evalstats.tests import _ppi_paired_tango
+from evalstats.tests import _ppi_paired_mj_floor
 from simulations.harness.scenarios import JudgeBiasSource
 from simulations.harness.scenarios.synthetic import (
     PPI_BINARY_BIAS_MAGNITUDES,
@@ -58,8 +58,8 @@ def run_cell(n: int, bias_label: str, lm_label: str, n_reps: int, seed: int):
 
     for i in range(n_reps):
         cell = generate_judge_bias_cell(sc, rng)
-        r_old = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=False)
-        r_new = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=True)
+        r_old = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=False)
+        r_new = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=True)
         rej_old += int(r_old.p_value < ALPHA)
         rej_new += int(r_new.p_value < ALPHA)
         width_old[i] = r_old.ci_high - r_old.ci_low

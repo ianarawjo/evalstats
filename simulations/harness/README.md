@@ -200,7 +200,7 @@ exist as code yet. `pvalues` added `PAIRWISE_PVALUE_METHODS`,
 `cases/pvalues.py` was actually ported. Note some names overlap by concept
 but not by computation across groupings and intentionally get distinct
 `Method` instances (e.g. `newcombe` for `pairwise_differences(method=
-"newcombe")` vs. `ci_paired`'s `newcombe_score` for the older
+"newcombe")` vs. `ci_paired`'s `newcombe_mover` for the older
 `_newcombe_paired_score_ci` helper); `WILCOXON` ("wilcoxon") is the one
 exception that's genuinely shared (same paired-difference test) and is
 reused as-is across the pairwise-pvalue and PPI-test-name groupings.
@@ -378,7 +378,7 @@ same way `evalstats.core.resampling` is.
     callers MUST filter `results` to one method-family before pooling
     (`_COMPARISON_METHODS` xor `_COMPARISON_METHODS_OMNIBUS`, never both
     together, and never the non-standard bootstrap-CI constructions
-    bayes_bootstrap/bootstrap_t/tango_score or lmm*): these answer
+    bayes_bootstrap/bootstrap_t/mj_floor or lmm*): these answer
     different questions (two-group location-shift vs. three-group omnibus),
     so folding them into the same pooled rate would blend apples with
     oranges rather than checking robustness across reasonable alternatives
@@ -502,8 +502,8 @@ same way `evalstats.core.resampling` is.
     `--factorial-omnibus`): after the main OFAT sweep and the factorial
     sweep's original four two-group tests were confirmed reasonably
     calibrated (at the time including `mwu_corr`'s local-rectifier fix,
-    since reverted -- see `MWU`/`MWU_MNAR_EXPERIMENTAL`'s `Method` docstring
-    in `methods.py` for the current status and why), extended
+    since reverted, and as of 2026-08-21 removed outright -- see `MWU`'s
+    comment in `methods.py` for the current status and why), extended
     `build_ppi_factorial_sources`'s combined-factor
     stress test to four omnibus/multi-group tests too --
     `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` -- to check whether they
@@ -613,7 +613,7 @@ same way `evalstats.core.resampling` is.
   (a proportion is just the mean of a 0/1 variable, so PPI's rectifier
   applies unchanged) -- `ttest`/`ttest_welch` (two independent groups),
   `paired_t` (paired), `bayes_bootstrap` (paired, Dirichlet-weighted), and
-  `tango_score` (paired, score interval) -- as a single baseline-settings
+  `mj_floor` (paired, score interval) -- as a single baseline-settings
   scenario rather than being swept across every other factor.
   `bayes_bootstrap` PPI-corrects the identical paired-mean estimand
   as `paired_t`, but via Dirichlet-weighted (Bayesian) bootstrap resampling
@@ -630,9 +630,9 @@ same way `evalstats.core.resampling` is.
   (continuous/likert/grades) ONLY, not extended to binary, since its
   value is specifically for resampling-based CI estimation on numeric
   data at N>=50 (`ci_paired.py`), not pairwise binary p-values.
-  `tango_score` is the mirror image -- binary ONLY, not numeric --
-  PPI-correcting `evalstats.core.resampling.tango_paired_ci`'s score
-  interval (`evalstats.tests._ppi_paired_tango`): its variance term
+  `mj_floor` is the mirror image -- binary ONLY, not numeric --
+  PPI-correcting `evalstats.core.resampling.mj_floor_paired_ci`'s score
+  interval (`evalstats.tests._ppi_paired_mj_floor`): its variance term
   `(n10+n01)/n^2 - (n10-n01)^2/n^3` is exactly `Var(diffs, ddof=0) / n`,
   so it generalizes to PPI's two-term variance by substituting an
   effective n (`n_eff = Var(unlabeled diffs) / V_hat_PPI`) into the SAME

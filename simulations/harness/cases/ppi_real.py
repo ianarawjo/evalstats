@@ -29,8 +29,8 @@ Nine checks:
       random draws from the identical population, so their TRUE, human-
       label means are equal) -- but read group A through judge_a and group
       B through judge_b, not the same judge reading both. Runs the
-      independent-samples tests (ttest/ttest_welch/mwu/
-      mwu_mnar_experimental) PPI correction is supposed to keep calibrated,
+      independent-samples tests (ttest/ttest_welch/mwu) PPI correction is
+      supposed to keep calibrated,
       with real noise/skew/judge-bias characteristics instead of synthetic
       ones. Deliberately cross-judge, not same-judge-reads-both: a single
       judge reading two random halves of the same population applies its
@@ -87,8 +87,8 @@ Nine checks:
       reasoning as the two-group check (see generate_real_
       omnibus_independent_null_cell). Runs anova_ind and kruskal (NOT
       kruskal_mnar_experimental -- see _omnibus_independent_methods_for's
-      docstring for why, same reasoning as dropping mwu_mnar_experimental
-      from the two-group check). With k judge models, all C(k, 3) triples
+      docstring for why, same reasoning as dropping the local-rectifier
+      MWU variants from the two-group check). With k judge models, all C(k, 3) triples
       are checked (capped by --max-triples).
 
   omnibus-repeated Type-I null (3-condition, cross-judge)
@@ -159,13 +159,11 @@ with warnings.catch_warnings():
         _ppi_single_logit_t,
         _ppi_single_t_interval,
         _ppi_two_sample,
-        _ppi_two_sample_midrank_corrected,
-        _ppi_two_sample_adaptive,
-        _ppi_two_sample_ridge_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
-        _ppi_paired_tango,
+        _ppi_paired_mj_floor,
+        _ppi_paired_bonett_price,
         _ppi_paired_t_interval,
         _ppi_paired_logit_t,
         _p_x_gt_y_midrank,
@@ -177,7 +175,8 @@ with warnings.catch_warnings():
     )
 
 from ..methods import (
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
+    PPI_BONETT_PRICE,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
@@ -213,7 +212,8 @@ from .pvalues import (
     _uncorrected_bias_z,
     _uncorrected_bayes_bootstrap_paired_p_value,
     _uncorrected_bootstrap_t_paired_p_value,
-    _uncorrected_tango_paired_p_value,
+    _uncorrected_mj_floor_paired_p_value,
+    _uncorrected_bonett_price_paired_p_value,
     _uncorrected_anova_independent_p_value,
     _uncorrected_anova_repeated_p_value,
     _uncorrected_friedman_p_value,
@@ -236,6 +236,29 @@ _SINGLE_METHOD_BOOTSTRAP_T = "bootstrap_t"
 _SINGLE_METHOD_WILSON = "ppi_wilson"
 """Deliberately not "wilson" -- see methods.PPI_WILSON's docstring: that
 name is already taken by ci_single.py's plain (non-PPI) Wilson CI."""
+
+_RATER_NOISE_SD = 0.03
+"""Fixed small std (on the shared [0, 1] rescaled score) for the
+independent per-arm label noise generate_real_paired_null_cell/
+generate_real_omnibus_repeated_null_cell inject via `rater_noise_sd` --
+see those functions' docstrings and _independent_rater_copies for why an
+exact-tie construction alone (rater_noise_sd=0) is an unrealistically
+idealized worst case for a Type-I claim (real, independent human ratings
+essentially never agree to floating-point precision). A fixed, modest
+value rather than one calibrated per-dataset to a measured inter-rater
+reliability figure -- those aren't available for every dataset here, and
+a fixed small value is enough to break the exact tie without overstating
+how noisy real annotation actually is."""
+
+_DEGENERATE_LABEL_PROB = 0.10
+"""Fraction of paired-null/repeated-null reps that use the exact-tie
+construction (rater_noise_sd=0) rather than the noisy one -- the
+degenerate case is still worth exercising directly (it's what caught a
+real cross-fit bug in wilcoxon's power-tuning), but shouldn't dominate
+the sweep now that a more realistic alternative exists. Reps of both
+kinds are pooled into the SAME corrected/uncorrected counters (no
+separate reporting) -- the reported rate is the average over both
+regimes, weighted by this probability."""
 
 
 # ---------------------------------------------------------------------------
@@ -314,9 +337,8 @@ def _run_real_twogroup_cell(
     real data, cross-judge -- see generate_real_twogroup_null_cell's
     docstring for why group A and group B are read through two DIFFERENT
     judges, not the same one), mirroring pvalues.py's _run_ppi_cell
-    independent-groups branches (ttest/ttest_welch/mwu/
-    mwu_mnar_experimental only -- see _run_real_paired_cell for the
-    paired-samples family)."""
+    independent-groups branches (ttest/ttest_welch/mwu only -- see
+    _run_real_paired_cell for the paired-samples family)."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -356,32 +378,8 @@ def _run_real_twogroup_cell(
                 except Exception:
                     pass
 
-            if MWU_MNAR_EXPERIMENTAL.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_ADAPTIVE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_RIDGE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
     return corrected, uncorrected
 
@@ -394,7 +392,14 @@ def _run_real_paired_cell(
     scored by two DIFFERENT judges) -- mirrors pvalues.py's _run_ppi_cell
     paired-groups branches (wilcoxon/paired_t/ppi_t_interval/ppi_logit_t/
     tango). See generate_real_paired_null_cell for why this is an exact
-    null rather than merely an equal-in-distribution one."""
+    null rather than merely an equal-in-distribution one.
+
+    Each rep independently draws exact-tie (rater_noise_sd=0, probability
+    _DEGENERATE_LABEL_PROB) vs. independent-small-noise
+    (rater_noise_sd=_RATER_NOISE_SD, the rest) labels -- see those
+    constants' docstrings. Both kinds feed the SAME corrected/uncorrected
+    counters below, so the reported rate is already the pooled average
+    over both regimes; no separate reporting needed."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -403,7 +408,10 @@ def _run_real_paired_cell(
         return int(rng.integers(0, 2 ** 31))
 
     for _ in range(n_reps):
-        llm_x, llm_y, lab_x, lab_y = generate_real_paired_null_cell(corpus, rng, n, label_frac, judge_a, judge_b)
+        noise_sd = 0.0 if rng.random() < _DEGENERATE_LABEL_PROB else _RATER_NOISE_SD
+        llm_x, llm_y, lab_x, lab_y = generate_real_paired_null_cell(
+            corpus, rng, n, label_frac, judge_a, judge_b, rater_noise_sd=noise_sd,
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
@@ -453,12 +461,21 @@ def _run_real_paired_cell(
                 except Exception:
                     pass
 
-            if TANGO.name in methods:
+            if MJ_FLOOR.name in methods:
                 try:
-                    p_u = _uncorrected_tango_paired_p_value(llm_x - llm_y)
-                    uncorrected[TANGO.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    corrected[TANGO.name] += int(r.p_value < _ALPHA)
+                    p_u = _uncorrected_mj_floor_paired_p_value(llm_x - llm_y)
+                    uncorrected[MJ_FLOOR.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_mj_floor(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[MJ_FLOOR.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if PPI_BONETT_PRICE.name in methods:
+                try:
+                    p_u = _uncorrected_bonett_price_paired_p_value(llm_x - llm_y)
+                    uncorrected[PPI_BONETT_PRICE.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[PPI_BONETT_PRICE.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -534,14 +551,18 @@ def _run_real_omnibus_repeated_cell(
     """n_reps replicates of the omnibus-repeated Type-I null check (same
     items, 3 different judges -- see generate_real_omnibus_repeated_
     null_cell's docstring), mirroring pvalues.py's _run_ppi_cell's
-    ANOVA_REP/FRIEDMAN branches."""
+    ANOVA_REP/FRIEDMAN branches.
+
+    Same exact-tie-vs-noisy per-rep draw as _run_real_paired_cell -- see
+    that function's docstring and _DEGENERATE_LABEL_PROB/_RATER_NOISE_SD."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
 
     for _ in range(n_reps):
+        noise_sd = 0.0 if rng.random() < _DEGENERATE_LABEL_PROB else _RATER_NOISE_SD
         groups, groups_lab = generate_real_omnibus_repeated_null_cell(
-            corpus, rng, n, label_frac, judge_a, judge_b, judge_c,
+            corpus, rng, n, label_frac, judge_a, judge_b, judge_c, rater_noise_sd=noise_sd,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -586,8 +607,8 @@ def _run_real_twogroup_power_cell(
 ) -> tuple[dict[str, int], dict[str, int]]:
     """n_reps replicates of the two-group power check (rank-split real data,
     cross-judge -- see generate_real_twogroup_power_cell), mirroring
-    _run_real_twogroup_cell's test battery exactly (ttest/ttest_welch/mwu/
-    mwu_mnar_experimental) -- only the cell generator differs."""
+    _run_real_twogroup_cell's test battery exactly (ttest/ttest_welch/mwu)
+    -- only the cell generator differs."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -627,32 +648,8 @@ def _run_real_twogroup_power_cell(
                 except Exception:
                     pass
 
-            if MWU_MNAR_EXPERIMENTAL.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_ADAPTIVE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_RIDGE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
     return corrected, uncorrected
 
@@ -796,7 +793,7 @@ PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method identities (split from
 these paired ones in methods.py, the same way PPI_BOOTSTRAP_T_SINGLE is
 split from BOOTSTRAP_T), so there's no test-name collision in
 print_ppi_effect_report's by-test-name pooling -- see those Methods'
-docstrings in methods.py for the full reasoning. TANGO excluded for the
+docstrings in methods.py for the full reasoning. MJ_FLOOR excluded for the
 same eval_type restriction _paired_methods_for applies (this corpus is
 always eval_type="continuous_paired")."""
 
@@ -809,7 +806,7 @@ PPIEffectResult's bias/coverage stats) never mixes this check's
 would; every "ppi_logit_t" row across twogroup_power/paired power/
 omnibus power/this check already means the same thing (a paired- or
 independent-samples logit-t test), same as hypothesis_results already
-does for the Type-I null checks. TANGO still excluded, for the same
+does for the Type-I null checks. MJ_FLOOR still excluded, for the same
 eval_type restriction _paired_methods_for applies (this corpus is
 always eval_type="continuous_paired")."""
 
@@ -903,17 +900,17 @@ def _run_real_paired_bias_cell(
     generate_real_paired_null_cell (same items read through two DIFFERENT
     judges, so the true paired difference is EXACTLY 0 by construction -- no
     gold-reference estimation needed, unlike _run_real_wmt_paired_bias_
-    cell's genuine two-condition data). Exists because TANGO is a genuine
+    cell's genuine two-condition data). Exists because the paired binary CI is a genuine
     point-estimate/CI construction (a Wilson-style score interval for the
     paired binary discordant-pair-rate difference -- see
-    evalstats.tests._ppi_paired_tango's docstring) restricted to binary
+    evalstats.tests._ppi_paired_bonett_price's docstring) restricted to binary
     corpora by _paired_methods_for, but _run_real_paired_cell only ever
     reports corrected/uncorrected REJECTION COUNTS (a Type-I check) -- it
     never had anywhere to report (estimate, ci_low, ci_high, llm_estimate)
     tuples, so a binary corpus like arena had no path into the bias/
     coverage view (print_ppi_effect_report / ci_methods_comparison_real.png)
-    even though it has exactly the paired binary data Tango needs. Currently
-    only TANGO uses this; null_value is always 0.0 for every test reachable
+    even though it has exactly the paired binary data the method needs. Currently
+    only PPI_BONETT_PRICE uses this; null_value is always 0.0 for every test reachable
     here (see run()'s _consume)."""
     rng = np.random.default_rng(seed)
     out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
@@ -923,10 +920,11 @@ def _run_real_paired_bias_cell(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            if TANGO.name in methods:
+
+            if PPI_BONETT_PRICE.name in methods:
                 try:
-                    r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[PPI_BONETT_PRICE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -1051,21 +1049,15 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # binary's massive ties break the rank-based judge-bias noise model
     # there, same restriction applies here.
     #
-    # MWU_MNAR_EXPERIMENTAL (the local-rectifier MWU variant) deliberately
-    # not included: it exists specifically to trade some MCAR calibration
-    # for MNAR robustness (see evalstats.tests.mannwhitney's method
-    # docstring), but this check's real-data labeling is MCAR by
-    # construction (generate_real_twogroup_null_cell's _reveal_labels
-    # call), so there's no MNAR risk here for the local rectifier to buy
-    # anything against -- it would only ever look worse than plain MWU on
-    # this check, never better, for reasons that have nothing to do with
-    # either method's actual quality.
-    #
-    # MWU_ADAPTIVE/MWU_RIDGE excluded here too, matching
-    # PPI_OFFICIAL_TEST_METHODS' own exclusion of every non-default MWU
-    # variant in methods.py -- this pathway shows only the actual default
-    # (plain MWU, method="global"). Both remain fully runnable via this
-    # same function for anyone who wants them.
+    # The local-rectifier MWU variants (mwu_mnar_experimental,
+    # mwu_mnar_pooled, mwu_adaptive, mwu_ridge) were removed outright on
+    # 2026-08-21 -- see MWU's comment in methods.py. They had never been in
+    # PPI_OFFICIAL_TEST_METHODS and were never right for this check anyway:
+    # they traded MCAR calibration for MNAR robustness, but this check's
+    # real-data labeling is MCAR by construction
+    # (generate_real_twogroup_null_cell's _reveal_labels call), so there was
+    # no MNAR risk here for a local rectifier to buy anything against. MWU
+    # (the global rectifier) is now the only midrank correction.
     base = [TTEST.name, TTEST_WELCH.name]
     return base if eval_type == "binary" else base + [MWU.name]
 
@@ -1080,8 +1072,8 @@ def _has_nonstandard_test(results: list) -> bool:
 
 def _paired_methods_for(eval_type: str) -> list[str]:
     # BAYES_BOOTSTRAP/BOOTSTRAP_T are not part of the official CI-comparison
-    # set -- see _single_methods_for's matching note. Binary keeps TANGO
-    # (PPI_AUTO_METHOD_TABLE's binary pairwise
+    # set -- see _single_methods_for's matching note. Binary uses
+    # PPI_BONETT_PRICE (PPI_AUTO_METHOD_TABLE's binary pairwise
     # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
     # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
     # both tested, not just the "correct" one per data_kind, since this is
@@ -1092,7 +1084,7 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     # no test-name-collision risk between PPI_LOGIT_T here and the
     # single-sample check's own PPI_LOGIT_T branch.
     if eval_type == "binary":
-        return [PAIRED_T.name, TANGO.name]
+        return [PAIRED_T.name, PPI_BONETT_PRICE.name]
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
@@ -1103,8 +1095,8 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # the twogroup/paired families.
     #
     # KRUSKAL_MNAR_EXPERIMENTAL deliberately NOT included, for the identical
-    # reason MWU_MNAR_EXPERIMENTAL was dropped from the twogroup check (see
-    # _twogroup_methods_for's docstring): it trades some MCAR calibration
+    # reason the local-rectifier MWU variants were dropped from the twogroup
+    # check (see _twogroup_methods_for): it trades some MCAR calibration
     # for MNAR robustness, but this check's real-data labeling is MCAR by
     # construction, so there's no MNAR risk here for its local rectifier to
     # buy anything against.
@@ -1168,7 +1160,7 @@ def save_ppi_real_labfrac_dataset_heatmap(
     should be visually distinct, not just "far from 0".
 
     `nonstandard` selects _PPI_NONSTANDARD_TESTS (bayes_bootstrap,
-    bootstrap_t, tango_score) instead of the hypothesis-test majority --
+    bootstrap_t, mj_floor) instead of the hypothesis-test majority --
     same split save_ppi_typeI_plot already draws between p-value tests and
     CI-based methods, kept here too rather than mixing both families into
     one grid of panels."""
@@ -1944,7 +1936,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 ))
 
                             # Binary-only bias/coverage sibling of the check
-                            # above: TANGO is a genuine point-estimate/CI
+                            # above: MJ_FLOOR is a genuine point-estimate/CI
                             # construction, but _run_real_paired_cell only
                             # ever reports corrected/uncorrected rejection
                             # COUNTS (a Type-I check), so Tango had no path
@@ -1957,7 +1949,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             if not args.no_paired_check and corpus.eval_type == "binary":
                                 seed_counter += 1
                                 work_items.append((
-                                    "paired_bias", corpus_idx, name, corpus.dataset, [TANGO.name],
+                                    "paired_bias", corpus_idx, name, corpus.dataset, [PPI_BONETT_PRICE.name],
                                     n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 

@@ -20,7 +20,11 @@ from evalstats.core.paired import (
     _joint_bootstrap_critical_value,
     all_pairwise,
 )
-from evalstats.core.resampling import tango_paired_ci, tango_paired_ci_from_diffs
+from evalstats.core.resampling import (
+    degenerate_sample_ci,
+    mj_floor_paired_ci,
+    mj_floor_paired_ci_from_diffs,
+)
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -532,8 +536,8 @@ def test_newcombe_uses_auto_simultaneous_ci_default():
         rng=_rng(40), n_bootstrap=200,
     )
     assert report.simultaneous_ci is True
-    # binary, N=50 -> "boot" row of AUTO_SIMULTANEOUS_CI_METHOD_TABLE
-    assert report.pairwise.simultaneous_ci_method == "boot"
+    # AUTO_SIMULTANEOUS_CI_METHOD_TABLE is now Sidak at every N and data kind
+    assert report.pairwise.simultaneous_ci_method == "sidak"
 
 
 def test_seeded_compare_prompts_simultaneous_ci():
@@ -630,22 +634,59 @@ def test_bonferroni_empty_pairs_returns_empty():
     assert _bonferroni_simultaneous_cis({}, [], ci=0.95) == {}
 
 
-def test_bonferroni_degenerate_zero_variance():
-    """When all diffs are identical, SE=0; CI should degenerate to a point."""
+def test_bonferroni_degenerate_zero_variance_unbounded_is_infinite():
+    """When all diffs are identical, SE=0 and no variance-driven interval is
+    computable. With no bounds on the data there is nothing left to fall back
+    on, so the CI is (-inf, +inf) -- explicitly NOT the zero-width point
+    interval this used to return, which claimed certainty from a sample that
+    contains no spread at all."""
     scores = np.ones((2, 30))
     labels = ["a", "b"]
     results, pairs = _make_results(scores, labels)
-    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    with pytest.warns(UserWarning, match="zero variance"):
+        cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
     lo, hi = cis[pairs[0]]
-    assert lo == hi
+    assert lo == -np.inf and hi == np.inf
+
+
+def test_bonferroni_degenerate_zero_variance_bounded_is_finite_and_wide():
+    """Given the diff bounds, the same zero-variance pair gets the conservative
+    Clopper-Pearson-based bound instead of an infinite (or zero-width) one."""
+    scores = np.ones((2, 30))
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels)
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95, diff_bounds=(-1.0, 1.0))
+    lo, hi = cis[pairs[0]]
+    assert np.isfinite(lo) and np.isfinite(hi)
+    assert lo < hi, "zero-variance pair must not get a zero-width interval"
+    assert -1.0 <= lo <= 0.0 <= hi <= 1.0
+    # Matches resampling.degenerate_sample_ci at the Bonferroni-adjusted alpha
+    # (k=1 here, so alpha_adj == alpha).
+    expected = degenerate_sample_ci(0.0, 30, 0.05, -1.0, 1.0)
+    np.testing.assert_allclose((lo, hi), expected, atol=1e-12)
+
+
+def test_bonferroni_degenerate_constant_nonzero_offset_covers_zero():
+    """The reported failure: two arms with a constant offset (A = 0.9, B = 0.8
+    on every item). The pair is the only one in the family, so it skips
+    Sidak/boot entirely and lands on the Bonferroni fallback. It must not come
+    back as (0.1, 0.1)."""
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8)])
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels, method="logit_t", score_range=(0.0, 1.0))
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95, diff_bounds=(-1.0, 1.0))
+    lo, hi = cis[pairs[0]]
+    assert lo < 0.1 < hi, f"expected an interval around 0.1, got ({lo}, {hi})"
+    assert hi - lo > 0.05
 
 
 # --- Router tests ---
 
-def test_router_returns_boot_by_default_for_unbounded_n_ge_30():
-    """Router's "auto" default (fig:fwer-decision-tree) picks the joint
-    bootstrap ("boot") for unbounded numeric data at N>=30, regardless of
-    whether the point-estimate method is bootstrap-compatible."""
+def test_router_returns_sidak_by_default_for_unbounded_n_ge_30():
+    """Router's "auto" default is Sidak at every N -- the small-N/large-N
+    split is gone (see AUTO_SIMULTANEOUS_CI_METHOD_TABLE). The joint
+    bootstrap remains reachable via prefer="boot"; see
+    test_router_boot_still_reachable_when_preferred."""
     scores = _rng(70).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
@@ -653,6 +694,21 @@ def test_router_returns_boot_by_default_for_unbounded_n_ge_30():
         scores, results, pairs, labels,
         method="bootstrap", ci=0.95, n_bootstrap=300,
         rng=_rng(70), statistic="mean",
+    )
+    assert used == "sidak"
+    assert len(cis) == len(pairs)
+
+
+def test_router_boot_still_reachable_when_preferred():
+    """Sidak being the default must not make the joint bootstrap
+    unreachable -- prefer="boot" still routes to it."""
+    scores = _rng(70).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used, _ = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="bootstrap", ci=0.95, n_bootstrap=300,
+        rng=_rng(70), statistic="mean", prefer="boot",
     )
     assert used == "boot"
     assert len(cis) == len(pairs)
@@ -728,11 +784,10 @@ def test_router_max_stat_for_all_bootstrap_methods_when_preferred(method):
     assert used == "max_t", f"Expected max_t for method={method!r}, got {used!r}"
 
 
-def test_simultaneous_ci_method_field_boot_for_bootstrap():
-    """PairwiseMatrix.simultaneous_ci_method follows the "auto" table by
-    default (fig:fwer-decision-tree) -- unbounded numeric, N=30 -> "boot".
-    Pass prefer="bonferroni"/"max_t" to all_pairwise() to force a specific
-    construction instead."""
+def test_simultaneous_ci_method_field_follows_auto_table():
+    """PairwiseMatrix.simultaneous_ci_method follows the "auto" table, which
+    is now Sidak everywhere. Pass prefer="boot"/"bonferroni"/"max_t" to
+    all_pairwise() to force a specific construction instead."""
     scores = _rng(80).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
     mat = all_pairwise(
@@ -740,7 +795,7 @@ def test_simultaneous_ci_method_field_boot_for_bootstrap():
         rng=_rng(80), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci is True
-    assert mat.simultaneous_ci_method == "boot"
+    assert mat.simultaneous_ci_method == "sidak"
 
 
 def test_simultaneous_ci_method_field_sidak():
@@ -782,7 +837,7 @@ def test_bonferroni_annotation_in_test_method():
 # ---------------------------------------------------------------------------
 # Section 6 — Generic Sidak / joint-bootstrap-scaled simultaneous CIs.
 # These take an arbitrary alpha-parameterized `ci_func` -- Tango's
-# tango_paired_ci_from_diffs is exercised here as one concrete instantiation
+# mj_floor_paired_ci_from_diffs is exercised here as one concrete instantiation
 # (binary paired data), but _sidak_simultaneous_cis /
 # _joint_bootstrap_scaled_simultaneous_cis / _joint_bootstrap_critical_value
 # themselves have no Tango-specific logic; test_..._is_method_agnostic below
@@ -801,20 +856,20 @@ def _make_binary_results(scores_2d, labels, **kw):
 
 
 def test_tango_paired_ci_from_diffs_matches_tango_paired_ci():
-    """tango_paired_ci_from_diffs(a_bin - b_bin, alpha) must reproduce
-    tango_paired_ci(a, b, alpha) exactly -- it's a refactor of the same
+    """mj_floor_paired_ci_from_diffs(a_bin - b_bin, alpha) must reproduce
+    mj_floor_paired_ci(a, b, alpha) exactly -- it's a refactor of the same
     closed-form math, not an independent implementation."""
     rng = _rng(200)
     a = (rng.random(80) < 0.6).astype(float)
     b = (rng.random(80) < 0.4).astype(float)
     for alpha in (0.01, 0.05, 0.2):
-        expected = tango_paired_ci(a, b, alpha)
-        actual = tango_paired_ci_from_diffs(a - b, alpha)
+        expected = mj_floor_paired_ci(a, b, alpha)
+        actual = mj_floor_paired_ci_from_diffs(a - b, alpha)
         np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 
 def test_tango_paired_ci_from_diffs_empty():
-    assert tango_paired_ci_from_diffs(np.array([]), 0.05) == (0.0, 0.0)
+    assert mj_floor_paired_ci_from_diffs(np.array([]), 0.05) == (0.0, 0.0)
 
 
 def _t_interval_ci_func(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -836,7 +891,7 @@ def test_sidak_returns_all_pairs():
     scores = _binary_paired_scores(_rng(90), 3, 60)
     labels = ["a", "b", "c"]
     results, pairs = _make_binary_results(scores, labels)
-    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=mj_floor_paired_ci_from_diffs)
     assert set(cis.keys()) == set(pairs)
 
 
@@ -844,7 +899,7 @@ def test_sidak_bounds_finite_and_ordered():
     scores = _binary_paired_scores(_rng(91), 4, 50)
     labels = ["a", "b", "c", "d"]
     results, pairs = _make_binary_results(scores, labels)
-    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=mj_floor_paired_ci_from_diffs)
     for pair, (lo, hi) in cis.items():
         assert np.isfinite(lo) and np.isfinite(hi), f"{pair}: non-finite bounds"
         assert lo <= hi, f"{pair}: lo > hi"
@@ -858,10 +913,10 @@ def test_sidak_wider_than_naive_ci_func():
     scores = _binary_paired_scores(_rng(92), 4, 80)
     labels = ["a", "b", "c", "d"]
     results, pairs = _make_binary_results(scores, labels)
-    cis_sidak = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    cis_sidak = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=mj_floor_paired_ci_from_diffs)
     for pair in pairs:
         r = results[pair]
-        naive_lo, naive_hi = tango_paired_ci_from_diffs(r.per_input_diffs, 0.05)
+        naive_lo, naive_hi = mj_floor_paired_ci_from_diffs(r.per_input_diffs, 0.05)
         sidak_lo, sidak_hi = cis_sidak[pair]
         assert (sidak_hi - sidak_lo) >= (naive_hi - naive_lo) - 1e-9, (
             f"{pair}: Sidak width should be >= naive width"
@@ -875,13 +930,13 @@ def test_sidak_single_pair_equals_naive_ci_func():
     labels = ["a", "b"]
     results, pairs = _make_binary_results(scores, labels)
     assert len(pairs) == 1
-    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
-    expected = tango_paired_ci_from_diffs(results[pairs[0]].per_input_diffs, 0.05)
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=mj_floor_paired_ci_from_diffs)
+    expected = mj_floor_paired_ci_from_diffs(results[pairs[0]].per_input_diffs, 0.05)
     np.testing.assert_allclose(cis[pairs[0]], expected, atol=1e-9)
 
 
 def test_sidak_empty_pairs_returns_empty():
-    assert _sidak_simultaneous_cis({}, [], ci=0.95, ci_func=tango_paired_ci_from_diffs) == {}
+    assert _sidak_simultaneous_cis({}, [], ci=0.95, ci_func=mj_floor_paired_ci_from_diffs) == {}
 
 
 def test_sidak_is_ci_func_agnostic():
@@ -926,7 +981,7 @@ def test_joint_bootstrap_scaled_returns_all_pairs_or_empty():
     results, pairs = _make_binary_results(scores, labels)
     cis = _joint_bootstrap_scaled_simultaneous_cis(
         scores=scores, results=results, pairs=pairs, labels=labels,
-        ci=0.95, n_bootstrap=500, rng=_rng(96), ci_func=tango_paired_ci_from_diffs,
+        ci=0.95, n_bootstrap=500, rng=_rng(96), ci_func=mj_floor_paired_ci_from_diffs,
     )
     # Degenerate (all-same-value) draws can legitimately return {}; a
     # non-degenerate binary draw should return every requested pair.
@@ -939,7 +994,7 @@ def test_joint_bootstrap_scaled_bounds_finite_and_ordered():
     results, pairs = _make_binary_results(scores, labels)
     cis = _joint_bootstrap_scaled_simultaneous_cis(
         scores=scores, results=results, pairs=pairs, labels=labels,
-        ci=0.95, n_bootstrap=500, rng=_rng(97), ci_func=tango_paired_ci_from_diffs,
+        ci=0.95, n_bootstrap=500, rng=_rng(97), ci_func=mj_floor_paired_ci_from_diffs,
     )
     for pair, (lo, hi) in cis.items():
         assert np.isfinite(lo) and np.isfinite(hi), f"{pair}: non-finite bounds"
@@ -952,7 +1007,7 @@ def test_joint_bootstrap_scaled_empty_pairs_returns_empty():
     labels = ["a", "b"]
     assert _joint_bootstrap_scaled_simultaneous_cis(
         scores=scores, results={}, pairs=[], labels=labels, ci=0.95, n_bootstrap=100, rng=_rng(98),
-        ci_func=tango_paired_ci_from_diffs,
+        ci_func=mj_floor_paired_ci_from_diffs,
     ) == {}
 
 
@@ -965,7 +1020,7 @@ def test_joint_bootstrap_scaled_degenerate_all_identical_returns_empty():
     results, pairs = _make_binary_results(scores, labels)
     cis = _joint_bootstrap_scaled_simultaneous_cis(
         scores=scores, results=results, pairs=pairs, labels=labels,
-        ci=0.95, n_bootstrap=200, rng=_rng(99), ci_func=tango_paired_ci_from_diffs,
+        ci=0.95, n_bootstrap=200, rng=_rng(99), ci_func=mj_floor_paired_ci_from_diffs,
     )
     assert cis == {}
 
@@ -1000,7 +1055,7 @@ def test_sidak_simultaneous_coverage_near_nominal():
     0) should be at or above the nominal level -- Sidak assumes
     independence between comparisons, so on real (positively correlated,
     shared-reference-arm) data it should be conservative, not under-cover.
-    Exercised with ci_func=tango_paired_ci_from_diffs.
+    Exercised with ci_func=mj_floor_paired_ci_from_diffs.
 
     n_simulations=200, ci_level=0.95: SE ~= 0.015 under the null, so the
     tolerance [0.85, 1.00] catches gross under-coverage while tolerating
@@ -1016,7 +1071,7 @@ def test_sidak_simultaneous_coverage_near_nominal():
     for _ in range(n_simulations):
         scores = _binary_paired_scores(rng, 4, M, p=0.5)  # all arms share p=0.5 -> true diff 0
         results, _ = _make_binary_results(scores, labels)
-        cis = _sidak_simultaneous_cis(results, pairs, ci=ci_level, ci_func=tango_paired_ci_from_diffs)
+        cis = _sidak_simultaneous_cis(results, pairs, ci=ci_level, ci_func=mj_floor_paired_ci_from_diffs)
         if all(cis[p][0] <= 0.0 <= cis[p][1] for p in pairs):
             hits += 1
 
@@ -1025,3 +1080,103 @@ def test_sidak_simultaneous_coverage_near_nominal():
         f"Sidak(tango) simultaneous coverage {coverage:.3f} outside [0.85, 1.00]; "
         f"expected >= {ci_level}."
     )
+
+
+def test_router_two_arm_constant_offset_does_not_override_with_zero_width():
+    """End-to-end through all_pairwise: exactly two arms with a constant offset
+    (the k=1 case, which skips Sidak/boot by construction and always lands on
+    the Bonferroni fallback). The simultaneous CI must not replace the
+    method's own interval with a zero-width one at the point estimate."""
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8)])
+    mat = all_pairwise(
+        scores, ["a", "b"], method="logit_t", score_range=(0.0, 1.0),
+        multi_ci=True, rng=_rng(0),
+    )
+    assert mat.simultaneous_ci_method == "bonferroni"
+    r = mat.results[("a", "b")]
+    assert r.ci_low < r.ci_high, "zero-width simultaneous CI on a k=1 comparison"
+    assert r.ci_low < r.point_diff < r.ci_high
+    # k=1 makes Bonferroni's adjustment an exact no-op, so the simultaneous CI
+    # should land on the method's own interval at the same alpha rather than
+    # overriding it.
+    np.testing.assert_allclose((r.ci_low, r.ci_high), r.multi_ci[0.05], atol=1e-12)
+
+
+def test_router_k3_constant_offset_wider_than_k1():
+    """The same degenerate pair inside a 3-arm family gets a *wider* interval
+    (alpha/3 rather than alpha), not a narrower or zero-width one."""
+    k1 = all_pairwise(
+        np.vstack([np.full(30, 0.9), np.full(30, 0.8)]), ["a", "b"],
+        method="logit_t", score_range=(0.0, 1.0), rng=_rng(0),
+    ).results[("a", "b")]
+    k3 = all_pairwise(
+        np.vstack([np.full(30, 0.9), np.full(30, 0.8), np.full(30, 0.7)]), ["a", "b", "c"],
+        method="logit_t", score_range=(0.0, 1.0), rng=_rng(0),
+    ).results[("a", "b")]
+    assert k3.ci_low < k3.ci_high
+    assert (k3.ci_high - k3.ci_low) > (k1.ci_high - k1.ci_low)
+
+
+def test_router_mixed_family_degenerate_pair_stays_finite():
+    """One degenerate pair alongside two ordinary ones: the ordinary pairs keep
+    their normal intervals and the degenerate one is not zero-width."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8), rng.uniform(0.2, 0.6, 30)])
+    mat = all_pairwise(
+        scores, ["a", "b", "c"], method="logit_t", score_range=(0.0, 1.0),
+        n_bootstrap=400, rng=_rng(0),
+    )
+    for pair, r in mat.results.items():
+        assert np.isfinite(r.ci_low) and np.isfinite(r.ci_high), pair
+        assert r.ci_low < r.ci_high, f"{pair}: zero-width simultaneous CI"
+
+
+def test_router_binary_degenerate_pair_uses_binary_diff_bounds():
+    """All-1 vs all-0 binary arms: diffs are a constant +1, the extreme of the
+    [-1, 1] diff support, so the interval runs up to (but not past) 1."""
+    scores = np.vstack([np.ones(30), np.zeros(30)])
+    mat = all_pairwise(scores, ["a", "b"], method="tango", rng=_rng(0))
+    r = mat.results[("a", "b")]
+    assert r.ci_low < 1.0 and r.ci_high == pytest.approx(1.0)
+    assert r.ci_low > 0.0
+
+
+def test_router_unbounded_degenerate_pair_not_zero_width_on_boot_route():
+    """Unbounded data, k=3, one degenerate pair among two ordinary ones: the
+    joint bootstrap succeeds (the other pairs carry variance), so the family
+    does NOT reach the Bonferroni fallback. The degenerate pair must still not
+    come back zero-width -- t_interval_ci_1d, the bounds-agnostic ci_func,
+    keeps its own (mean, mean) contract, so the router wraps it."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(30, 9.0), np.full(30, 8.0), rng.normal(5.0, 2.0, 30)])
+    with pytest.warns(UserWarning, match="zero variance"):
+        mat = all_pairwise(
+            scores, ["a", "b", "c"], method="t_interval",
+            n_bootstrap=400, rng=_rng(0), prefer="boot",
+        )
+    assert mat.simultaneous_ci_method == "boot"
+    deg = mat.results[("a", "b")]
+    assert (deg.ci_low, deg.ci_high) == (-np.inf, np.inf)
+    for pair in (("a", "c"), ("b", "c")):
+        r = mat.results[pair]
+        assert np.isfinite(r.ci_low) and np.isfinite(r.ci_high)
+        assert r.ci_low < r.point_diff < r.ci_high
+
+
+def test_router_unbounded_degenerate_pair_sidak_route_matches_boot():
+    """Same, forced onto the Sidak route -- both k>=3 constructions share the
+    wrapped ci_func, so neither can emit a zero-width interval."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(20, 9.0), np.full(20, 8.0), rng.normal(5.0, 2.0, 20)])
+    with pytest.warns(UserWarning, match="zero variance"):
+        cis, used, _ = _simultaneous_cis_router(
+            scores=scores,
+            results=all_pairwise(scores, ["a", "b", "c"], method="t_interval",
+                                 simultaneous_ci=False, rng=_rng(0)).results,
+            pairs=[("a", "b"), ("a", "c"), ("b", "c")],
+            labels=["a", "b", "c"], method="t_interval", ci=0.95,
+            n_bootstrap=400, rng=_rng(0), statistic="mean", prefer="sidak",
+        )
+    assert used == "sidak"
+    assert cis[("a", "b")] == (-np.inf, np.inf)
+    assert np.isfinite(cis[("a", "c")][0])

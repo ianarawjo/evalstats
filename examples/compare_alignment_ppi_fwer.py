@@ -4,7 +4,7 @@
 Simulates a common real-world scenario:
   - 4 models are scored by an LLM judge on 150 items each (cheap, scalable).
   - A human annotator has labelled 60 of those items per model (expensive,
-    sparse) -- validate_alignment()/compare(alignment=...) use these to
+    sparse) -- judge_alignment()/compare(alignment=...) use these to
     debias the LLM-only estimates via Prediction-Powered Inference (PPI).
   - With 4 models there are C(4,2) = 6 pairwise comparisons, so a family-wise
     error rate (FWER) correction is also needed to avoid false positives
@@ -124,10 +124,11 @@ print("=" * 70)
 print("STEP 1 — Validate LLM judge alignment")
 print("=" * 70)
 
-ar = es.validate_alignment(
+ar = es.judge_alignment(
     evaldata,
     llm_metric="llm_score",
     human_groundtruth="human_score",
+    selection="random",  # gold_indices above was rng.choice(..., replace=False)
 )
 ar.summary()
 

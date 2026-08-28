@@ -118,12 +118,12 @@ with warnings.catch_warnings():
         bootstrap_diffs_nested,
         bayes_bootstrap_diffs_nested,
         smooth_bootstrap_diffs_nested,
-        newcombe_paired_ci,
-        tango_paired_ci,
-        tango_paired_ci_flat,
-        tango_paired_ci_multirun_cluster,
-        tango_paired_ci_multirun_effective,
-        tango_paired_ci_multirun_moments,
+        newcombe_mover_paired_ci,
+        mj_floor_paired_ci,
+        mj_floor_paired_ci_flat,
+        mj_floor_paired_ci_multirun_cluster,
+        mj_floor_paired_ci_multirun_effective,
+        mj_floor_paired_ci_multirun_moments,
     )
     from evalstats.core.bayes_evals import binorm_cdf
 
@@ -170,25 +170,25 @@ SMOOTH_DIFF_NESTED_METHOD    = "smooth_diff_nested"
 PAIR_DIFF_NESTED_METHODS     = [BOOTSTRAP_DIFF_NESTED_METHOD, BAYES_DIFF_NESTED_METHOD, SMOOTH_DIFF_NESTED_METHOD]
 
 # Pairwise binary flat methods (first-run-only iid baseline)
-TANGO_FLAT_METHOD         = "tango_flat"
+MJ_FLOOR_FLAT_METHOD         = "mj_floor_flat"
 NEWCOMBE_FLAT_METHOD      = "newcombe_flat"
 BAYES_PAIR_INDEP_METHOD   = "bayes_indep_comp"
 BAYES_PAIR_PAIRED_METHOD  = "bayes_paired_comp"
 BINARY_PAIR_FLAT_METHODS  = [
-    TANGO_FLAT_METHOD,
+    MJ_FLOOR_FLAT_METHOD,
     NEWCOMBE_FLAT_METHOD,
     BAYES_PAIR_INDEP_METHOD,
     BAYES_PAIR_PAIRED_METHOD,
 ]
 
 # Pairwise binary nested (full N×R matrix)
-TANGO_MULTIRUN_CLUSTER_METHOD = "tango_multirun_cluster"
-TANGO_MULTIRUN_EFFECTIVE_METHOD = "tango_multirun_effective"
-TANGO_MULTIRUN_MOMENTS_METHOD = "tango_multirun_mmnt"
+MJ_FLOOR_CLUSTER_METHOD = "mj_floor_cluster"
+MJ_FLOOR_ER_METHOD = "mj_floor_er"
+MJ_FLOOR_MMNT_METHOD = "mj_floor_mmnt"
 BINARY_PAIR_NESTED_METHODS = [
-    TANGO_MULTIRUN_CLUSTER_METHOD,
-    TANGO_MULTIRUN_EFFECTIVE_METHOD,
-    TANGO_MULTIRUN_MOMENTS_METHOD,
+    MJ_FLOOR_CLUSTER_METHOD,
+    MJ_FLOOR_ER_METHOD,
+    MJ_FLOOR_MMNT_METHOD,
 ]
 
 # Continuous-only methods on cell means
@@ -1729,19 +1729,19 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
             a0, b0 = a[:, 0], b[:, 0]   # first run only (flat iid baseline)
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = tango_paired_ci_flat(a, b, alpha)
+                ci_low, ci_high = mj_floor_paired_ci_flat(a, b, alpha)
             except Exception:
                 ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
             el = time.perf_counter() - t0
-            total_t[TANGO_FLAT_METHOD]    += el
-            total_t_sq[TANGO_FLAT_METHOD] += el * el
+            total_t[MJ_FLOOR_FLAT_METHOD]    += el
+            total_t_sq[MJ_FLOOR_FLAT_METHOD] += el * el
             if ci_low <= scenario.true_diff <= ci_high:
-                covered[TANGO_FLAT_METHOD] += 1
-            total_w[TANGO_FLAT_METHOD] += ci_high - ci_low
+                covered[MJ_FLOOR_FLAT_METHOD] += 1
+            total_w[MJ_FLOOR_FLAT_METHOD] += ci_high - ci_low
 
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = newcombe_paired_ci(a0, b0, alpha)
+                ci_low, ci_high = newcombe_mover_paired_ci(a0, b0, alpha)
             except Exception:
                 ci_low = ci_high = float(np.mean(a0 - b0))
             el = time.perf_counter() - t0
@@ -1776,9 +1776,9 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
             total_w[BAYES_PAIR_PAIRED_METHOD] += ci_high - ci_low
 
             for method, fn in [
-                (TANGO_MULTIRUN_CLUSTER_METHOD, tango_paired_ci_multirun_cluster),
-                (TANGO_MULTIRUN_EFFECTIVE_METHOD, tango_paired_ci_multirun_effective),
-                (TANGO_MULTIRUN_MOMENTS_METHOD, tango_paired_ci_multirun_moments),
+                (MJ_FLOOR_CLUSTER_METHOD, mj_floor_paired_ci_multirun_cluster),
+                (MJ_FLOOR_ER_METHOD, mj_floor_paired_ci_multirun_effective),
+                (MJ_FLOOR_MMNT_METHOD, mj_floor_paired_ci_multirun_moments),
             ]:
                 t0 = time.perf_counter()
                 try:
@@ -2212,13 +2212,13 @@ _METHOD_COLORS: dict[str, str] = {
     "bootstrap_diff_nested":    "#1b9e77",
     "bayes_diff_nested":        "#d95f02",
     "smooth_diff_nested":       "#7570b3",
-    "tango_flat":               "#e7298a",
+    "mj_floor_flat":               "#e7298a",
     "newcombe_flat":            "#66a61e",
     "bayes_indep_comp":         "#17becf",
     "bayes_paired_comp":        "#bcbd22",
-    "tango_multirun_cluster":   "#e6ab02",
-    "tango_multirun_effective": "#a6761d",
-    "tango_multirun_mmnt":      "#1b9e77",
+    "mj_floor_cluster":   "#e6ab02",
+    "mj_floor_er": "#a6761d",
+    "mj_floor_mmnt":      "#1b9e77",
 }
 
 

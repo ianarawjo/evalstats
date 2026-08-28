@@ -8,7 +8,7 @@ to silently fall back to bootstrap_t for bounded_01/unbounded numeric data
 because no PPI-corrected logit_t/t-interval existed).
 
 No pre-existing pytest coverage exists for _ppi_single_wilson/
-_ppi_paired_tango/_ppi_paired_bootstrap_t as standalone functions (confirmed
+_ppi_paired_mj_floor/_ppi_paired_bootstrap_t as standalone functions (confirmed
 by repo-wide grep before writing this file), so there's no established bar
 to match -- these tests are written from scratch, following this codebase's
 own stated testing principles (tests/test_ppi_corrections.py's module
@@ -85,7 +85,7 @@ class TestWrapperEquivalence:
         a_lab = _split_labels(rng, truth, llm, n_lab=30)
         mask = ~np.isnan(a_lab)
 
-        r = _ppi_single_t_interval(llm, a_lab, alpha=0.05)
+        r = _ppi_single_t_interval(llm, a_lab, alpha=0.05, power_tune=False)
         expected = _analytic_mean_correct(
             np.asarray(a_lab, dtype=float)[mask], llm[mask], llm[~mask], alpha=0.05, power_tune=False,
         )
@@ -106,7 +106,7 @@ class TestWrapperEquivalence:
         b_lab[~np.isnan(a_lab)] = truth_b[~np.isnan(a_lab)]
         mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
 
-        r = _ppi_paired_t_interval(llm_a, llm_b, a_lab, b_lab, alpha=0.05)
+        r = _ppi_paired_t_interval(llm_a, llm_b, a_lab, b_lab, alpha=0.05, power_tune=False)
         diffs = llm_a - llm_b
         expected = _analytic_mean_correct(
             (a_lab - b_lab)[mask], diffs[mask], diffs[~mask], alpha=0.05, power_tune=False,
@@ -250,8 +250,13 @@ class TestConfigRouting:
     def test_unbounded_routes_to_ppi_t_interval(self):
         assert resolve_ppi_auto_methods("unbounded") == ("ppi_t_interval", "ppi_t_interval")
 
-    def test_binary_routing_unaffected(self):
-        assert resolve_ppi_auto_methods("binary") == ("tango", "wilson")
+    def test_binary_routes_to_bonett_price(self):
+        """Paired binary PPI routes to bonett_price, whose Laplace adjustment
+        keeps the interval from collapsing toward zero width when the labeled
+        subset carries little discordance information. mj_floor remains
+        implemented (evalstats.tests._ppi_paired_mj_floor) and directly
+        callable, but is no longer the auto-routed default."""
+        assert resolve_ppi_auto_methods("binary") == ("bonett_price", "wilson")
 
 
 class TestApiDispatch:

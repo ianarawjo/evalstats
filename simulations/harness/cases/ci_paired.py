@@ -9,7 +9,7 @@ Methods compared
 -----------------
 bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t (all eval
 types, statistic=mean or median); t_interval, logit_t, nig, el (non-binary,
-statistic=mean only); newcombe_score, tango_score, tango_scc, bayes_indep_comp,
+statistic=mean only); newcombe_mover, mj_floor, tango_scc, bayes_indep_comp,
 bayes_paired_comp (binary, statistic=mean only). tango_scc is the
 continuity-corrected "SCC-S" (c=0.125) score interval from Chang et al.
 (2024, J. Applied Statistics 51(1):139-152) -- see
@@ -20,7 +20,7 @@ the paper's prose and its working equations.
 
 Two variants were tried and abandoned after simulation, kept here as notes
 so the same dead ends aren't re-explored:
-- tango_hybrid: plain tango_score, switching to tango_scc only when the
+- tango_hybrid: plain mj_floor, switching to tango_scc only when the
   observed discordant pairs looked imbalanced. Its worst-case coverage
   barely improved on plain tango's, because the residual failures were
   samples that *looked* balanced by chance despite a lopsided true
@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import io
 import itertools
 import multiprocessing as _mp
@@ -85,19 +86,31 @@ with warnings.catch_warnings():
         logit_t_ci_1d,
         nig_ci_1d,
         el_ci_1d,
-        tango_paired_ci,
+        mj_floor_paired_ci,
         tango_scc_paired_ci,
-        newcombe_paired_ci,
-        tango_paired_ci_flat,
-        tango_paired_ci_mean,
-        tango_paired_ci_multirun_effective,
-        tango_paired_ci_multirun_moments,
+        mj_unfloored_paired_ci,
+        newcombe_mover_paired_ci,
+        bonett_price_paired_ci,
+        bonett_price_paired_ci_flat,
+        bonett_price_paired_ci_multirun_cluster,
+        bonett_price_paired_ci_multirun_shrunk,
+        mj_floor_paired_ci_flat,
+        mj_floor_paired_ci_multirun_effective,
+        mj_floor_paired_ci_multirun_cluster,
+        clustered_score_paired_ci,
+        mj_floor_paired_ci_multirun_moments,
         bayes_paired_diff_ci,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
-from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
+from ..latex_tables import (
+    booktabs_table,
+    coverage_cell,
+    escape_latex,
+    mark_best_and_runnerup,
+    report_eval_type_group,
+)
+from ..scenarios import CIPairSource, EVAL_TYPES, DEFAULT_EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
@@ -111,23 +124,33 @@ from ..methods import (
     LOGIT_T,
     NIG,
     EL,
-    NEWCOMBE,
-    TANGO,
+    MJ_FLOOR,
     TANGO_SCC,
+    TANGO_EXACT,
+    MJ_UNFLOORED,
+    BONETT_PRICE,
+    NEWCOMBE_MOVER,
     BAYES_PAIR_INDEP,
     BAYES_PAIR_PAIRED,
     WALD_PAIR_INDEP,
     PAIRWISE_EXTRA_METHODS,
+    LOGIT_T_DITHER,
+    SMOOTH_BOOTSTRAP_DITHER,
+    DITHER_EXTRA_METHODS,
     PAIR_DIFF_NESTED_METHODS,
     BOOTSTRAP_DIFF_NESTED,
     BAYES_DIFF_NESTED,
     SMOOTH_DIFF_NESTED,
     BINARY_PAIR_FLAT_METHODS,
-    TANGO_FLAT,
+    MJ_FLOOR_FLAT,
     NEWCOMBE_FLAT,
+    BONETT_PRICE_FLAT,
     BINARY_PAIR_NESTED_METHODS,
-    TANGO_MULTIRUN_EFFECTIVE,
-    TANGO_MULTIRUN_MOMENTS,
+    BINARY_PAIR_NESTED_OFFICIAL,
+    MJ_FLOOR_CLUSTER,
+    CLUSTERED_SCORE,
+    BONETT_PRICE_CLUSTER,
+    BONETT_PRICE_SHRUNK,
     get_method_color,
     order_present_methods,
 )
@@ -153,6 +176,28 @@ class SimResult:
     total_width: float
     total_score: float = 0.0
     """Sum of interval_score() (see evalstats.core.stats_utils) across n_reps."""
+    total_pen_under: float = 0.0
+    """Sum of the (2/alpha)*(lo - y) penalty for y BELOW the interval.
+
+    Bracher, Ray, Gneiting & Reich (2021) decompose the interval score into
+    the interval width (sharpness) and the penalty for observations outside
+    the interval (calibration), splitting the latter into over- and
+    underprediction to expose systematic bias. Kept separate from
+    total_score because the mean score is ~90% width, so a method can
+    under-cover badly and still post the best score -- the penalty term is
+    what tracks calibration (it reproduces the MinCov ordering exactly)."""
+    total_pen_over: float = 0.0
+    """Sum of the (2/alpha)*(y - hi) penalty for y ABOVE the interval."""
+    rejects: int = 0
+    """Count of reps whose CI EXCLUDED zero, i.e. the decision "these differ".
+
+    On null rows (delta = 0) this is the Type I error count -- identical to
+    n_reps - covered there, kept as its own counter so the same field also
+    gives POWER on the non-null rows, where coverage is about containing the
+    true delta rather than excluding zero. evalstats' users act on this
+    decision (directly, and through the simultaneous-CI/FWER path, which
+    widens these intervals and decides from them), so it is reported
+    alongside coverage rather than left implicit."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     is_null: bool = False
@@ -185,23 +230,6 @@ def _wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     return max(0.0, float(center - radius)), min(1.0, float(center + radius))
 
 
-def _newcombe_paired_score_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Newcombe score CI for paired binary difference p(A=1) - p(B=1)."""
-    n = int(a.shape[0])
-    if n <= 0:
-        return (0.0, 0.0)
-    a_bin = (a >= 0.5).astype(int)
-    b_bin = (b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-    if m == 0:
-        return (0.0, 0.0)
-    theta_low, theta_high = _wilson_ci(successes=n10, n=m, alpha=alpha)
-    scale = m / n
-    return float(scale * (2.0 * theta_low - 1.0)), float(scale * (2.0 * theta_high - 1.0))
-
-
 def _bayes_indep_comp_ci(a: np.ndarray, b: np.ndarray, alpha: float, num_samples: int, rng: np.random.Generator) -> tuple[float, float]:
     """Independent Beta-posteriors CI for paired binary difference p(A=1)-p(B=1)."""
     a_bin = (a >= 0.5).astype(float)
@@ -222,7 +250,7 @@ def _wald_indep_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, f
     textbook "wrong way" to compare matched/paired binary outcomes -- the
     frequentist analog of bayes_indep_comp's identical independence
     assumption (draw separate posteriors for p_A, p_B, subtract). Unlike
-    tango_score/newcombe_score (which use the discordant-pair structure)
+    mj_floor (which uses the discordant-pair structure)
     or even a plain paired t-interval on the per-item differences, it makes
     no use of which items overlap between A and B at all.
 
@@ -318,6 +346,151 @@ def _pairwise_ci(
     return float(np.percentile(boot_stats, 100 * alpha / 2)), float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
 
 
+_NIG_PAIRED_DIFF_B0 = 0.0625 / 4
+"""nig_ci_1d's default b0=0.0625 (prior mean of sigma^2, i.e. prior
+sigma~=0.25) is calibrated for ci_single.py's own rescale span
+[scale_lo, scale_hi] -- see that function's docstring: "weak knowledge
+that scores live in [0, 1]". ci_paired.py instead rescales paired diffs
+onto [-diff_span, diff_span] = [-(scale_hi-scale_lo), (scale_hi-scale_lo)]
+(needed so a zero diff maps to 0.5, nig's own prior centre) -- TWICE as
+wide a span as ci_single's own [scale_lo, scale_hi]. Reusing b0=0.0625
+unchanged there implies 2^2=4x the prior variance in real diff units
+(variance scales with the square of a linear rescale factor) versus what
+ci_single already uses for a raw score on the same eval type, causing
+persistent, substantial over-coverage that isn't a deliberate safety
+margin, just an unpropagated rescale-span change. Verified directly on
+likert paired diffs: coverage 0.983 (n=10, default b0) vs 0.946 (n=10,
+this correction) -- the corrected version is 23% NARROWER for the same
+validity, and the same ~20-30% narrowing (with coverage moving from
+badly over- to essentially exactly at nominal) holds at n=30, n=100, and
+on continuous data too. This restores NIG's effective prior to match
+ci_single.py's own calibration point; it is not a new invented value,
+just correctly propagated through the wider diff rescale."""
+
+
+def _detect_dither_halfwidth(pooled: np.ndarray) -> float:
+    """Auto-detect a rounding/quantization grid step from pooled raw arm
+    values (both arms, one rep) and return half that step -- the dither
+    half-width needed to reconstruct the pre-quantization variance that a
+    paired diff of two highly-correlated arms can lose to rounding
+    cancellation (see LOGIT_T_DITHER's docstring). Data-driven rather than
+    eval_type-driven: labeled "continuous" data that's actually coarse
+    (e.g. a judge that only emits a handful of distinct values) gets
+    detected and dithered correctly; genuinely continuous data (no
+    consistent grid) returns 0.0, meaning "don't dither" -- unlike a
+    hardcoded width, this can't apply a jitter mismatched to the data's
+    real resolution and reintroduce the boundary-clipping bias that broke
+    continuous coverage when a flat +-0.5 was tried there (see
+    add_dither_extras's comment).
+
+    Takes the SMALLEST observed gap between distinct pooled values as the
+    candidate step, then verifies every other gap is (within tolerance) an
+    integer multiple of it -- a GCD-style check, not a "does the dominant
+    gap recur >= N times" frequency threshold. The frequency-threshold
+    version this replaced was blind exactly where dithering matters most:
+    at small N with a peaked/near-boundary distribution (e.g. a likert
+    "near-floor" shape at n=10), pooled values often collapse to just 2-3
+    distinct integers -- too few gap observations for any gap to recur 3+
+    times even though the grid (step=1) is completely unambiguous. This
+    was found via a real regression: at n=10, icc=0.95, the near-floor and
+    near-ceiling likert shapes' logit_t_dither coverage was numerically
+    IDENTICAL to plain logit_t's (0.763, 0.767) -- i.e. dithering silently
+    never activated on exactly the scenarios with the worst collapse.
+    Requiring ALL gaps (not just the most common one) to line up on the
+    candidate grid is deliberately strict: for genuinely continuous data,
+    the smallest of many gaps is essentially arbitrary, and demanding every
+    other gap independently land within tolerance of an integer multiple of
+    it has vanishing false-positive probability (each gap has only a small
+    chance of matching by coincidence, and they must ALL match)."""
+    uniq = np.unique(pooled)
+    if uniq.size < 2:
+        return 0.0
+    gaps = np.diff(uniq)
+    gaps = gaps[gaps > 1e-9]
+    if gaps.size == 0:
+        return 0.0
+    step = float(np.min(gaps))
+    ratios = gaps / step
+    residuals = np.abs(ratios - np.round(ratios))
+    if np.max(residuals) > 0.05:
+        return 0.0
+    return step / 2.0
+
+
+def _debiased_dither(x: np.ndarray, half: float, lo: float, hi: float, rng: np.random.Generator) -> np.ndarray:
+    """Add U(-half, half) jitter to x, clip to [lo, hi], then subtract the
+    EXACT closed-form bias that clipping introduces near the boundaries.
+
+    Naive clip(x + jitter, lo, hi) is NOT mean-preserving for x within
+    `half` of a boundary: jitter that would push x below lo (or above hi)
+    piles up exactly at the boundary instead of continuing past it, pulling
+    E[clipped] toward the interior. For x exactly at a hard boundary with
+    jitter ~ U(-h, h), E[clip] = x +/- h/4 (derived below) -- NOT x. This
+    doesn't average away with N (it's a fixed per-item shift, not noise),
+    and because two paired arms generally have DIFFERENT boundary-mass
+    compositions (that's what makes them differ), the bias doesn't cancel
+    in the arms' difference either -- it contaminates the estimated diff
+    directly. Confirmed as a real regression: on likert "bimodal-extreme"
+    data (icc=0.95, d=0.4, heavy mass at both the floor AND ceiling, more
+    at the ceiling), logit_t_dither's coverage fell from 0.953 (n=15) to
+    0.870 (n=100) -- degrading WITH N, the signature of a persistent bias
+    rather than added variance -- while plain logit_t stayed flat (~0.94-
+    0.97) on the identical scenario. Root cause confirmed directly: the
+    dithered point estimate was shifted by -0.044 relative to the
+    undithered one, consistent with the ceiling (39.5% of mass) pulling the
+    difference down more than the floor (20.3% of mass) pulled it up.
+
+    Derivation: for x with distance d = x - lo from the lower bound
+    (d < half means boundary-adjacent) and jitter j ~ U(-half, half),
+    E[max(x+j, lo)] - x = E[max(j, -d)] = (half - d)^2 / (4*half) for
+    d < half (0 otherwise) -- a standard truncated-uniform expectation.
+    The upper-bound case is the mirror image. Subtracting these exactly
+    recenters the expectation back on x regardless of boundary proximity
+    (verified numerically: reduces a 0.125 bias at h=0.5 to ~0.0005,
+    Monte-Carlo-noise level, if left un-clipped). Reflection or rejection-
+    resampling were tried first and are WORSE, not better, here: for
+    jitter straddling a hard boundary symmetrically, both fold the entire
+    out-of-bounds half onto an exact duplicate of the in-bounds half
+    (rather than restoring symmetry around x), giving twice clip's bias
+    (0.25 vs 0.125 at h=0.5).
+
+    The correction is finally re-clipped to [lo, hi] -- NOT left
+    unclipped as an earlier version of this function did. That version's
+    docstring claimed the resulting per-item excursions past [lo, hi]
+    (up to half/4) were harmless because they "only ever feed a per-item
+    mean" -- that was wrong: pair_diffs_dither/cell_diffs_dither are
+    per-ITEM arrays (n entries), passed directly into logit_t_ci_1d,
+    which raises ValueError on inputs meaningfully outside [0, 1] after
+    rescaling (see that function's docstring re: a near-identical past
+    incident). With n independent items, the chance that AT LEAST ONE
+    exceeds the tolerance grows with n (~1-(1-p)^n), not shrinks -- a
+    max-of-n effect, invisible in small samples, that produced the exact
+    same "coverage falls with N" symptom this whole fix targets, just
+    from a different mechanism (an exception being silently swallowed
+    into a zero-width interval by the `except Exception:` fallback below,
+    not lost variance). Confirmed via direct measurement on likert
+    "uniform" data (heavy floor+ceiling mass, so most prone to
+    floor-vs-ceiling item pairs before any jitter): the unclipped version's
+    ValueError rate rose from 2.3% (n=10) to 22.3% (n=100). Re-clipping
+    trades away some of the bias correction for boundary-adjacent items
+    (residual ~0.070 vs clip-alone's 0.125 at h=0.5 -- a ~44% reduction,
+    not a full fix) in exchange for guaranteed validity; a value exactly
+    at a hard boundary can't be made simultaneously unbiased AND
+    contained in [lo, hi] by any deterministic remapping of a jitter
+    that spans past that boundary -- containment was chosen as the
+    non-negotiable constraint since violating it doesn't degrade
+    gracefully, it corrupts the whole interval for that rep."""
+    if half <= 0:
+        return x
+    jitter = rng.uniform(-half, half, size=x.shape)
+    raw = np.clip(x + jitter, lo, hi)
+    d_lo = x - lo
+    d_hi = hi - x
+    bias_lo = np.where(d_lo < half, (half - d_lo) ** 2 / (4 * half), 0.0)
+    bias_hi = np.where(d_hi < half, (half - d_hi) ** 2 / (4 * half), 0.0)
+    return np.clip(raw - bias_lo + bias_hi, lo, hi)
+
+
 def _run_cell(
     source_obj: CIPairSource, n: int, n_reps: int, n_bootstrap: int, bayes_n: int,
     alpha: float, runs: int, statistic: str, seed, method_names: frozenset[str] | None = None,
@@ -325,7 +498,7 @@ def _run_cell(
     """Run all reps for one (source, n) cell -- pairwise estimand.
 
     ``method_names``, if given, restricts computation (not just reporting) to
-    methods whose ``.name`` is in the set -- e.g. ``{"tango_score",
+    methods whose ``.name`` is in the set -- e.g. ``{"mj_floor",
     "tango_scc", "bayes_paired_comp"}`` skips the bootstrap family, newcombe,
     and bayes_indep_comp entirely, which matters because bayes_indep_comp/
     bayes_paired_comp (importance sampling) are ~40-70x slower per call than
@@ -341,9 +514,29 @@ def _run_cell(
     active_bootstrap_methods = [m for m in METHODS if _want(m.name)]
     active_pairwise_extras = [m for m in PAIRWISE_EXTRA_METHODS if _want(m.name)]
     add_pairwise_extras = statistic == "mean" and source_obj.eval_type != "binary" and bool(active_pairwise_extras)
-    add_newcombe = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE.name)
-    add_tango = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO.name)
+    active_dither_extras = [m for m in DITHER_EXTRA_METHODS if _want(m.name)]
+    # Non-binary; the actual jitter width is auto-detected per rep from the
+    # data itself (_detect_dither_halfwidth), not hardcoded. The motivating
+    # mechanism (rounding-driven diff cancellation between two paired,
+    # highly-correlated arms) needs a quantization grid to undo -- a fixed
+    # +-0.5 (right for likert's integer rounding) was tried on continuous's
+    # [0,1] scale too and was WRONG there (half the entire range), causing
+    # heavy boundary clipping and a bias that got worse with N (coverage
+    # 0.936 -> 0.800, n=10 -> n=100, nested screening). Detecting the grid
+    # from the data instead of assuming one from eval_type fixes that AND
+    # generalizes: labeled-"continuous" data that's actually coarse (a judge
+    # emitting only a handful of distinct values) gets dithered correctly,
+    # while genuinely continuous data detects no grid and the dither variant
+    # safely reduces to its base method (identical CI, no bias introduced).
+    add_dither_extras = (
+        statistic == "mean" and source_obj.eval_type != "binary" and bool(active_dither_extras)
+    )
+    add_mj_floor = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_FLOOR.name)
     add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
+    add_tango_exact = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_EXACT.name)
+    add_mj_unfloored = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_UNFLOORED.name)
+    add_bonett_price = source_obj.eval_type == "binary" and statistic == "mean" and _want(BONETT_PRICE.name)
+    add_newcombe_mover = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE_MOVER.name)
     add_bayes_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_INDEP.name)
     add_bayes_paired = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_PAIRED.name)
     add_wald_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(WALD_PAIR_INDEP.name)
@@ -351,12 +544,20 @@ def _run_cell(
     active_methods = list(active_bootstrap_methods)
     if add_pairwise_extras:
         active_methods += active_pairwise_extras
-    if add_newcombe:
-        active_methods.append(NEWCOMBE)
-    if add_tango:
-        active_methods.append(TANGO)
+    if add_dither_extras:
+        active_methods += active_dither_extras
+    if add_mj_floor:
+        active_methods.append(MJ_FLOOR)
     if add_tango_scc:
         active_methods.append(TANGO_SCC)
+    if add_tango_exact:
+        active_methods.append(TANGO_EXACT)
+    if add_mj_unfloored:
+        active_methods.append(MJ_UNFLOORED)
+    if add_bonett_price:
+        active_methods.append(BONETT_PRICE)
+    if add_newcombe_mover:
+        active_methods.append(NEWCOMBE_MOVER)
     if add_bayes_indep:
         active_methods.append(BAYES_PAIR_INDEP)
     if add_bayes_paired:
@@ -367,6 +568,9 @@ def _run_cell(
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
+    rejects: dict = {m: 0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_diff = source_obj.true_diff
@@ -376,6 +580,12 @@ def _run_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
+        if true_diff < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
+        elif true_diff > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
+        if ci_low > 0.0 or ci_high < 0.0:
+            rejects[method] += 1
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -409,12 +619,13 @@ def _run_cell(
             _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             diff_span = _scale_hi - _scale_lo
             diff_lo, diff_hi = -diff_span, diff_span
-            _extra_fns = dict(zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)))
+            _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
+            _extra_fns = dict(zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, logit_t_ci_1d, _nig_paired, el_ci_1d)))
             for method in active_pairwise_extras:
                 fn = _extra_fns[method]
                 _t0 = time.perf_counter()
                 try:
-                    if fn is nig_ci_1d or fn is logit_t_ci_1d:
+                    if method is NIG or method is LOGIT_T:
                         ci_low, ci_high = rescaled_ci(fn, pair_diffs, alpha, diff_lo, diff_hi)
                     else:
                         ci_low, ci_high = fn(pair_diffs, alpha)
@@ -425,27 +636,53 @@ def _run_cell(
                 total_t_sq[method] += _el * _el
                 _record(method, ci_low, ci_high)
 
-        if add_newcombe:
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = _newcombe_paired_score_ci(a[:, 0], b[:, 0], alpha)
-            except Exception:
-                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
-            _el = time.perf_counter() - _t0
-            total_t[NEWCOMBE] += _el
-            total_t_sq[NEWCOMBE] += _el * _el
-            _record(NEWCOMBE, ci_low, ci_high)
+        if add_dither_extras:
+            # Independent U(-half, +half) jitter per arm (not on the diff
+            # directly), clip back to the scale, then subtract the exact
+            # boundary-clipping bias (see _debiased_dither's docstring) --
+            # half is detected per rep from the data's own quantization
+            # grid (0.0 -- i.e. no jitter -- if none is detected). See
+            # LOGIT_T_DITHER's docstring for why this specifically targets
+            # the paired-diff rounding-cancellation pathology, not just
+            # "add some noise."
+            _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+            _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
+            a_dither = _debiased_dither(a, _half, _scale_lo, _scale_hi, rng)
+            b_dither = _debiased_dither(b, _half, _scale_lo, _scale_hi, rng)
+            pair_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
+            obs_dither = float(np.mean(pair_diffs_dither))
+            diff_span_dither = _scale_hi - _scale_lo
+            diff_lo_dither, diff_hi_dither = -diff_span_dither, diff_span_dither
+            for method in active_dither_extras:
+                _t0 = time.perf_counter()
+                try:
+                    if method is LOGIT_T_DITHER:
+                        ci_low, ci_high = rescaled_ci(
+                            logit_t_ci_1d, pair_diffs_dither, alpha, diff_lo_dither, diff_hi_dither,
+                        )
+                    else:  # SMOOTH_BOOTSTRAP_DITHER
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            boot_stats = smooth_bootstrap_means_1d(pair_diffs_dither, n_bootstrap, rng, statistic=statistic)
+                        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+                except Exception:
+                    ci_low = ci_high = obs_dither
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                _record(method, ci_low, ci_high)
 
-        if add_tango:
+        if add_mj_floor:
             _t0 = time.perf_counter()
             try:
-                ci_low, ci_high = tango_paired_ci(a[:, 0], b[:, 0], alpha)
+                ci_low, ci_high = mj_floor_paired_ci(a[:, 0], b[:, 0], alpha)
             except Exception:
                 ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
             _el = time.perf_counter() - _t0
-            total_t[TANGO] += _el
-            total_t_sq[TANGO] += _el * _el
-            _record(TANGO, ci_low, ci_high)
+            total_t[MJ_FLOOR] += _el
+            total_t_sq[MJ_FLOOR] += _el * _el
+            _record(MJ_FLOOR, ci_low, ci_high)
 
         if add_tango_scc:
             _t0 = time.perf_counter()
@@ -457,6 +694,50 @@ def _run_cell(
             total_t[TANGO_SCC] += _el
             total_t_sq[TANGO_SCC] += _el * _el
             _record(TANGO_SCC, ci_low, ci_high)
+
+        if add_tango_exact:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = tango_scc_paired_ci(a[:, 0], b[:, 0], alpha, c=0.0)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[TANGO_EXACT] += _el
+            total_t_sq[TANGO_EXACT] += _el * _el
+            _record(TANGO_EXACT, ci_low, ci_high)
+
+        if add_mj_unfloored:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = mj_unfloored_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[MJ_UNFLOORED] += _el
+            total_t_sq[MJ_UNFLOORED] += _el * _el
+            _record(MJ_UNFLOORED, ci_low, ci_high)
+
+        if add_bonett_price:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = bonett_price_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[BONETT_PRICE] += _el
+            total_t_sq[BONETT_PRICE] += _el * _el
+            _record(BONETT_PRICE, ci_low, ci_high)
+
+        if add_newcombe_mover:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = newcombe_mover_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[NEWCOMBE_MOVER] += _el
+            total_t_sq[NEWCOMBE_MOVER] += _el * _el
+            _record(NEWCOMBE_MOVER, ci_low, ci_high)
 
         if add_bayes_indep:
             _t0 = time.perf_counter()
@@ -496,6 +777,9 @@ def _run_cell(
             source=source_obj.source, label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
+            rejects=rejects[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, model_a=source_obj.model_a, model_b=source_obj.model_b,
             benchmark_id=source_obj.benchmark_id, corpus_size=source_obj.max_n,
@@ -639,13 +923,21 @@ def _run_nested_pairwise_cell(
         active_methods += [m for m in PAIR_DIFF_NESTED_METHODS if _want(m.name)]
     if is_binary:
         active_methods += [m for m in BINARY_PAIR_FLAT_METHODS if _want(m.name)]
-        active_methods += [m for m in BINARY_PAIR_NESTED_METHODS if _want(m.name)]
+        # Default to the official subset; an explicit --methods can still name
+        # anything in the full list (e.g. bonett_price_cluster as an ablation).
+        _nested_pool = (BINARY_PAIR_NESTED_METHODS if method_names is not None
+                        else BINARY_PAIR_NESTED_OFFICIAL)
+        active_methods += [m for m in _nested_pool if _want(m.name)]
     else:
         active_methods += [m for m in (LOGIT_T, NIG, EL) if _want(m.name)]
+        active_methods += [m for m in DITHER_EXTRA_METHODS if _want(m.name)]
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
+    rejects: dict = {m: 0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
 
@@ -654,6 +946,12 @@ def _run_nested_pairwise_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
+        if true_diff < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
+        elif true_diff > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
+        if ci_low > 0.0 or ci_high < 0.0:
+            rejects[method] += 1
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -702,7 +1000,8 @@ def _run_nested_pairwise_cell(
             _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             diff_span = _scale_hi - _scale_lo
             diff_lo, diff_hi = -diff_span, diff_span
-            for method, fn in zip((LOGIT_T, NIG, EL), (logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
+            _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
+            for method, fn in zip((LOGIT_T, NIG, EL), (logit_t_ci_1d, _nig_paired, el_ci_1d)):
                 if not _want(method.name):
                     continue
                 _t0 = time.perf_counter()
@@ -713,6 +1012,43 @@ def _run_nested_pairwise_cell(
                         ci_low, ci_high = rescaled_ci(fn, cell_diffs, alpha, diff_lo, diff_hi)
                 except Exception:
                     ci_low = ci_high = obs_diff
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                _record(method, ci_low, ci_high)
+
+        # -- logit_t_dither/smooth_bootstrap_dither on cell-mean diffs,
+        # non-binary -- same fix as _run_cell's flat-mode add_dither_extras
+        # block, see LOGIT_T_DITHER's and _detect_dither_halfwidth's
+        # docstrings: the jitter width is auto-detected per rep from the
+        # data's own quantization grid (0.0, i.e. no jitter, if none is
+        # found), not a hardcoded +-0.5 -- a fixed width calibrated to
+        # likert's integer rounding was tried on continuous's own scale too
+        # and caused a bias that got WORSE with N (coverage 0.936 -> 0.800,
+        # n=10 -> n=100). Like logit_t/nig/el above, these have no full-N-x-R
+        # nested variant -- they operate on the same cell-mean-reduced
+        # diffs, just computed from independently dithered a/b first.
+        if not is_binary:
+            _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
+            a_dither = _debiased_dither(a, _half, _scale_lo, _scale_hi, rng)
+            b_dither = _debiased_dither(b, _half, _scale_lo, _scale_hi, rng)
+            cell_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
+            obs_diff_dither = float(np.mean(cell_diffs_dither))
+            for method in (LOGIT_T_DITHER, SMOOTH_BOOTSTRAP_DITHER):
+                if not _want(method.name):
+                    continue
+                _t0 = time.perf_counter()
+                try:
+                    if method is LOGIT_T_DITHER:
+                        ci_low, ci_high = rescaled_ci(logit_t_ci_1d, cell_diffs_dither, alpha, diff_lo, diff_hi)
+                    else:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            boot_stats = smooth_bootstrap_means_1d(cell_diffs_dither, n_bootstrap, rng, statistic="mean")
+                        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+                except Exception:
+                    ci_low = ci_high = obs_diff_dither
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
@@ -750,27 +1086,38 @@ def _run_nested_pairwise_cell(
         if is_binary:
             a0, b0 = a[:, 0], b[:, 0]  # first run only (flat iid baseline)
 
-            if _want(TANGO_FLAT.name):
+            if _want(MJ_FLOOR_FLAT.name):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = tango_paired_ci_flat(a, b, alpha)
+                    ci_low, ci_high = mj_floor_paired_ci_flat(a, b, alpha)
                 except Exception:
                     ci_low = ci_high = float(np.mean(a0 - b0))
                 _el = time.perf_counter() - _t0
-                total_t[TANGO_FLAT] += _el
-                total_t_sq[TANGO_FLAT] += _el * _el
-                _record(TANGO_FLAT, ci_low, ci_high)
+                total_t[MJ_FLOOR_FLAT] += _el
+                total_t_sq[MJ_FLOOR_FLAT] += _el * _el
+                _record(MJ_FLOOR_FLAT, ci_low, ci_high)
 
             if _want(NEWCOMBE_FLAT.name):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = newcombe_paired_ci(a0, b0, alpha)
+                    ci_low, ci_high = newcombe_mover_paired_ci(a0, b0, alpha)
                 except Exception:
                     ci_low = ci_high = float(np.mean(a0 - b0))
                 _el = time.perf_counter() - _t0
                 total_t[NEWCOMBE_FLAT] += _el
                 total_t_sq[NEWCOMBE_FLAT] += _el * _el
                 _record(NEWCOMBE_FLAT, ci_low, ci_high)
+
+            if _want(BONETT_PRICE_FLAT.name):
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = bonett_price_paired_ci_flat(a, b, alpha)
+                except Exception:
+                    ci_low = ci_high = float(np.mean(a0 - b0))
+                _el = time.perf_counter() - _t0
+                total_t[BONETT_PRICE_FLAT] += _el
+                total_t_sq[BONETT_PRICE_FLAT] += _el * _el
+                _record(BONETT_PRICE_FLAT, ci_low, ci_high)
 
             if _want(BAYES_PAIR_INDEP.name):
                 _t0 = time.perf_counter()
@@ -806,10 +1153,15 @@ def _run_nested_pairwise_cell(
                 _record(WALD_PAIR_INDEP, ci_low, ci_high)
 
             for method, fn in [
-                (TANGO_MULTIRUN_EFFECTIVE, tango_paired_ci_multirun_effective),
-                (TANGO_MULTIRUN_MOMENTS, tango_paired_ci_multirun_moments),
+                (MJ_FLOOR_CLUSTER, mj_floor_paired_ci_multirun_cluster),
+                (CLUSTERED_SCORE, clustered_score_paired_ci),
+                (BONETT_PRICE_CLUSTER, bonett_price_paired_ci_multirun_cluster),
+                (BONETT_PRICE_SHRUNK, bonett_price_paired_ci_multirun_shrunk),
             ]:
-                if not _want(method.name):
+                # `covered` is keyed by active_methods, which defaults to
+                # BINARY_PAIR_NESTED_OFFICIAL -- so this also skips methods that
+                # are selectable but not in the default set.
+                if not _want(method.name) or method not in covered:
                     continue
                 _t0 = time.perf_counter()
                 try:
@@ -826,6 +1178,9 @@ def _run_nested_pairwise_cell(
             source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
+            rejects=rejects[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, run_noise_frac=source_obj.run_noise_frac, runs=runs,
         )
@@ -899,10 +1254,10 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
 
 
 def _headline_cov_width_score(
-    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]],
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]],
     m: str,
     sizes_present: list[int],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     """Headline (Cov, Width, Score) for method `m`: average per n first (one
     number per n, unweighted across whatever sources contributed at that n),
     then average those per-n numbers across n -- rather than pooling every
@@ -918,14 +1273,44 @@ def _headline_cov_width_score(
                 float(np.mean([v[0] for v in vals])),
                 float(np.mean([v[1] for v in vals])),
                 float(np.mean([v[2] for v in vals])),
+                float(np.mean([v[3] for v in vals])),
             ))
     if not per_n_means:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan")
     return (
-        float(np.mean([c for c, _, _ in per_n_means])),
-        float(np.mean([w for _, w, _ in per_n_means])),
-        float(np.mean([s for _, _, s in per_n_means])),
+        float(np.mean([c for c, _, _, _ in per_n_means])),
+        float(np.mean([w for _, w, _, _ in per_n_means])),
+        float(np.mean([s for _, _, s, _ in per_n_means])),
+        float(np.mean([q for _, _, _, q in per_n_means])),
     )
+
+
+def _decision_rates(results: list[SimResult]) -> tuple[dict, dict]:
+    """(type1, power) keyed by (eval_type, method).
+
+    Type I is the reject rate on null rows (delta = 0); power is the reject
+    rate on the alternative rows, averaged per scenario first so the two
+    swept effect sizes (d=0.20, d=0.40) and every p/icc combination weigh
+    equally rather than by how many cells each happens to contribute.
+    """
+    t1_acc: dict = defaultdict(lambda: [0, 0])
+    pw_cells: dict = defaultdict(list)
+    for r in results:
+        key = (r.eval_type, r.method)
+        if r.is_null:
+            acc = t1_acc[key]
+            acc[0] += r.rejects
+            acc[1] += r.n_reps
+        else:
+            pw_cells[(r.eval_type, r.method, r.label)].append((r.rejects, r.n_reps))
+    type1 = {k: (v[0] / v[1]) if v[1] else float("nan") for k, v in t1_acc.items()}
+    by_method: dict = defaultdict(list)
+    for (et, m, _label), cells in pw_cells.items():
+        c = sum(x[0] for x in cells); n = sum(x[1] for x in cells)
+        if n:
+            by_method[(et, m)].append(c / n)
+    power = {k: float(np.mean(v)) for k, v in by_method.items() if v}
+    return type1, power
 
 
 def _print_overall_summary_table(
@@ -936,6 +1321,8 @@ def _print_overall_summary_table(
     agg_counts: dict[tuple, tuple[int, int]],
     target: float,
     sizes_present: list[int],
+    type1: dict | None = None,
+    power: dict | None = None,
 ) -> None:
     """Print one OVERALL SUMMARY table, aggregated only over `eval_types`.
 
@@ -968,9 +1355,21 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
           f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
+    print(f"  TypeI = P(CI excludes 0) on null cells (target alpha); Power = the same rate\n"
+          f"  on the alternative cells, averaged over scenarios. evalstats users act on this\n"
+          f"  decision, directly and through the simultaneous-CI/FWER path.")
+    print(f"  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
+          f"  so a too-narrow method can post the best Score while under-covering.\n"
+          f"  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
+          f"  that are too WIDE, Penalty ((2/alpha) x mean miss distance) those that are\n"
+          f"  too NARROW. Neither means 'calibration' on its own -- Penalty falls\n"
+          f"  monotonically to 0 as an interval is widened, and a perfectly calibrated\n"
+          f"  interval still carries a large Penalty (it misses alpha of the time by\n"
+          f"  construction). Read Width, Penalty and Cov/MinCov together.")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'TypeI':>7}  {'Power':>7}  {'Time(ms)':>14}{n_cols_hdr}")
+    _et_key = eval_types[0] if len(eval_types) == 1 else None
     for m in method_labels:
-        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
+        mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats(
@@ -984,11 +1383,14 @@ def _print_overall_summary_table(
             c_n, t_n = per_n_counts.get((m, n), (0, 0))
             cov_n = c_n / t_n if t_n > 0 else float("nan")
             n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
+        t1s = f"{type1[(_et_key, m)]:.3f}" if type1 and (_et_key, m) in type1 else "-"
+        pws = f"{power[(_et_key, m)]:.3f}" if power and (_et_key, m) in power else "-"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  {t1s:>7}  {pws:>7}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
     target = 1.0 - alpha
+    type1_map, power_map = _decision_rates(results)
     non_null = [r for r in results if not r.is_null]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
     present_methods = {r.method for r in non_null}
@@ -1000,7 +1402,8 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
+        penalty = (r.total_pen_under + r.total_pen_over) / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score, penalty))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -1027,22 +1430,34 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
                 row += "  " + (" " * 7 if np.isnan(cov) else f"{cov:.3f}{_cov_marker(cov, target)}".ljust(8))
             print(row)
 
-    # Split into three OVERALL SUMMARY tables -- binary, continuous [0,1], and
-    # numeric (likert + grades averaged together) -- since these data types
-    # are answered by very different method families and a single pooled
-    # table obscures which methods actually perform best for which type.
+    # Split into per-eval-type OVERALL SUMMARY tables -- binary, continuous
+    # [0,1], likert, and grades all separate -- since these data types are
+    # answered by very different method families/scales and a pooled table
+    # obscures which methods actually perform best for which type. Likert
+    # and grades used to be pooled together as one "numeric" table; kept
+    # separate now since likert was found (2026-08-11) to have materially
+    # different small-N paired-diff behavior than continuous/grades (see
+    # LOGIT_T_DITHER's docstring) -- pooling would hide exactly that,
+    # and concretely mixes likert's 1-5-scale widths with grades' 0-100-
+    # scale widths, an even more obviously incomparable pair. Official runs
+    # never include grades (see official_args()), so in practice this only
+    # ever prints 3 tables there.
     sizes_present = sorted({r.n for r in non_null})
     _print_overall_summary_table(
         "OVERALL SUMMARY -- BINARY (averaged across sources)",
-        ["binary"], non_null, agg, agg_counts, target, sizes_present,
+        ["binary"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
     _print_overall_summary_table(
         "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources)",
-        ["continuous"], non_null, agg, agg_counts, target, sizes_present,
+        ["continuous"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
     _print_overall_summary_table(
-        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources)",
-        ["likert", "grades"], non_null, agg, agg_counts, target, sizes_present,
+        "OVERALL SUMMARY -- LIKERT (averaged across sources)",
+        ["likert"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- GRADES (averaged across sources)",
+        ["grades"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
 
     null_results = [r for r in results if r.is_null]
@@ -1074,6 +1489,11 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
+#: Fine-grained eval-type block label; see latex_tables for why the
+#: coarse `eval_type_group` isn't used for these tables.
+_report_eval_type_group = report_eval_type_group
+
+
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
     """LaTeX booktabs version of print_report's OVERALL SUMMARY block
     (non-null rows only), plus one coverage column per sample size actually
@@ -1081,45 +1501,64 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     collapses across n and can hide miscalibration that only shows up at
     small or large sample sizes.
 
-    Methods that ran on both eval-type groups (binary and numeric) get two
-    rows -- "<method> (binary)" and "<method> (numeric)" -- each computed
-    from only that group's data, rather than one row averaging across both.
-    Averaging Cov/Width/Score across binary and numeric data mixes two
-    different scales/regimes into a number that isn't comparable to any
-    group-pure method's row; an "all" Eval-types value was a symptom of
-    exactly this, not a meaningful category of its own, so no row's Eval
-    types column is ever "all" here. Mirrors cases/ci_single.py's identical
-    fix -- see that module's latex_overall_summary for the full writeup.
-    """
+    Methods that ran on more than one eval type get one row PER eval type --
+    "<method> (bin)"/"<method> (cont)"/"<method> (lik)" -- each computed
+    from only that type's own data, rather than one row averaging across
+    incomparable scales/regimes (see _report_eval_type_group's docstring for
+    why this is now a 3-way split, not the 2-way binary/numeric split an
+    earlier version of this function used).
+
+    Within each eval-type block (separated by a midrule), the Score column's
+    best value is bold and the runner-up is underlined -- see
+    latex_tables.mark_best_and_runnerup. Coverage cells (aggregate and
+    per-n) are shaded by latex_tables.coverage_cell to flag miscalibration
+    at a glance."""
     target = 1.0 - alpha
     non_null = [r for r in results if not r.is_null]
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)}
     method_labels = [m.name for m in order_present_methods({r.method for r in non_null})]
     sizes_present = sorted({r.n for r in non_null})
 
+    # Decision rates, keyed by (report group, method) to match the row blocks.
+    _grouped = [
+        SimResult(**{**vars(r), "eval_type": _report_eval_type_group(r.eval_type)})
+        for r in results
+    ]
+    g_type1, g_power = _decision_rates(_grouped)
+
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    method_group_types: dict[tuple[str, str], set[str]] = defaultdict(set)
     for r in non_null:
-        g = eval_type_group(r.eval_type)
+        g = _report_eval_type_group(r.eval_type)
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(g, r.method, r.n)].append((cov, width, score))
+        agg[(g, r.method, r.n)].append((cov, width, score, (r.total_pen_under + r.total_pen_over) / r.n_reps))
         c_prev, t_prev = agg_counts[(g, r.method, r.n)]
         agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
-        method_group_types[(r.method, g)].add(r.eval_type)
 
     method_groups: dict[str, set[str]] = defaultdict(set)
     for (g, m, _n) in agg:
         method_groups[m].add(g)
 
+    group_order = ["bin", "cont", "lik", "grades"]
+    groups_present = sorted(
+        {g for methods in method_groups.values() for g in methods},
+        key=lambda g: group_order.index(g) if g in group_order else len(group_order),
+    )
+
     rows = []
-    for m in method_labels:
-        groups = sorted(method_groups[m])
-        multi_group = len(groups) > 1
-        for g in groups:
-            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        group_start = len(rows)
+        score_vals: list[float] = []
+        penalty_vals: list[float] = []
+        for m in method_labels:
+            if g not in method_groups[m]:
+                continue
+            multi_group = len(method_groups[m]) > 1
+            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]] = defaultdict(list)
             all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
             per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
             for n in sizes_present:
@@ -1131,41 +1570,58 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 all_counts[m] = (c_prev + c, t_prev + t)
                 per_n_counts[(m, n)] = (c, t)
 
-            mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-            c_tot, t_tot = all_counts[m]
-            _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-            avg_ms, se_ms = _time_stats(
-                [r for r in non_null if r.method == m and eval_type_group(r.eval_type) == g]
+            mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
+            # Worst single (scenario, n) coverage -- the tail that the headline
+            # Cov averages away. Same quantity as the printed table's MinCov.
+            _worst = [v[0] for vals in per_n_vals.values() for v in vals]
+            mmin = min(_worst) if _worst else float("nan")
+            avg_ms, _ = _time_stats(
+                [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
-            time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
-            et_label = eval_type_label(method_group_types[(m, g)], eval_types_present)
+            time_str = f"{avg_ms:.3f}" if np.isfinite(avg_ms) else "-"
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
-                f"{mc:.3f}" if np.isfinite(mc) else "-",
-                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+                coverage_cell(mc, target),
+                coverage_cell(mmin, target) if np.isfinite(mmin) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
+                f"{mp:.4f}" if np.isfinite(mp) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
+                f"{g_type1[(g, m)]:.3f}" if (g, m) in g_type1 else "-",
+                f"{g_power[(g, m)]:.3f}" if (g, m) in g_power else "-",
                 time_str,
-                et_label,
+                g,
             ]
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
                 cov_n = c_n / t_n if t_n > 0 else float("nan")
-                row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+                row.append(coverage_cell(cov_n, target))
             rows.append(row)
+            score_vals.append(ms)
+            penalty_vals.append(mp)
+
+        # Mark the best/runner-up in BOTH Penalty and Score. Marking Score
+        # alone bolds whichever method is narrowest, which is how a
+        # badly-calibrated method ends up looking like the winner.
+        for col, vals in ((5, score_vals), (4, penalty_vals)):
+            decorated = mark_best_and_runnerup([r[col] for r in rows[group_start:]], vals)
+            for i, cell in enumerate(decorated):
+                rows[group_start + i][col] = cell
 
     return booktabs_table(
         caption=(
-            f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
-            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
-            "Methods tested on both binary and numeric data are reported as two rows, one per eval-type "
-            "group, so no row averages across incomparable scales."
+            f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
+            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Pen(alty), where Pen is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. ""Type-I is the rate at which the interval excludes zero on the null scenarios ""(target $\\alpha$); Power is that rate on the alternative scenarios, averaged over ""scenarios. These are the decisions users act on, directly and through the ""simultaneous-CI/FWER path, which widens these same intervals. "
+            "Methods tested on more than one eval type are reported as one row per type "
+            "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
+            "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
+        columns=["Method", "Cov", "MinCov", "Width", "Pen $\\downarrow$", "Score $\\downarrow$",
+                 "Type-I", "Power $\\uparrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -1182,6 +1638,8 @@ def save_results_artifacts(
         writer.writerow([
             "source", "model_a", "model_b", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
             "covered", "total_width", "coverage", "mean_width", "total_score", "mean_score",
+            "mean_penalty", "mean_pen_under", "mean_pen_over",
+            "rejects", "reject_rate",
             "total_time", "total_time_sq", "mcse", "band95_low", "band95_high",
             "avg_time_ms", "se_time_ms", "is_null", "corpus_size", "true_diff", "run_noise_frac", "runs",
         ])
@@ -1189,12 +1647,17 @@ def save_results_artifacts(
             coverage = r.covered / r.n_reps
             mean_width = r.total_width / r.n_reps
             mean_score = r.total_score / r.n_reps
+            mean_pen_under = r.total_pen_under / r.n_reps
+            mean_pen_over = r.total_pen_over / r.n_reps
             _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
             avg_ms, se_ms = _time_stats([r])
             writer.writerow([
                 r.source, r.model_a or "", r.model_b or "", r.benchmark_id or "", r.label, r.eval_type, r.n,
                 r.method, r.n_reps, r.covered, f"{r.total_width:.8f}", f"{coverage:.8f}", f"{mean_width:.8f}",
                 f"{r.total_score:.8f}", f"{mean_score:.8f}",
+                f"{mean_pen_under + mean_pen_over:.8f}",
+                f"{mean_pen_under:.8f}", f"{mean_pen_over:.8f}",
+                r.rejects, f"{r.rejects / r.n_reps:.8f}",
                 f"{r.total_time:.10f}", f"{r.total_time_sq:.10f}",
                 f"{mcse:.8f}", f"{lo:.8f}", f"{hi:.8f}",
                 f"{avg_ms:.6f}" if np.isfinite(avg_ms) else "",
@@ -1421,7 +1884,7 @@ def save_by_n_violin_plot(
     violin per method at each n within a column (dodged side by side); each
     dot is one scenario's (label) mean coverage/score at that n and method.
 
-    Originally built (and hardcoded) for comparing tango_score vs.
+    Originally built (and hardcoded) for comparing mj_floor vs.
     tango_scc vs. bayes_paired_comp across N on binary data only; generalized
     to any eval type/method combination so it also works for e.g. logit_t vs.
     another continuous/likert method (via --eval-types/--methods -- see
@@ -1697,9 +2160,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="Synthetic scenario breadth (ignored for real data sources)")
-    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
+    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES,
+                         default=list(DEFAULT_EVAL_TYPES), metavar="TYPE",
+                         help="Default matches the official presets (no 'grades'); pass "
+                              "--eval-types grades explicitly to include it.")
     parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
-                         help="Restrict to these CI methods only, by Method.name (e.g. tango_score "
+                         help="Restrict to these CI methods only, by Method.name (e.g. mj_floor "
                               "tango_scc bayes_paired_comp). Skips *computing* (not just reporting) any "
                               "method not listed -- the way to cut runtime when bayes_indep_comp/"
                               "bayes_paired_comp (importance sampling, ~40-70x slower per call than "
@@ -1737,7 +2203,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--by-n-violin-plot", action="store_true", default=False,
                          help="Also save grouped violin plots of per-scenario coverage and interval "
                               "score vs. sample size -- one violin per method at each n (one column "
-                              "per eval type present). Originally built for comparing tango_score vs. "
+                              "per eval type present). Originally built for comparing mj_floor vs. "
                               "tango_scc vs. bayes_paired_comp across N on binary data (see "
                               "discordant_comparison_args() for that invocation), but works for any "
                               "eval type/method set, e.g. logit_t vs. another continuous method via "
@@ -1780,13 +2246,26 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     [0, 1]-scale case well (grades is just continuous rescaled to 0-100),
     while "likert" is kept as a genuinely distinct limiting case (integer-
     valued, few levels). Dropping grades cuts a third eval type out of the
-    official sweep's runtime for no real loss of coverage."""
+    official sweep's runtime for no real loss of coverage.
+
+    icc_values matched to nested_official_args()'s range (was stale here --
+    this preset never received the 2026-07-14 reweighting nested_official_args()
+    got, see that docstring for the full writeup: measuring actual per-item
+    ICC on 48 real (model, benchmark) corpora gave mean 0.739, median 0.748,
+    IQR [0.644, 0.873], i.e. concentrated well above this preset's old cap of
+    0.80, not spread evenly across [0, 1]. Concretely surfaced by checking
+    whether logit_t_dither's likert numbers here could be justified against
+    plain logit_t: at this preset's old max icc=0.80, logit_t showed no
+    coverage degradation at all (0.9463 at n=10) -- the pairwise battery
+    literally couldn't reach the regime (icc -> 1, small N) where the
+    rounding-cancellation pathology dithering fixes actually bites, so it
+    was untestable here by construction, not merely untested."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-        seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
+        seed=base_seed, icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
         no_bootstrap_binary=False,
@@ -1924,7 +2403,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
 
 
 def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
-    """tango_score vs. tango_scc vs. bayes_paired_comp across N=10..125, for
+    """mj_floor vs. tango_scc vs. bayes_paired_comp across N=10..125, for
     the coverage/interval-score violin plots (--by-n-violin-plot). Not wired
     into --official-tests (this exists to make a specific method-choice
     argument visible in a figure, not as a general calibration check);
@@ -1932,7 +2411,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
 
     python -m simulations.harness.cli ci_paired --data-source synthetic
       --scenario-suite expanded --eval-types binary
-      --methods tango_score tango_scc bayes_paired_comp
+      --methods mj_floor tango_scc bayes_paired_comp
       --reps 300 --bootstrap-n 10000 --bayes-n 10000 --alpha 0.05
       --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
       --icc-values 0.05 0.20 0.40 0.60 0.80 --cohens-d-values 0.2 0.4
@@ -1950,7 +2429,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 125],
-        methods=["tango_score", "tango_scc", "bayes_paired_comp"],
+        methods=["mj_floor", "tango_scc", "bayes_paired_comp"],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="off", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
@@ -2068,7 +2547,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
         print(f"\nci_paired simulation -- data_source={args.data_source}, statistic={args.statistic}")
         if args.data_source == "synthetic":
-            icc_values = args.icc_values if args.icc_values is not None else [0.05, 0.20, 0.40, 0.60, 0.80]
+            icc_values = args.icc_values if args.icc_values is not None else [0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95]
             sources = build_pair_sources(
                 suite=args.scenario_suite, icc_values=icc_values,
                 cohens_d_values=args.cohens_d_values, include_null=args.include_null,

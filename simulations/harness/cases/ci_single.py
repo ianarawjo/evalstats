@@ -71,8 +71,14 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
-from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
+from ..latex_tables import (
+    booktabs_table,
+    coverage_cell,
+    escape_latex,
+    mark_best_and_runnerup,
+    report_eval_type_group,
+)
+from ..scenarios import CISource, EVAL_TYPES, DEFAULT_EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
@@ -141,6 +147,18 @@ class SimResult:
     total_width: float
     total_score: float = 0.0
     """Sum of interval_score() (see evalstats.core.stats_utils) across n_reps."""
+    total_pen_under: float = 0.0
+    """Sum of the (2/alpha)*(lo - y) penalty for y BELOW the interval.
+
+    Bracher, Ray, Gneiting & Reich (2021) decompose the interval score into
+    interval width (sharpness) and the penalty for observations outside the
+    interval (calibration). Reported separately because the score is ~90%
+    width, so a too-narrow method can post the best score while
+    under-covering. The two components are one-sided in opposite
+    directions -- width punishes too-wide, penalty too-narrow -- so neither
+    is a calibration measure on its own."""
+    total_pen_over: float = 0.0
+    """Sum of the (2/alpha)*(y - hi) penalty for y ABOVE the interval."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     model: str | None = None
@@ -199,6 +217,8 @@ def _run_cell(
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_mean = source_obj.true_mean
@@ -208,6 +228,10 @@ def _run_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_mean, alpha)
+        if true_mean < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_mean)
+        elif true_mean > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_mean - ci_high)
 
     for _rep in range(n_reps):
         values = source_obj.generate(rng, n)
@@ -323,6 +347,8 @@ def _run_cell(
             source=source_obj.source, label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             model=source_obj.model, benchmark_id=source_obj.benchmark_id,
             corpus_size=source_obj.max_n, corpus_mean=(source_obj.true_mean if source_obj.source != "synthetic" else None),
@@ -470,6 +496,8 @@ def _run_nested_cell(
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
 
@@ -478,6 +506,10 @@ def _run_nested_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_mean, alpha)
+        if true_mean < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_mean)
+        elif true_mean > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_mean - ci_high)
 
     for _rep in range(n_reps):
         scores = source_obj.generate_runs(rng, n, runs)  # (n, runs)
@@ -670,6 +702,8 @@ def _run_nested_cell(
             source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             run_noise_frac=source_obj.run_noise_frac or 0.0, runs=runs,
         )
@@ -743,10 +777,10 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
 
 
 def _headline_cov_width_score(
-    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]],
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]],
     m: str,
     sizes_present: list[int],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     """Headline (Cov, Width, Score) for method `m`: average per n first (one
     number per n, unweighted across whatever sources contributed at that n),
     then average those per-n numbers across n -- rather than pooling every
@@ -762,13 +796,15 @@ def _headline_cov_width_score(
                 float(np.mean([v[0] for v in vals])),
                 float(np.mean([v[1] for v in vals])),
                 float(np.mean([v[2] for v in vals])),
+                float(np.mean([v[3] for v in vals])),
             ))
     if not per_n_means:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan")
     return (
-        float(np.mean([c for c, _, _ in per_n_means])),
-        float(np.mean([w for _, w, _ in per_n_means])),
-        float(np.mean([s for _, _, s in per_n_means])),
+        float(np.mean([c for c, _, _, _ in per_n_means])),
+        float(np.mean([w for _, w, _, _ in per_n_means])),
+        float(np.mean([s for _, _, s, _ in per_n_means])),
+        float(np.mean([q for _, _, _, q in per_n_means])),
     )
 
 
@@ -811,9 +847,15 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
           f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
+    print(f"  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
+          f"  so a too-narrow method can post the best Score while under-covering.\n"
+          f"  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
+          f"  that are too WIDE, Penalty ((2/alpha) x mean miss distance) those that are\n"
+          f"  too NARROW. Neither means 'calibration' on its own. Read them together\n"
+          f"  with Cov/MinCov.")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
-        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
+        mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats(
@@ -827,7 +869,7 @@ def _print_overall_summary_table(
             c_n, t_n = per_n_counts.get((m, n), (0, 0))
             cov_n = c_n / t_n if t_n > 0 else float("nan")
             n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int) -> None:
@@ -842,7 +884,7 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score, (r.total_pen_under + r.total_pen_over) / r.n_reps))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -892,53 +934,71 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
+#: Fine-grained eval-type block label; see latex_tables for why the
+#: coarse `eval_type_group` isn't used for these tables.
+_report_eval_type_group = report_eval_type_group
+
+
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
     """LaTeX booktabs version of print_report's OVERALL SUMMARY block, plus
     one coverage column per sample size actually swept, appended to the
     right -- the aggregate "Coverage" column collapses across n and can hide
     miscalibration that only shows up at small or large sample sizes.
 
-    Methods that ran on both eval-type groups (binary and numeric) get two
-    rows -- "<method> (binary)" and "<method> (numeric)" -- each computed
-    from only that group's data, rather than one row averaging across both.
-    Averaging Cov/Width/Score across binary and numeric data mixes two
-    different scales/regimes into a number that isn't comparable to any
-    group-pure method's row; an "all" Eval-types value was a symptom of
-    exactly this, not a meaningful category of its own, so no row's Eval
-    types column is ever "all" here.
+    Methods that ran on more than one eval-type group get one row per group
+    -- "<method> (bin)"/"<method> (cont)"/"<method> (lik)" -- each computed
+    from only that group's own data, rather than one row averaging across
+    incomparable scales/regimes.
+
+    Rows are grouped by eval-type group (all bin, then all cont, then all
+    lik), separated by a midrule, so each block's Score column can be
+    marked with the block's best (bold) and runner-up (underline) --
+    matching ci_paired.latex_overall_summary's layout, for a consistent
+    reading convention across both tables. Coverage cells (aggregate and
+    per-n) are shaded by coverage_cell to flag miscalibration at a glance.
     """
     target = 1.0 - alpha
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
     sizes_present = sorted({r.n for r in results})
 
-    # (group, method, n) -> list[(cov, width, score)] -- group ("binary"/"numeric")
-    # replaces raw eval_type as the aggregation key, so a method never gets
-    # averaged across both groups in one row.
+    # (group, method, n) -> list[(cov, width, score)] -- group ("bin"/"cont"/
+    # "lik"/"grades") replaces raw eval_type as the aggregation key, so a
+    # method never gets averaged across two groups in one row.
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    method_group_types: dict[tuple[str, str], set[str]] = defaultdict(set)
     for r in results:
-        g = eval_type_group(r.eval_type)
+        g = _report_eval_type_group(r.eval_type)
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(g, r.method, r.n)].append((cov, width, score))
+        agg[(g, r.method, r.n)].append((cov, width, score, (r.total_pen_under + r.total_pen_over) / r.n_reps))
         c_prev, t_prev = agg_counts[(g, r.method, r.n)]
         agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
-        method_group_types[(r.method, g)].add(r.eval_type)
 
     method_groups: dict[str, set[str]] = defaultdict(set)
     for (g, m, _n) in agg:
         method_groups[m].add(g)
 
+    group_order = ["bin", "cont", "lik", "grades"]
+    groups_present = sorted(
+        {g for methods in method_groups.values() for g in methods},
+        key=lambda g: group_order.index(g) if g in group_order else len(group_order),
+    )
+
     rows = []
-    for m in method_labels:
-        groups = sorted(method_groups[m])  # ["binary"], ["numeric"], or both
-        multi_group = len(groups) > 1
-        for g in groups:
-            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        group_start = len(rows)
+        score_vals: list[float] = []
+        penalty_vals: list[float] = []
+        for m in method_labels:
+            if g not in method_groups[m]:
+                continue
+            multi_group = len(method_groups[m]) > 1
+            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]] = defaultdict(list)
             all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
             per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
             for n in sizes_present:
@@ -950,41 +1010,55 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 all_counts[m] = (c_prev + c, t_prev + t)
                 per_n_counts[(m, n)] = (c, t)
 
-            mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-            c_tot, t_tot = all_counts[m]
-            _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-            avg_ms, se_ms = _time_stats(
-                [r for r in results if r.method == m and eval_type_group(r.eval_type) == g]
+            mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
+            # Worst single (scenario, n) coverage -- the tail the headline Cov
+            # averages away. Same quantity as the printed table's MinCov.
+            _worst = [v[0] for vals in per_n_vals.values() for v in vals]
+            mmin = min(_worst) if _worst else float("nan")
+            avg_ms, _ = _time_stats(
+                [r for r in results if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
-            time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
-            et_label = eval_type_label(method_group_types[(m, g)], eval_types_present)
+            time_str = f"{avg_ms:.3f}" if np.isfinite(avg_ms) else "-"
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
-                f"{mc:.3f}" if np.isfinite(mc) else "-",
-                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+                coverage_cell(mc, target),
+                coverage_cell(mmin, target) if np.isfinite(mmin) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
+                f"{mp:.4f}" if np.isfinite(mp) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
                 time_str,
-                et_label,
+                g,
             ]
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
                 cov_n = c_n / t_n if t_n > 0 else float("nan")
-                row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+                row.append(coverage_cell(cov_n, target))
             rows.append(row)
+            score_vals.append(ms)
+            penalty_vals.append(mp)
+
+        # Mark best/runner-up in BOTH Penalty and Score. Marking Score alone
+        # bolds whichever method is narrowest, which is how a badly-calibrated
+        # method ends up reading as the winner.
+        for col, vals in ((5, score_vals), (4, penalty_vals)):
+            decorated = mark_best_and_runnerup([r[col] for r in rows[group_start:]], vals)
+            for i, cell in enumerate(decorated):
+                rows[group_start + i][col] = cell
 
     return booktabs_table(
         caption=(
-            f"ci\\_single: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
-            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
-            "Methods tested on both binary and numeric data are reported as two rows, one per eval-type "
-            "group, so no row averages across incomparable scales."
+            f"ci\\_single: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
+            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Pen(alty), where Pen is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow; ""neither is a calibration measure on its own. "
+            "Methods tested on more than one eval type are reported as one row per type "
+            "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
+            "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_single_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
+        columns=["Method", "Cov", "MinCov", "Width", "Pen $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -1498,7 +1572,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="'synthetic' (default), or a real-data source: " + ", ".join(REAL_DATA_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="Synthetic scenario breadth (ignored for real data sources)")
-    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
+    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES,
+                         default=list(DEFAULT_EVAL_TYPES), metavar="TYPE",
+                         help="Default matches the official presets (no 'grades'); pass "
+                              "--eval-types grades explicitly to include it.")
     parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
                          help="Restrict to this exact set of CI methods (by name, e.g. wilson_od "
                               "wilson_od_bc) instead of running the full battery. Skips computation "

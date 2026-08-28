@@ -222,6 +222,25 @@ CONTINUOUS_SHAPES: list[ShapeSpec] = [
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 1.0, rng.beta(4.0, 2.0, n)),
     ),
     ShapeSpec(
+        "cont-one-inflated-extreme", "continuous", "custom", suite_tier="expanded",
+        # 95% flat ones -- a saturated/ceilinged metric (a benchmark a strong
+        # model has essentially solved). This exists specifically to reach the
+        # regime where a *whole sample* comes out constant: at 95% inflation
+        # that happens for 36% of n=20 samples and 7% of n=50 samples, versus
+        # <3% at n=10 for the 70%-inflated shapes above -- which is why the
+        # 70% shapes gave every variance-driven CI method a clean bill of
+        # health on a failure mode that collapses their coverage to ~60%.
+        # See resampling.degenerate_sample_ci.
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.95, 1.0, rng.beta(4.0, 2.0, n)),
+    ),
+    ShapeSpec(
+        "cont-zero-inflated-extreme", "continuous", "custom", suite_tier="expanded",
+        # 95% flat zeros -- the floor mirror of the shape above (a metric
+        # almost everything scores 0 on, e.g. an exact-match rate on a hard
+        # task). Same degenerate-sample rates, same purpose.
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.95, 0.0, rng.beta(2.0, 4.0, n)),
+    ),
+    ShapeSpec(
         "cont-mixture", "continuous", "custom", suite_tier="expanded",
         # Two different Beta populations blended together (55%/45%) instead
         # of one -- e.g. an eval where two distinct strategies get used.
@@ -1100,17 +1119,67 @@ def _make_multiarm_true_means_fn(
     return _true_means
 
 
+def _make_multiarm_ramp_true_means_fn(
+    generate_scores: Callable[[np.random.Generator, int, int, int, float], np.ndarray],
+) -> Callable[[int, float], np.ndarray]:
+    """``true_means`` for the "ramp" effect mode, where arm *i* is shifted by
+    ``i * delta`` rather than only arm 0 carrying it.
+
+    The arm-0 variant caches two scalars (baseline and shifted); a ramp needs
+    one per arm, since every arm sits at a different shift. Each is estimated
+    by the same large-sample Monte Carlo as
+    :func:`_make_multiarm_true_means_fn` -- clipping and rounding move the
+    realized mean away from the raw additive shift, so the shift cannot just
+    be added to the baseline. Cached per (k, delta), and computed lazily.
+    """
+    cache: dict[tuple[int, float], np.ndarray] = {}
+
+    def _true_means(k: int, delta: float) -> np.ndarray:
+        key = (int(k), float(delta))
+        if key not in cache:
+            # Draw the whole k-arm array once and take each arm's mean. The
+            # per-arm shortcut the arm0 variant uses (generate_scores with
+            # k=1) does NOT work here: at k=1 the ramp is arange(1)*delta,
+            # i.e. zero, so every arm would come back at baseline.
+            draw = generate_scores(np.random.default_rng(1000 + int(k)), 120_000, 1, int(k), delta)
+            cache[key] = np.asarray(draw[:, :, 0].mean(axis=1), dtype=float)
+        return cache[key].copy()
+
+    return _true_means
+
+
 def build_multiarm_sources(
     *, suite: str = "standard", icc: float = 0.20, cohens_d: float = 0.3, eval_types: list[str] | None = None,
+    effect_mode: str = "arm0",
 ) -> list[MultiArmSource]:
+    """Build k-arm scenarios over the shape catalog.
+
+    effect_mode:
+      "arm0" (default) -- arm 0 carries the whole shift, arms 1..k-1 sit at
+        baseline. What cases/pvalues.py's multiarm and simultaneous_ci sweeps
+        use; ``delta`` is the shift itself.
+      "ramp" -- arm *i* is shifted by ``i * delta``, so the arms form a graded
+        ladder and arm 0 vs arm k-1 is the widest gap. Used by
+        cases/compare_e2e.py, whose power column measures the extreme pair on
+        a leaderboard. ``delta`` is the per-arm STEP, not the total shift.
+    The signature of ``generate_scores`` is identical either way -- only the
+    interpretation of ``delta`` changes -- so nothing downstream needs to know
+    which mode built the source.
+    """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
     eval_types = list(eval_types) if eval_types is not None else list(EVAL_TYPES)
 
+    if effect_mode not in ("arm0", "ramp"):
+        raise ValueError(f"Unknown effect_mode: {effect_mode!r}")
+
     def _make_generator(shape: ShapeSpec):
         def _gen(rng: np.random.Generator, n: int, runs: int, k: int, delta: float) -> np.ndarray:
-            effects = np.zeros(k)
-            effects[0] = delta
+            if effect_mode == "ramp":
+                effects = np.arange(k, dtype=float) * delta
+            else:
+                effects = np.zeros(k)
+                effects[0] = delta
             return sample_group_truth(shape, n, runs, k, icc, rng, effects=effects)
         return _gen
 
@@ -1121,7 +1190,10 @@ def build_multiarm_sources(
             alt_delta = cohens_d * group_total_std(shape, icc)
             sources.append(MultiArmSource(
                 label=shape.label, eval_type=eval_type, generate_scores=generate_scores,
-                alt_delta=alt_delta, true_means=_make_multiarm_true_means_fn(generate_scores, alt_delta),
+                alt_delta=alt_delta,
+                true_means=(_make_multiarm_ramp_true_means_fn(generate_scores)
+                            if effect_mode == "ramp"
+                            else _make_multiarm_true_means_fn(generate_scores, alt_delta)),
             ))
     return sources
 
@@ -1389,9 +1461,63 @@ def _jb_llm_repeated(
     raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
+def _contaminated_flip_probs(
+    noise_level: float, contam_frac: float, contam_scale: float,
+) -> tuple[float, float]:
+    """Binary analogue of _contaminated_noise_stds: split one symmetric flip
+    probability into an "easy item" rate and a "hard item" rate, holding the
+    MARGINAL flip rate at `noise_level` so llm_noise keeps its calibrated
+    meaning across noise families.
+
+    Solving (1-f)*p_easy + f*(scale*p_easy) = noise_level gives
+
+        p_easy = noise_level / ((1 - f) + f * scale),   p_hard = scale * p_easy
+
+    This is the right analogue because the continuous model preserves total
+    error VARIANCE across families while redistributing it across items; on
+    0/1 data the natural conserved quantity is the total error RATE, since a
+    binary error has no magnitude to redistribute -- only a probability.
+
+    Why this is worth modeling even though binary runs no rank tests: a
+    uniform flip probability asserts that every item is equally hard, which no
+    real judge satisfies. Concentrating the same total error budget on a
+    minority of hard items is both more realistic AND strictly harder for PPI,
+    because the rectifier's variance depends on how the judge's errors are
+    distributed, not just how many there are.
+
+    `contam_scale` is CAPPED at the largest value that keeps p_hard <= 1 while
+    still conserving the marginal. p_hard <= 1 requires
+
+        scale * (noise_level - f) <= 1 - f,
+
+    so for noise_level > f the ceiling is (1 - f) / (noise_level - f); below
+    that there is no constraint. At f=0.10 the requested scale=5 is feasible up
+    to noise_level=0.28 and drops to 3.0 by noise_level=0.40.
+
+    Capping rather than clipping matters. Clipping p_hard at 1.0 leaves the
+    marginal BELOW noise_level -- measured 0.357 against a requested 0.40 --
+    which makes the contaminated arm quietly CLEANER than the gaussian one it
+    is supposed to be matched against, exactly inverting the comparison. The
+    cap instead trades contamination severity (which is a free parameter) for
+    the matched marginal error rate (which the whole design depends on), and
+    degrades smoothly: at high error rates a binary judge simply cannot
+    concentrate its mistakes as sharply, because it is already wrong so often.
+    """
+    f = float(np.clip(contam_frac, 0.0, 1.0))
+    rate = float(np.clip(noise_level, 0.0, 1.0))
+    scale = float(contam_scale)
+    if rate > f and scale * (rate - f) > (1.0 - f):
+        scale = (1.0 - f) / (rate - f)
+    denom = (1.0 - f) + f * scale
+    p_easy = float(np.clip(rate / denom if denom > 0 else rate, 0.0, 1.0))
+    p_hard = float(np.clip(scale * p_easy, 0.0, 1.0))
+    return p_easy, p_hard
+
+
 def _jb_llm_binary(
     truth: np.ndarray, bias: float, noise_level: float, rng: np.random.Generator,
     extra: np.ndarray | float = 0.0,
+    noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> np.ndarray:
     """Binary analogue of _jb_llm: turn a 0/1 ground-truth array into a 0/1
     "LLM judge" array via a confusion-matrix (flip-probability) model,
@@ -1417,10 +1543,43 @@ def _jb_llm_binary(
     individual items toward judge=1 or judge=0 rather than the whole group
     uniformly -- the same distinction _jb_llm's `bias` (constant) vs.
     `extra` (per-item) draws for the continuous/Likert/grades judge model.
+
+    `noise_family` (see _contaminated_flip_probs): "gaussian" gives every item
+    the same flip probability; "contaminated" concentrates the SAME marginal
+    flip rate on a `contam_frac` minority of "hard" items, which are flipped
+    `contam_scale` times more often. Item hardness is drawn independently of
+    truth, so this adds error heterogeneity WITHOUT adding bias -- the two
+    families have the same expected confusion matrix and differ only in how
+    the errors cluster across items.
+
+    Previously this ignored noise_family entirely, which silently made a
+    "contaminated" binary judge byte-identical to a gaussian one.
     """
     total_bias = bias + extra
     flip_neg = np.clip(noise_level - total_bias / 2.0, 0.0, 1.0)  # P(judge=0 | truth=1)
     flip_pos = np.clip(noise_level + total_bias / 2.0, 0.0, 1.0)  # P(judge=1 | truth=0)
+    if noise_family == "contaminated":
+        # Split EACH direction's own flip probability, rather than deriving one
+        # shared multiplier from _contaminated_flip_probs(1.0, ...). The
+        # multiplier form looks equivalent but is not: at frac=0.10/scale=5 it
+        # asks for a hard-item multiplier of 3.57, which clips at 1.0 and drags
+        # the marginal error rate DOWN (0.25 -> 0.18) -- i.e. the contaminated
+        # arm would come out quietly CLEANER than the gaussian one instead of
+        # equally noisy but less evenly so. Splitting the actual probabilities
+        # keeps p_hard = scale * p_easy inside [0,1] for any rate where
+        # scale*rate/denom <= 1, which covers the calibrated range.
+        #
+        # Hardness is drawn ONCE per item and applied to both directions, so an
+        # item is hard regardless of its truth value -- heterogeneity without
+        # bias. Pulling the two directions apart is `bias`'s job and conflating
+        # them here would confound this axis with differential bias.
+        is_hard = rng.random(len(truth)) < contam_frac
+        fn_easy, fn_hard = _contaminated_flip_probs(float(flip_neg), contam_frac, contam_scale)
+        fp_easy, fp_hard = _contaminated_flip_probs(float(flip_pos), contam_frac, contam_scale)
+        flip_neg = np.where(is_hard, fn_hard, fn_easy)
+        flip_pos = np.where(is_hard, fp_hard, fp_easy)
+    elif noise_family != "gaussian":
+        raise ValueError(f"Unknown noise_family: {noise_family!r}")
     u = rng.random(len(truth))
     is_pos = truth >= 0.5
     return np.where(is_pos, (u >= flip_neg).astype(float), (u < flip_pos).astype(float))
@@ -2285,8 +2444,56 @@ PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
 """Binary analogue of PPI_LABEL_EFF_NOISE_LEVELS -- 0.10 matches
 PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
 PPI_BINARY_NOISE_LEVELS' low/high ends."""
+PPI_LABEL_EFF_EFFECT_FRACS = (0.15, 0.20, 0.25, 0.35)
+"""Effect sizes the label-efficiency check sweeps (as fractions of the eval
+type's own population SD -- see _jb_effect_magnitude).
+
+A SINGLE effect size cannot keep the whole N_lab grid well-conditioned. The
+multiplier is not measured directly; it is INVERTED through the classical
+reference curve (equiv_n_lab = interp(ppi_power, power_grid, n_grid)), and
+that inversion's gain dN/dP is 800-1250 labels per unit power wherever the
+curve is flat -- i.e. near alpha and near saturation. A binomial SE of 0.02
+on ppi_power then becomes +/-16-25 equivalent labels, which at n_lab=15 is
++/-1.05x on the multiplier. Measured at frac=0.15: the predicted multiplier
+sd from binomial noise alone (1.41 at n_lab=15) EXCEEDS the observed scatter
+(0.56), so multipliers below 1.0x in that regime are inversion artifacts,
+not PPI underperforming a human-only test.
+
+Since N_lab spans 13x (15..200), power necessarily sweeps a wide range for
+any one effect size. Cells that land in the steep middle (0.15 <= power <=
+0.85), by frac:
+
+                         continuous        binary
+    frac=0.15  ->  n_lab  90..200 (3/8)   30..200 (6/8)   <- the old single value
+    frac=0.20  ->        40..200 (5/8)   15..200 (8/8)
+    frac=0.25  ->        30..200 (6/8)   15..130 (7/8)
+    frac=0.35  ->        15..130 (7/8)   15.. 60 (5/8)
+
+The union covers every n_lab in every eval type, with overlap -- and the
+overlap is the point: the multiplier is a property of JUDGE QUALITY and
+should be es-INVARIANT, so agreement between arms on shared cells is a
+genuine robustness check, and disagreement is a real finding. Report per-es
+curves alongside the pooled one so that check stays visible rather than
+being averaged away.
+
+Why this range and not lower or higher. The eval types peak at DIFFERENT
+fracs -- binary at 0.20, continuous at 0.35, roughly 1.75x apart, because
+binary's classical power curve rises faster. Reaching below 0.15 does not
+help: frac=0.05/0.10 yield 0/8 and 1/8 usable cells for continuous and
+0/8 and 3/8 for likert, so they would be near-dead arms for two of the
+three eval types while binary is already fully covered once 0.20 is
+present. Reaching to 0.50 is worse than it looks: its usefulness depends
+on the TRUE multiplier, and at the 2.5-3.5x binary actually achieves,
+frac=0.50 degrades to 0/8 usable and 3/8 SATURATED (verified by a
+sensitivity scan over assumed multipliers 1.5/2.5/3.5). Every frac kept
+here stays useful as the multiplier grows; 0.50 does not."""
+
 PPI_LABEL_EFF_EFFECT_FRAC = 0.15
-"""Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
+"""Backward-compatible single effect-size fraction (the first entry of
+PPI_LABEL_EFF_EFFECT_FRACS). Retained for callers that want one arm --
+build_ppi_nformula_sources and the comparison sweeps still reference it.
+
+Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
 than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30) deliberately: continuous's
 classical (human-only) test power grows faster with N_lab at that
 constant's own scale, so both PPI's and the reference curve's power would
@@ -2376,8 +2583,48 @@ already independently meaningful elsewhere in this harness, not picked to
 make the fit look clean."""
 
 
+PPI_LABEL_EFF_NOISE_FAMILIES: tuple[tuple[str, str, dict], ...] = (
+    ("gaussian",     "gaussian",     {}),
+    ("contaminated", "contaminated", {"contam_frac": 0.10, "contam_scale": 5.0}),
+)
+"""Judge-error SHAPE axis for the label-efficiency sweep, crossed with the
+existing judge-quality (llm_noise) axis.
+
+Motivation: every other axis in this harness varies how MUCH the judge errs;
+this one varies HOW. That matters because rank-based tests (wilcoxon/mwu) are
+sensitive to it and mean-based tests are not, so a Gaussian-only sweep silently
+reports the rank tests' worst case as if it were their typical case. Under
+Gaussian judge noise Spearman runs BELOW Pearson (rho_S^2 - rho_P^2 ~= -0.02),
+which costs rank tests label efficiency; under contaminated noise it runs above
+(~+0.11), which pays them back. See notes/RANK_PPI_TAIL_SENSITIVITY.md and
+notes/RANK_VS_PARAMETRIC_CROSSOVER.md.
+
+"contaminated" at frac=0.10/scale=5.0 models "judge is mostly right,
+occasionally catastrophically wrong" -- a 10% chance of an error 5x the usual
+width. Total noise variance is held identical to the gaussian arm's by
+_contaminated_noise_stds, so llm_noise means the same thing in both and the
+calibrated tiers stay comparable; only the distribution of that variance across
+items changes.
+
+Entries are (LABEL, noise_family, kwargs). The label names the arm in scenario
+names, CSV columns and figure filenames; noise_family is the value _jb_llm
+dispatches on and is restricted to "gaussian"/"contaminated". They are kept
+separate so a second contamination SEVERITY is a one-line addition --
+("contaminated-mild", "contaminated", {"contam_frac": 0.10, "contam_scale": 3.0})
+-- rather than a collision, since two arms would otherwise share the key
+"contaminated" in every per-family dict.
+
+Cost: one extra family doubles the label-efficiency cell count (288 -> 576).
+It does NOT invalidate the classical reference-curve cache -- those curves draw
+ground truth only and never touch judge scores (see
+cases/pvalues.py's _classical_pooled_power_curve_uncached), so they are
+judge-shape-independent by construction and stay warm across this change."""
+
+
 def build_ppi_label_efficiency_sources(
-    noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
+    noise_by_eval_type: dict[tuple[str, str], tuple[float, ...]] | None = None,
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
+    noise_families: tuple[tuple[str, dict], ...] = PPI_LABEL_EFF_NOISE_FAMILIES,
 ) -> list[JudgeBiasSource]:
     """Label-fraction x judge-quality grid for the label-efficiency /
     effective-sample-size check (cases/pvalues.py's save_ppi_label_
@@ -2404,31 +2651,38 @@ def build_ppi_label_efficiency_sources(
     uses -- NOT PPI_COMPARISON_LABEL_FRACS, which was tuned for N=100 and
     would scale N_lab up to 60-160 at N=400 instead of holding it fixed."""
     noise_by_eval_type = noise_by_eval_type or {
-        et: tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
+        (et, fam): tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
         for et in PPI_LABEL_EFF_EVAL_TYPES
+        for fam, _nf, _ in noise_families
     }
 
-    def _kwargs(et: str, n_lab_target: int, noise: float) -> dict:
+    def _kwargs(et: str, n_lab_target: int, noise: float, nf: str, fam_kw: dict) -> dict:
         kw = _ppi_power_baseline(et)
         kw["n"] = PPI_LABEL_EFF_N
         kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
         kw["llm_noise"] = noise
+        kw["noise_family"] = nf
+        kw.update(fam_kw)
         return kw
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.{et}.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff",
-            effect_size=_jb_effect_magnitude(et, PPI_LABEL_EFF_EFFECT_FRAC),
-            **_kwargs(et, n_lab_target, noise),
+            name=f"labeleff.{et}.fam={fam}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}",
+            tag="label_eff",
+            effect_size=_jb_effect_magnitude(et, effect_frac),
+            **_kwargs(et, n_lab_target, noise, nf, fam_kw),
         )
         for et in PPI_LABEL_EFF_EVAL_TYPES
-        for noise in noise_by_eval_type[et]
+        for fam, nf, fam_kw in noise_families
+        for noise in noise_by_eval_type[(et, fam)]
         for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
     ]
 
 
 def build_ppi_label_efficiency_sources_binary(
-    noise_levels: tuple[float, ...] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    noise_levels: tuple[float, ...] | dict[str, tuple[float, ...]] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
+    noise_families: tuple[tuple[str, dict], ...] = PPI_LABEL_EFF_NOISE_FAMILIES,
 ) -> list[JudgeBiasSource]:
     """Binary analogue of build_ppi_label_efficiency_sources, restricted to
     _COMPARISON_METHODS_BINARY (ttest_welch/paired_t -- see that constant's
@@ -2438,20 +2692,54 @@ def build_ppi_label_efficiency_sources_binary(
     caller would want alignment-calibrated values here instead. label_frac
     is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=PPI_LABEL_EFF_N,
     same as the non-binary builder -- see its docstring for why."""
-    def _kwargs(n_lab_target: int, noise: float) -> dict:
+    # Binary emits the GAUSSIAN arm only -- MEASURED, not assumed.
+    #
+    # _jb_llm_binary does implement "contaminated" for real (heterogeneous flip
+    # rates, see _contaminated_flip_probs), and it does produce different data.
+    # It does not produce different RESULTS: at n=400k, phi = 0.6296 gaussian
+    # vs 0.6287 contaminated. Item hardness is drawn independently of truth, so
+    # E[Y*Yhat] = E[Y]*(1 - pbar) and the confusion matrix depends only on the
+    # MEAN flip rate -- which _contaminated_flip_probs conserves by
+    # construction. phi is the whole of rho for a mean estimand, and binary
+    # runs only mean tests, so the two arms are statistically identical.
+    #
+    # Emitting the arm anyway cost 96 of 576 cells (17% of the sweep) to
+    # re-measure a null that a two-second direct phi computation establishes
+    # far more precisely than 300-rep sweep cells could.
+    #
+    # An earlier version of this comment excluded binary because noise_family
+    # was a no-op here; that was right for the wrong reason. The distinction
+    # matters if anyone revisits: binary is insensitive to heterogeneity that
+    # is INDEPENDENT OF TRUTH. It would NOT be insensitive to hardness shared
+    # across the paired conditions (a genuinely ambiguous item is ambiguous in
+    # both arms, so its errors would not cancel in D = Y_x - Y_y), which is the
+    # design to try if a consequential binary shape axis is ever wanted.
+    # Hardness correlated with truth is a different thing again -- that is
+    # differential bias, which already has its own axis.
+    _gauss_only = tuple(f for f in noise_families if f[1] == "gaussian") or noise_families[:1]
+    by_fam = (noise_levels if isinstance(noise_levels, dict)
+              else {fam: tuple(noise_levels) for fam, _nf, _ in _gauss_only})
+    by_fam = {k: v for k, v in by_fam.items() if k in {f[0] for f in _gauss_only}}
+    noise_families = _gauss_only
+
+    def _kwargs(n_lab_target: int, noise: float, nf: str, fam_kw: dict) -> dict:
         kw = _ppi_power_baseline_binary()
         kw["n"] = PPI_LABEL_EFF_N
         kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
         kw["llm_noise"] = noise
+        kw["noise_family"] = nf
+        kw.update(fam_kw)
         return kw
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.binary.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff_binary",
-            effect_size=_jb_effect_magnitude_binary(PPI_LABEL_EFF_EFFECT_FRAC),
-            **_kwargs(n_lab_target, noise),
+            name=f"labeleff.binary.fam={fam}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}",
+            tag="label_eff_binary",
+            effect_size=_jb_effect_magnitude_binary(effect_frac),
+            **_kwargs(n_lab_target, noise, nf, fam_kw),
         )
-        for noise in noise_levels
+        for fam, nf, fam_kw in noise_families
+        for noise in by_fam[fam]
         for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
     ]
 
@@ -3294,6 +3582,285 @@ def _icc_21(a: np.ndarray, b: np.ndarray) -> float:
     return float((MSR - MSE) / denom)
 
 
+def _lin_ccc(a: np.ndarray, b: np.ndarray) -> float:
+    """Lin's concordance correlation coefficient.
+
+        CCC = 2*cov(a,b) / (var(a) + var(b) + (mean(a)-mean(b))^2)
+
+    Included specifically because it DECOMPOSES as ``pearson_r * C_b``,
+    where C_b is a bias-correction factor <= 1: it is "correlation, times a
+    penalty for systematic miscalibration". Pearson r alone is shift-
+    invariant (a judge reading uniformly 2 points high still scores r=1.0),
+    so reporting r and CCC side by side separates "is the judge
+    INFORMATIVE" from "is the judge CALIBRATED" -- the distinction that
+    matters here, since PPI's rectifier absorbs additive bias but cannot
+    manufacture information. Population moments (ddof=0), per Lin (1989).
+
+    Written as the literal ``r * C_b`` product (with r from scipy) rather than
+    the equivalent one-line covariance form, so the decomposition the metric
+    is included FOR is visible in the code rather than only in this
+    docstring. No sklearn/scipy/statsmodels equivalent exists (checked)."""
+    from scipy.stats import pearsonr
+
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
+    if len(a) < 2:
+        return float("nan")
+    sa, sb = float(np.std(a)), float(np.std(b))
+    if sa <= 0 or sb <= 0:
+        return float("nan")
+    r = float(pearsonr(a, b).statistic)
+    # C_b <= 1: the bias-correction factor, penalizing a location shift
+    # (mean difference) or scale mismatch between the two raters.
+    c_b = (2.0 * sa * sb) / (sa ** 2 + sb ** 2 + (float(a.mean()) - float(b.mean())) ** 2)
+    return float(r * c_b)
+
+
+def _gwet_ac1(a: np.ndarray, b: np.ndarray) -> float:
+    """Gwet's AC1 agreement coefficient (nominal).
+
+    Exists because Cohen's kappa suffers the KAPPA PARADOX: when one
+    category dominates, chance agreement P_e is inflated and kappa collapses
+    even though raw agreement is high. That regime is not hypothetical here
+    -- several real corpora sit at a ~0.28 base rate. AC1 replaces kappa's
+    chance term with one that does not blow up under skew:
+
+        P_e = sum_k pi_k (1 - pi_k) / (K - 1),  pi_k = mean marginal
+        AC1 = (P_o - P_e) / (1 - P_e)
+
+    Gwet (2008). Hand-rolled because no sklearn/scipy/statsmodels equivalent
+    exists (statsmodels.stats.inter_rater ships only cohens_kappa and
+    fleiss_kappa) -- P_o comes from sklearn all the same.
+
+    NOTE the chance term has NO factor of 2: for K=2 with balanced marginals
+    pi=[.5,.5] the correct P_e is 0.5, and an erroneous leading 2 drives it
+    to exactly 1.0 (a divide-by-zero that reads as nan). Validated against
+    the closed form on skewed and balanced 2x2 tables."""
+    from sklearn.metrics import accuracy_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    cats = np.unique(np.concatenate([a, b]))
+    K = len(cats)
+    if K < 2:
+        return 1.0 if len(a) else float("nan")
+    p_o = float(accuracy_score(a, b))
+    pi = np.array([ (np.mean(a == c) + np.mean(b == c)) / 2.0 for c in cats ], dtype=float)
+    p_e = float(np.sum(pi * (1.0 - pi)) / (K - 1))
+    return float((p_o - p_e) / (1.0 - p_e)) if p_e < 1.0 else float("nan")
+
+
+def _pabak(a: np.ndarray, b: np.ndarray) -> float:
+    """Prevalence-Adjusted Bias-Adjusted Kappa, in its K-category form:
+
+        PABAK_K = (K*P_o - 1) / (K - 1)
+
+    For K=2 this is exactly Byrt et al. (1993)'s 2*P_o - 1; for general K it
+    is the Brennan-Prediger coefficient (equivalently Bennett's S), i.e. the
+    kappa you get by replacing the estimated chance term with a UNIFORM one,
+    P_e = 1/K.
+
+    The other standard answer to the kappa paradox, and deliberately the
+    SIMPLEST one: it depends only on observed agreement, so it cannot be
+    distorted by marginal skew at all. Reported alongside AC1 because the two
+    disagree in informative ways -- AC1 still estimates chance agreement from
+    the observed marginals, PABAK assumes it is uniform.
+
+    The K generalization is NOT optional bookkeeping: the 2*P_o - 1 form
+    hardcodes a chance-agreement rate of 0.5, so applying it to a 5-point
+    Likert scale (where uniform chance is 0.2) understates the coefficient
+    badly -- it returned a NEGATIVE value for a judge simultaneously scoring
+    weighted kappa = 0.60, which is how this was caught. P_o via sklearn."""
+    from sklearn.metrics import accuracy_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    if not len(a):
+        return float("nan")
+    n_cat = len(np.unique(np.concatenate([a, b])))
+    if n_cat < 2:
+        return 1.0
+    p_o = float(accuracy_score(a, b))
+    return float((n_cat * p_o - 1.0) / (n_cat - 1.0))
+
+
+def _krippendorff_alpha(a: np.ndarray, b: np.ndarray, level: str = "nominal") -> float:
+    """Krippendorff's alpha for two coders, no missing data.
+
+        alpha = 1 - D_o / D_e
+
+    with D_o the mean squared (metric-weighted) distance between the two
+    coders' scores for the same unit, and D_e the mean distance between all
+    pairs of scores across the pooled rating pool.
+
+    Included because it is the default reliability statistic in HCI/CSCW
+    content analysis, and -- uniquely among the metrics here -- it applies to
+    NOMINAL, ORDINAL and INTERVAL data with only the distance function
+    changing. That makes it the one number reportable on the SAME footing
+    across all three eval types, which is what lets a reader check whether
+    the "judge-human agreement" abstraction survives a change of statistic
+    rather than being an artifact of using r for one type and kappa for
+    another.
+
+    ``level``: "nominal" (0/1 distance), "interval" (squared difference), or
+    "ordinal" (squared difference of cumulative rank positions, per
+    Krippendorff's ordinal metric).
+
+    Hand-rolled: neither sklearn, scipy nor statsmodels implements alpha, and
+    the standalone ``krippendorff`` package is not a dependency here. Each
+    branch is validated against an independent, explicitly-constructed
+    coincidence-matrix reference implementation (see this feature's
+    validation script) rather than against a recalled published constant."""
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
+    n = len(a)
+    if n < 2:
+        return float("nan")
+    if level == "nominal":
+        d_o = float(np.mean(a != b))
+        pool = np.concatenate([a, b])
+        vals, counts = np.unique(pool, return_counts=True)
+        p = counts / counts.sum()
+        d_e = float(1.0 - np.sum(p ** 2))
+    elif level == "interval":
+        d_o = float(np.mean((a - b) ** 2))
+        pool = np.concatenate([a, b])
+        # mean squared difference over all ordered pairs = 2 * population var
+        d_e = float(2.0 * np.var(pool))
+    elif level == "ordinal":
+        pool = np.concatenate([a, b])
+        vals, counts = np.unique(pool, return_counts=True)
+        # Krippendorff's ordinal metric: distance between ranks g<h is
+        # (sum of counts strictly between, plus half each endpoint)^2
+        cum = np.cumsum(counts)
+        cvals = cum - counts / 2.0
+        # vectorized value -> rank-center lookup (vals is sorted by np.unique)
+        pa = cvals[np.searchsorted(vals, a)]
+        pb = cvals[np.searchsorted(vals, b)]
+        d_o = float(np.mean((pa - pb) ** 2))
+        p = counts / counts.sum()
+        mean_c = float(np.sum(p * cvals))
+        d_e = float(2.0 * np.sum(p * (cvals - mean_c) ** 2))
+    else:
+        raise ValueError(f"unknown level {level!r}")
+    if d_e <= 0:
+        return float("nan")
+    # two coders, no missing data: the (n*m-1)/(n*m) finite-sample factor on
+    # D_e reduces to (2n-1)/(2n)
+    d_e *= (2.0 * n) / (2.0 * n - 1.0)
+    return float(1.0 - d_o / d_e)
+
+
+def _alignment_metric_dict(a: np.ndarray, b: np.ndarray, eval_type: str) -> dict:
+    """Every defensible inter-rater-reliability metric for one eval type,
+    computed from two aligned rating vectors. Shared by
+    measure_judge_alignment (judge vs. human truth) and
+    measure_human_human_alignment (human vs. human) so the two are guaranteed
+    to be computed identically -- the human-human numbers are only meaningful
+    as a benchmark for the judge numbers if both sides use the same estimator.
+
+    `a`/`b` must ALREADY be on their final comparison scale (likert rounded
+    and clipped to the integer grid, binary as 0/1) -- this function does not
+    re-discretize, since what counts as the right rounding rule is the
+    caller's decision (see measure_judge_alignment's closing note).
+
+    Everything with a library implementation uses it: Cohen's kappa
+    (unweighted / linear / quadratic) from sklearn.metrics.cohen_kappa_score,
+    percent agreement from sklearn.metrics.accuracy_score, Pearson/Spearman/
+    Kendall tau-b from scipy.stats. Only Krippendorff's alpha, Gwet's AC1 and
+    Lin's CCC are hand-rolled, because no sklearn/scipy/statsmodels
+    implementation of them exists (verified, not assumed).
+
+    WHY MORE THAN ONE: the label-efficiency result is stated as a threshold in
+    "IRR" (see cases/pvalues.py's es-invariance/threshold plots), so the
+    obvious reviewer question is whether that threshold is an artifact of
+    picking kappa for binary and Pearson r for continuous. Reporting the full
+    panel per eval type -- including alpha, which applies to ALL THREE types
+    with only its distance function changing -- is what makes that question
+    answerable from the CSV instead of requiring a re-run.
+
+    Metrics are only included where they're DEFINED for the type: the
+    chance-corrected categorical ones (kappa, AC1, PABAK) need categories, so
+    continuous gets correlation/agreement-type metrics only. Values are RAW
+    (not rescaled); callers do their own clipping/bucketing."""
+    from scipy.stats import kendalltau, pearsonr, spearmanr
+    from sklearn.metrics import accuracy_score, cohen_kappa_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    out: dict[str, float] = {}
+
+    if eval_type in ("binary", "likert"):
+        # rint, NOT astype(int): astype truncates toward zero, so an
+        # unrounded caller would silently lose a sub-unit shift (a
+        # judge at truth+0.34 would read as perfectly agreeing).
+        ai, bi = np.rint(a).astype(int), np.rint(b).astype(int)
+        out["percent_agreement"] = float(accuracy_score(ai, bi) * 100.0)
+        # CAUTION when reading these two for likert: both are UNWEIGHTED
+        # (nominal) coefficients, so a 1-vs-5 miss counts exactly as badly as
+        # a 1-vs-2 miss. On an ordinal scale they will therefore read far
+        # below the weighted kappas on the same data -- that is the metrics
+        # disagreeing by construction, not the judge being worse than the
+        # weighted numbers suggest. They are included because the kappa
+        # paradox they address is a marginal-skew problem that applies to
+        # ordinal scales too, but the ordinal-aware comparisons to make are
+        # linear/quadratic weighted kappa and Krippendorff's ordinal alpha.
+        out["gwet_ac1"] = _gwet_ac1(ai, bi)
+        out["pabak"] = _pabak(ai, bi)
+
+    if eval_type == "binary":
+        out["kappa"] = float(cohen_kappa_score(ai, bi))
+        # Pearson r on 0/1 data is the phi coefficient. Carried for EVERY eval
+        # type (not just continuous) because rho^2 -- see the "rho2" key below
+        # -- is the one judge-quality number that predicts PPI's label-
+        # efficiency gain identically across all three, so it has to be
+        # measured on a common footing rather than only where r is the
+        # conventional report.
+        out["pearson_r"] = float(pearsonr(ai.astype(float), bi.astype(float)).statistic)
+        # ICC(2,1) and CCC on 0/1 data are well-defined (a 2-level ordinal
+        # scale) and are what a reviewer coming from the continuous panel
+        # will look for; tau-b on 2x2 coincides with the phi coefficient.
+        out["icc_21"] = _icc_21(ai.astype(float), bi.astype(float))
+        out["lin_ccc"] = _lin_ccc(ai, bi)
+        out["kendall_tau_b"] = float(kendalltau(ai, bi, variant="b").statistic)
+        out["krippendorff_alpha"] = _krippendorff_alpha(ai, bi, level="nominal")
+    elif eval_type == "likert":
+        out["weighted_kappa"] = float(cohen_kappa_score(ai, bi, weights="quadratic"))
+        # Linear weights punish a 2-category miss twice as hard as a
+        # 1-category miss; quadratic punishes it four times as hard. Which is
+        # "right" for a Likert judge is a convention, so report both rather
+        # than defending one.
+        out["linear_weighted_kappa"] = float(cohen_kappa_score(ai, bi, weights="linear"))
+        out["pearson_r"] = float(pearsonr(ai.astype(float), bi.astype(float)).statistic)
+        out["spearman_r"] = float(spearmanr(ai, bi).statistic)
+        out["kendall_tau_b"] = float(kendalltau(ai, bi, variant="b").statistic)
+        out["icc_21"] = _icc_21(ai.astype(float), bi.astype(float))
+        out["lin_ccc"] = _lin_ccc(ai, bi)
+        out["krippendorff_alpha"] = _krippendorff_alpha(ai, bi, level="ordinal")
+    else:
+        af, bf = a.astype(float), b.astype(float)
+        out["pearson_r"] = float(pearsonr(af, bf).statistic)
+        out["spearman_r"] = float(spearmanr(af, bf).statistic)
+        out["kendall_tau_b"] = float(kendalltau(af, bf, variant="b").statistic)
+        out["icc_21"] = _icc_21(af, bf)
+        out["lin_ccc"] = _lin_ccc(af, bf)
+        out["krippendorff_alpha"] = _krippendorff_alpha(af, bf, level="interval")
+
+    # rho^2 -- THE judge-quality axis for PPI label efficiency, and the reason
+    # pearson_r is carried for all three eval types above. PPI++ with tuned
+    # lambda is a control variate, so the variance of the corrected estimate
+    # falls by the factor (1 - rho^2 * unlabeled_fraction), giving
+    #
+    #     labeling-effort saving = 1 / (1 - rho^2 * (1 - n_lab/N))
+    #
+    # (see cases/pvalues.py's _ppi_predicted_savings, which is where that
+    # formula lives). Nothing in the derivation refers to the data type, which
+    # is what lets ONE threshold cover binary/likert/continuous -- validated
+    # over a 48-cell noise x bias grid at R^2=0.997 against measured variance
+    # ratios. Unlike the agreement-type metrics it is invariant to judge BIAS,
+    # correctly, because PPI's rectifier removes additive bias: at fixed noise
+    # a 4x bias increase drops ICC 0.857 -> 0.532 while the realized saving
+    # holds at 3.30x -> 3.19x.
+    r = out.get("pearson_r")
+    out["rho2"] = float(r * r) if r is not None and np.isfinite(r) else float("nan")
+    return out
+
+
 def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int = 0) -> dict:
     """Large-sample (n_mc), FULLY-labeled point measurement of judge-human
     alignment for one JudgeBiasSource's judge model -- deliberately separate
@@ -3312,26 +3879,11 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
     every metric this eval type has a defensible claim to, not just one
     "primary" pick, since which one a caller wants to bucket/report by is a
     presentational choice made downstream (see cases/pvalues.py's
-    _ALIGNMENT_VIEWS), not something baked into the measurement:
-      - binary: "kappa" (unweighted Cohen's kappa -- the standard nominal-
-        data reliability statistic, and what evalstats/alignment.py's own
-        public API reports for a binary judge), "percent_agreement"
-        (raw exact-match % -- the same public API's companion number).
-      - likert: "weighted_kappa" (quadratic Cohen's kappa -- the standard
-        ordinal-data reliability statistic, and what most papers report for
-        Likert-type judge alignment), "spearman_r" (rank correlation --
-        some work recommends this instead for Likert judges, since it
-        doesn't require picking tie-weights the way weighted kappa does),
-        "icc_21" (Shrout & Fleiss two-way random-effects ICC, absolute
-        agreement -- see _icc_21's docstring for why it's included
-        alongside the two correlation-type metrics rather than instead of
-        them), "percent_agreement" (raw exact-match % -- rarely reported
-        alone, kept as an intuitive companion number).
-      - continuous: "pearson_r" (still the most commonly reported single
-        number for numeric/continuous judge-vs-human agreement),
-        "spearman_r" (companion, robust to nonlinear-but-monotonic
-        judge miscalibration), "icc_21" (see _icc_21's docstring).
-    All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
+    _ALIGNMENT_VIEWS), not something baked into the measurement. See
+    _alignment_metric_dict for the exact panel per eval type and why each
+    metric is in it; the historically-primary picks are "kappa" (binary),
+    "weighted_kappa"/"spearman_r" (likert) and "pearson_r" (continuous),
+    which remain present and unchanged. All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
     though never far below 0 for a judge that's at least weakly aligned with
     truth) -- callers wanting a 0-100 bucketing axis apply their own
     clip(x, 0, 1) * 100 (see cases/pvalues.py's _alignment_bucket).
@@ -3360,40 +3912,14 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
     unrounded judge score would almost never exactly equal an integer human
     label. Rounding first matches what a real deployment would do to report
     an "X% aligned"/kappa claim on a Likert-scored judge in the first place."""
-    from scipy.stats import pearsonr, spearmanr
-    from sklearn.metrics import cohen_kappa_score
-
     rng = np.random.default_rng(seed)
     cal_sc = replace(sc, n=n_mc)
     cell = generate_judge_bias_cell(cal_sc, rng)
     truth, llm = cell.truth_a2, cell.llm_a2
 
-    if sc.eval_type == "binary":
-        # Unweighted Cohen's kappa + percent agreement -- deliberately NOT
-        # sensitivity/specificity/F1: matches evalstats/alignment.py's own
-        # _compute_alignment_metrics binary branch (the two numbers the
-        # public tool actually reports for a binary judge), and recent work
-        # on what to report for binary LLM-judge agreement singles out
-        # accuracy+kappa as the core pair, treating further correlation-type
-        # statistics (phi/MCC/Pearson/Spearman/Kendall's tau-b) as
-        # essentially redundant with each other on 2x2 data -- see this
-        # feature's design discussion.
-        kappa = float(cohen_kappa_score(truth.astype(int), llm.astype(int)))
-        pct_agree = float(np.mean(llm == truth) * 100.0)
-        return {"kappa": kappa, "percent_agreement": pct_agree}
-    elif sc.eval_type == "likert":
-        lo, hi = 1.0, float(sc.likert_max)
-        llm_rounded = np.clip(np.rint(llm), lo, hi)
-        kappa = float(cohen_kappa_score(truth.astype(int), llm_rounded.astype(int), weights="quadratic"))
-        pct_agree = float(np.mean(llm_rounded == truth) * 100.0)
-        rho, _ = spearmanr(truth, llm_rounded)
-        icc = _icc_21(truth, llm_rounded)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
-    else:
-        r, _ = pearsonr(truth, llm)
-        rho, _ = spearmanr(truth, llm)
-        icc = _icc_21(truth, llm)
-        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
+    if sc.eval_type == "likert":
+        llm = np.clip(np.rint(llm), 1.0, float(sc.likert_max))
+    return _alignment_metric_dict(truth, llm, sc.eval_type)
 
 
 PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
@@ -3423,9 +3949,6 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
     to JudgeBiasSource.llm_noise via build_ppi_factorial_sources' llm_noise
     factor, so results are directly comparable to the main judge-alignment
     view."""
-    from scipy.stats import pearsonr, spearmanr
-    from sklearn.metrics import cohen_kappa_score
-
     rng = np.random.default_rng(seed)
     shape = _ppi_shape(eval_type)
     anchor = _ppi_shape_anchor(shape)
@@ -3435,19 +3958,17 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
     rater2 = _jb_llm(truth, bias=0.0, noise_sd=human_noise, rng=rng, slope=1.0, anchor=anchor)
 
     if eval_type == "likert":
-        lo, hi = 1.0, 5.0
-        r1 = np.clip(np.rint(rater1), lo, hi)
-        r2 = np.clip(np.rint(rater2), lo, hi)
-        kappa = float(cohen_kappa_score(r1.astype(int), r2.astype(int), weights="quadratic"))
-        pct_agree = float(np.mean(r1 == r2) * 100.0)
-        rho, _ = spearmanr(r1, r2)
-        icc = _icc_21(r1, r2)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
-    else:
-        r, _ = pearsonr(rater1, rater2)
-        rho, _ = spearmanr(rater1, rater2)
-        icc = _icc_21(rater1, rater2)
-        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
+        r1 = np.clip(np.rint(rater1), 1.0, 5.0)
+        r2 = np.clip(np.rint(rater2), 1.0, 5.0)
+        return _alignment_metric_dict(r1, r2, "likert")
+    # NOTE binary deliberately routes here too, not through the "binary"
+    # branch: _jb_llm adds CONTINUOUS noise to the 0/1 truth, so two "human
+    # raters" built this way are not binary-valued and thresholding them
+    # would invent a decision rule this function never modeled. This mirrors
+    # the pre-existing behaviour (there has never been a binary human-human
+    # branch -- see cases/pvalues.py's note that the human-human view does
+    # not cover binary).
+    return _alignment_metric_dict(rater1, rater2, "continuous")
 
 
 @dataclass
@@ -3606,8 +4127,12 @@ def generate_judge_bias_cell(
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2, es)
     if scenario.eval_type == "binary":
-        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a))
-        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng, extra=_confound(truth_b2, scenario.confound_shift_b))
+        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a),
+                                noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
+                                contam_scale=scenario.contam_scale)
+        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng, extra=_confound(truth_b2, scenario.confound_shift_b),
+                                noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
+                                contam_scale=scenario.contam_scale)
     else:
         llm_a2 = _jb_llm(
             truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
@@ -3740,6 +4265,34 @@ def generate_judge_bias_cell(
     llm_B_runs = np.column_stack(b_cols)
     llm_C_runs = np.column_stack(c_cols)
 
+    if scenario.eval_type == "likert":
+        # A Likert judge reports on the SAME integer grid the human labels
+        # use -- _jb_llm/_jb_llm_repeated build judge scores as an affine
+        # distortion of the (already rounded) truth plus continuous noise
+        # and never re-discretise, which left the judge on a continuous
+        # scale that no rubric-scored judge could actually emit.
+        #
+        # That gap was not cosmetic. It made the judge used for INFERENCE
+        # (continuous, carrying the full bias) a different object from the
+        # judge used to REPORT agreement (rounded by
+        # measure_judge_alignment, where a sub-half-step bias vanishes),
+        # so an alignment metric could read a perfect 1.000 for a judge
+        # the tests simultaneously showed producing ~80% false positives.
+        # Rounding here makes the two the same judge. It also means a bias
+        # smaller than half a scale point genuinely cannot move an integer
+        # judge's output, which is a property of ordinal reporting, not an
+        # artifact to be corrected away.
+        _lo, _hi = 1.0, float(scenario.likert_max)
+        _round = lambda a: np.clip(np.rint(a), _lo, _hi)
+        llm_a2, llm_b2 = _round(llm_a2), _round(llm_b2)
+        llm_x, llm_y = _round(llm_x), _round(llm_y)
+        llm_a3, llm_b3, llm_c3 = _round(llm_a3), _round(llm_b3), _round(llm_c3)
+        llm_A, llm_B, llm_C = _round(llm_A), _round(llm_B), _round(llm_C)
+        llm_W, llm_X = _round(llm_W), _round(llm_X)
+        llm_Y, llm_Z = _round(llm_Y), _round(llm_Z)
+        llm_A_runs, llm_B_runs, llm_C_runs = (
+            _round(llm_A_runs), _round(llm_B_runs), _round(llm_C_runs))
+
     return JudgeBiasCellData(
         llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2, truth_a2=truth_a2, truth_b2=truth_b2,
         llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y, truth_x=truth_x, truth_y=truth_y,
@@ -3795,14 +4348,15 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     wilcoxon's own PPI-corrected estimator actually targets -- see that
     function's docstring for the full rationale.
 
-    "ppi_wilson"/"bootstrap_t_single"'s gold value is the single-arm
-    population mean of the "a2" marginal -- the same distribution
-    generate_judge_bias_cell draws truth_a2 from -- reusing the diffs2/
-    thetas2 loop's own `a` draw rather than a separate MC loop, since it's
-    already exactly that quantity.
+    "ppi_wilson"/"bootstrap_t_single"/"ppi_t_interval_single"/
+    "ppi_logit_t_single"'s gold value is the single-arm population mean of
+    the "a2" marginal -- the same distribution generate_judge_bias_cell
+    draws truth_a2 from -- reusing the diffs2/thetas2 loop's own `a` draw
+    rather than a separate MC loop, since it's already exactly that
+    quantity.
 
     "ppi_t_interval"/"ppi_logit_t" target the same paired mean-difference
-    estimand as "paired_t"/"tango_score" (both are closed-form PPI
+    estimand as "paired_t"/"mj_floor" (both are closed-form PPI
     corrections for mean(a_i - b_i), differing only in the CI's shape --
     raw vs. logit-transformed -- not the point estimate/null itself), so
     they reuse means_paired.mean() directly."""
@@ -3873,8 +4427,9 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "paired_t": float(means_paired.mean()),
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
-        "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
-        "tango_fixed_lambda": float(means_paired.mean()),  # same estimand as tango_score, fixed lambda=1
+        "mj_floor": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "mj_floor_fixed_lambda": float(means_paired.mean()),  # same estimand as mj_floor, fixed lambda=1
+        "bonett_price": float(means_paired.mean()),  # same estimand as mj_floor, Laplace-adjusted interval
         "ppi_t_interval": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "ppi_logit_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,
@@ -3883,4 +4438,6 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "kruskal": 0.5,
         "ppi_wilson": float(a_means2.mean()),  # single-arm population mean of "a2" -- same estimand as truth_a2
         "bootstrap_t_single": float(a_means2.mean()),  # same estimand, non-binary construction
+        "ppi_t_interval_single": float(a_means2.mean()),  # same estimand, closed-form non-binary construction
+        "ppi_logit_t_single": float(a_means2.mean()),  # same estimand, closed-form [lo,hi]-bounded construction
     }

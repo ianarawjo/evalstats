@@ -1,40 +1,49 @@
 <section>
   <p>
-    This roadmap covers planned investigations, library features, and simulation extensions.
-    Items are ordered roughly by priority. The current focus is on establishing solid defaults
-    for the most common eval tasks, with worked Jupyter notebooks, visual terminal outputs,
-    and plots for each.
+    This roadmap covers shipped work, planned investigations, and library features still ahead.
+    Items are ordered roughly by priority. The current focus is finishing the paper behind
+    <code>evalstats</code>' method recommendations and polishing the package for a 1.0 release.
   </p>
 
-  <!-- ── CURRENT FOCUS ── -->
-  <h2>Current Focus</h2>
+  <!-- ── SHIPPED ── -->
+  <h2>Shipped</h2>
   <p>
-    I am focused on covering the core cases every LLM practitioner encounters: 
-    comparing models, comparing prompts, and comparing model&times;prompt combinations,
-    across both single-run and multi-run (seed variance) settings. 
-    Multi-run analysis is treated as a first-class concern:
-    every single-run method has a nested-bootstrap counterpart when repeated sampling is
-    available. These settings will be supported by the core API and visual terminal outputs, 
-    and will be informed by Monte Carlo simulations testing quality of default statistical methods 
-    across realistic eval conditions.
+    The core comparison workflow — comparing models, prompts, and model&times;prompt combinations,
+    across single-run and multi-run (seed variance) settings — is done and simulation-backed.
+    Every single-run CI/p-value method has a multi-run counterpart, chosen automatically. So is a
+    second major pillar that wasn't yet started when this roadmap was first written:
+    <strong>prediction-powered inference (PPI)</strong> for mixed human-AI judge designs. Concretely:
   </p>
+  <ul>
+    <li>
+      <strong>PPI-corrected hypothesis tests</strong>: bias-corrected versions of nine standard tests
+      (t-test, Welch's, Mann-Whitney U, paired t-test, Wilcoxon signed-rank, repeated-measures and
+      one-way ANOVA, Friedman, Kruskal-Wallis) via <code>evalstats.tests</code>, including what we
+      believe are the first PPI corrections for rank-based nonparametric tests.
+    </li>
+    <li>
+      <strong>Auditing your LLM judge</strong>: <code>judge_alignment()</code> reports the judge-human
+      correlation appropriate to your test and the resulting effective sample size, with rule-of-thumb
+      thresholds for when a judge is (or isn't) worth using.
+    </li>
+    <li>
+      <strong>Family-wise error control for multiple comparisons</strong>: Šidák for simultaneous CIs,
+      Shaffer's or Romano&ndash;Wolf for p-value correction depending on N — see
+      <a href="./which-method.html">Which Method?</a> for the full decision tree.
+    </li>
+    <li>
+      <strong>An <code>evalstats label</code> CLI command</strong> to draw a random, MCAR-compliant
+      sample of items for human labeling, respecting PPI's sample-size floors.
+    </li>
+  </ul>
   <p>
-    Practitioners focused on the latest "hottest topics"—i.e., agent and RAG engineering—might worry that this roadmap 
-    is too focused on an "old" problem. First, prompts and models are foundational to all LLM-integrated systems, 
-    and getting the defaults right for those will cover a huge fraction of use cases.
-    Second, and more importantly, the terms "models" and "prompts" can easily be abstracted and the same analysis methods re-used,
-    for instance to compare RAG pipeline configurations or component variations in agent architectures. 
-    Getting the defaults right is therefore really important, as it will lay the groundwork for more complex analyses.
-  </p>
-  <p>
-    Current investigations include:
+    Investigation notebooks published so far:
   </p>
   <ul>
     <li>
       <a href="./investigations/model-vs-model.html"><strong>Model A vs. Model B: Is the Gap Real?</strong></a>:
-      CIs on the score difference (Newcombe / smooth bootstrap), single-run and multi-run
-      nested-bootstrap variants, minimum N to detect a given gap, and honest reporting of
-      statistical ties.
+      CIs on the score difference, single-run and multi-run nested-bootstrap variants, minimum N to
+      detect a given gap, and honest reporting of statistical ties.
     </li>
     <li>
       <a href="./investigations/best-prompt.html"><strong>Finding Your Best Prompt</strong></a>:
@@ -42,28 +51,39 @@
       and multi-run modes, and how to report &ldquo;Prompt C wins&rdquo; with appropriate
       hedging.
     </li>
+  </ul>
+
+  <!-- ── CURRENT FOCUS ── -->
+  <h2>Current Focus</h2>
+  <p>
+    The technical validation behind every default above — the Monte Carlo simulations, the
+    real-data cross-checks, and the PPI calibration study — is being written up as a paper. Until
+    it's available, <a href="./which-method.html">Which Method?</a> summarizes the recommendations
+    directly. Alongside that: polishing the package and this guide for a 1.0 release, and closing the
+    gaps below.
+  </p>
+  <ul>
     <li>
-      <strong>Finding the Best Model&times;Prompt Combo</strong>:
-      Multi-comparison correction, factorial (two-way) analysis to
-      detect interaction effects, score-matrix heatmaps with CI width, and multi-run variants.
-      Includes <code>analyze_factorial()</code> for the common tagged-dataset format.
-      <em>In progress.</em>
+      <strong>Between-subjects (unpaired) comparisons</strong>: <code>compare()</code>/<code>analyze()</code>
+      currently assume a within-subjects design (every compared entity scores the same items).
+      Genuinely unpaired designs — common in HCI, e.g. independent reviewer groups — have PPI-corrected
+      test functions available directly (<code>evalstats.tests</code>), but no first-class
+      <code>compare()</code>-style entry point yet.
     </li>
     <li>
-      <strong>Comparing Models Across Multiple Metrics</strong>:
-      Per-metric CIs, Pareto dominance as a weight-free criterion, composite score uncertainty,
-      and visualizations that surface tradeoffs rather than a pre-digested verdict.
-      <em>In progress.</em>
+      <strong>Multi-run PPI correction</strong>: combining repeated-run data with LLM-judge bias
+      correction in a single pass is not yet supported — currently you pick one or the other.
+    </li>
+    <li>
+      <strong>Finding the Best Model&times;Prompt Combo</strong>: factorial (two-way) analysis to
+      detect interaction effects, score-matrix heatmaps with CI width, and multi-run variants.
+    </li>
+    <li>
+      <strong>Comparing Models Across Multiple Metrics</strong>: Pareto dominance as a weight-free
+      criterion, composite score uncertainty, and visualizations that surface tradeoffs rather than a
+      pre-digested verdict.
     </li>
   </ul>
-  <p>
-    Supporting these investigations: the <code>evalstats</code> library API
-    (<code>compare_models()</code>, <code>compare_prompts()</code>,
-    <code>analyze()</code>, <code>analyze_factorial()</code>) with
-    <code>.summary()</code> terminal output and <code>.plot()</code>;
-    and Monte Carlo simulations covering CI coverage and width across binary, continuous,
-    Likert, and grade-scale eval types at varied sample sizes.
-  </p>
 
   <!-- ── NEAR-FUTURE ── -->
   <h2>Near-Future Planned Foci</h2>
@@ -79,7 +99,8 @@
         <strong>Before / After: Did My Fine-Tune Actually Help?</strong>: Simple before/after comparison methods.
     </li>
     <li>
-        <strong>How Many Eval Items Do I Actually Need?</strong>: Estimating required sample sizes.
+        <strong>How Many Eval Items Do I Actually Need?</strong>: Estimating required sample sizes, including
+        with a mixed human-AI judge design.
     </li>
     <li>
         <strong>Prompt Sensitivity Analysis</strong>: Exploring prompt effects and stability.
@@ -89,9 +110,6 @@
     </li>
     <li>
         <strong>Regression Guard</strong>: Tools for regression detection and CI integration.
-    </li>
-    <li>
-        <strong>Auditing Your LLM Judge</strong>: Approaches for measuring annotation agreement.
     </li>
     <li>
         <strong>When Model Rankings Are Just Noise</strong>: Assessing ranking reliability.
@@ -104,12 +122,12 @@
   <!-- ── FURTHER OUT ── -->
   <h2>Far-Out Explorations</h2>
   <p>
-    I intend to explore alternative statistical paradigms, like Bayesian methods and e-values, 
+    I intend to explore alternative statistical paradigms, like Bayesian methods and e-values,
     which could provide more nuanced insights and better support for the iterative, noisy nature of LLM evals.
     However, I want to first provide some sound, "best effort" defaults within a more familiar frequentist framework,
     which many practitioners are already using and which is still widely requested by stakeholders, reviewers, and auditors.
-    One idea here is for <code>evalstats</code> to add a Bayesian mode, where users can toggle between the two paradigms and get outputs 
-    that are consistent with the underlying philosophy without needed to change top-level API calls 
+    One idea here is for <code>evalstats</code> to add a Bayesian mode, where users can toggle between the two paradigms and get outputs
+    that are consistent with the underlying philosophy without needed to change top-level API calls
     (e.g., <code>compare_models()</code> will report either frequentist or Bayesian outputs depending on the mode).
     This guide would then have an "alternative universe" where the same website and investigation notebooks are re-framed through a Bayesian lens,
     and unique Bayesian investigations are added (e.g., sequential testing and evidence combination across tests).

@@ -17,6 +17,7 @@ from .variance import RobustnessResult, SeedVarianceResult
 
 if TYPE_CHECKING:
     from .mixed_effects import LMMInfo, FactorialLMMInfo
+    from ..alignment import AlignmentResult
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +94,32 @@ class AnalysisBundle:
         True when ``compare(..., alignment=...)`` overrode this bundle's
         robustness/pairwise/rank_dist with a Prediction-Powered Inference
         correction (see ``evalstats.api._run_alignment_ppi``).
+    alignment_result : AlignmentResult or None
+        The :class:`~evalstats.alignment.AlignmentResult` the correction
+        above was computed from -- set together with ``ppi_applied``,
+        ``None`` otherwise. Lets the summary printer show the full
+        alignment/representativeness report inline instead of just the
+        boolean flag.
     resolved_score_range : tuple[float, float] or None
         The ``(lo, hi)`` bounds actually used to rescale data for
         ``resolved_method='logit_t'`` / ``resolved_ci_method='logit_t'``
         (user-declared via ``score_range``, or auto-detected/approximated —
         see ``analyze()``'s ``score_range`` parameter). ``None`` when
         logit-t wasn't used.
+    resolved_data_kind : str or None
+        The data kind (``"binary"``/``"bounded_01"``/``"likert"``/
+        ``"unbounded"``) the ``method="auto"`` router actually resolved for
+        this data -- see ``evalstats.core.router.resolve_auto_robustness_method``.
+        Recorded so downstream consumers reuse that ONE decision instead of
+        re-deriving it from the scores. ``evalstats.api._run_alignment_ppi``
+        does exactly that when routing PPI's own ``method="auto"``: it
+        previously re-derived the kind with a binary/bounded_01/unbounded
+        test of its own, which had no ``"likert"`` branch and consulted
+        neither ``score_range`` nor ``eval_type``, so Likert data on e.g. a
+        1-5 scale fell through to ``"unbounded"`` and silently took
+        ``ppi_t_interval`` -- leaving ``PPI_AUTO_METHOD_TABLE``'s ``likert``
+        row (``ppi_logit_t``) unreachable. ``None`` for non-``auto`` methods
+        and the LMM paths, where no such resolution happens.
     """
 
     benchmark: BenchmarkResult
@@ -112,8 +133,23 @@ class AnalysisBundle:
     resolved_method: Optional[str] = None
     resolved_ci_method: Optional[str] = None
     resolved_score_range: Optional[tuple[float, float]] = None
+    resolved_data_kind: Optional[str] = None
     p_value_method: Optional[str] = None
     ppi_applied: bool = False
+    alignment_result: Optional["AlignmentResult"] = None
+
+    @property
+    def labels(self) -> list[str]:
+        """Canonical entity labels for this bundle.
+
+        The single source of truth is ``benchmark.template_labels`` -- the
+        same list ``core.router`` feeds to every downstream construction.
+        Read this rather than ``rank_dist.labels``: the rank distribution is
+        opt-in work (see ``core.ranking.LazyRankDistribution``), so treating
+        it as the label registry both inverts the dependency and can force a
+        bootstrap nobody asked for.
+        """
+        return list(self.benchmark.template_labels)
 
     def summary(self, **kwargs) -> None:
         """Print the console summary for this bundle.

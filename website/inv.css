@@ -1003,3 +1003,76 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   .page-layout { padding: 2rem 1.25rem 4rem; }
   .nav-links { display: none; }
 }
+
+/* ─── DECISION TREE ───────────────────────────────────── */
+.dtree {
+  margin: 1.25rem 0 2rem;
+}
+.dtree-root {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 0.9rem;
+}
+.dtree-branches {
+  list-style: none;
+  margin: 0;
+  padding-left: 1.4rem;
+  border-left: 1.5px solid var(--border);
+}
+.dtree-branches .dtree-branches {
+  margin-top: 0.7rem;
+}
+.dtree-node {
+  position: relative;
+  padding: 0 0 1rem 1.25rem;
+}
+.dtree-node:last-child {
+  padding-bottom: 0;
+}
+.dtree-node::before {
+  content: "";
+  position: absolute;
+  left: -1.4rem;
+  top: 0.65rem;
+  width: 1.4rem;
+  height: 1.5px;
+  background: var(--border);
+}
+.dtree-condition {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+}
+.dtree-leaf {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: var(--blue-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  max-width: 32rem;
+}
+.dtree-leaf-method {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+.dtree-leaf-note {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-mid);
+}
+@media (max-width: 600px) {
+  .dtree-branches { padding-left: 1rem; }
+  .dtree-node { padding-left: 1rem; }
+  .dtree-node::before { left: -1rem; width: 1rem; }
+  .dtree-leaf { max-width: 100%; }
+}

@@ -37,6 +37,7 @@ _BRIGHT_GREEN  = "\033[92m" if _ANSI else ""
 _BRIGHT_YELLOW = "\033[93m" if _ANSI else ""
 _BRIGHT_CYAN   = "\033[96m" if _ANSI else ""
 _BRIGHT_RED    = "\033[91m" if _ANSI else ""
+_BRIGHT_MAGENTA = "\033[95m" if _ANSI else ""  # "pink" -- reserved for the PPI/MCAR reminder, nothing else
 
 
 def _p_best_color(p: float) -> str:
@@ -91,10 +92,11 @@ def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
 def _pairwise_p_value_label(test_method: str) -> str:
     """Return a human-readable p-value method label for pairwise summaries."""
     method = test_method.lower()
-    if "tango" in method:
-        return "McNemar"
-    if "newcombe" in method:
-        return "McNemar exact"
+    # All three binary paired CI methods report the same p-value, McNemar's
+    # mid-p (see core.paired). Fagerland et al. (2014) sec. 9.1 recommend it
+    # over the exact conditional test, which is markedly conservative.
+    if "mj_floor" in method or "tango" in method or "newcombe" in method:
+        return "McNemar mid-p"
     if "sign test" in method:
         return "paired sign test"
     if "wilcoxon" in method:
@@ -113,7 +115,8 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
     """
     method = pair.test_method.lower()
     is_exact_path = (
-        "tango" in method
+        "mj_floor" in method
+        or "tango" in method
         or "newcombe" in method
         or "mcnemar" in method
         or "sign test" in method
@@ -464,9 +467,10 @@ def print_pairwise_summary(
         multi_ci=pair.multi_ci,
     )
     ci_legend = _legend_ci_label(style, ci_pct, pair.multi_ci is not None)
+    mean_marker = _mean_marker_legend(style, pair.statistic)
     print(
         f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-        f"(· ±1σ spread, {ci_legend}, ● {pair.statistic}, │ zero)"
+        f"(· ±1σ spread, {ci_legend}{mean_marker}, │ zero)"
     )
     print(f"  {b} (<0) {line} (>0) {a}")
     print()
@@ -610,6 +614,23 @@ def _consistency_color(icc: float) -> str:
 # Multi-model summary
 # ---------------------------------------------------------------------------
 
+def _display_order(bundle) -> "np.ndarray":
+    """Indices giving a stable, readable display order: descending mean,
+    label as tiebreak.
+
+    These orderings used to read ``rank_dist.expected_ranks``/``p_best``,
+    which forced the (opt-in) rank bootstrap purely to decide row order --
+    see ``core.ranking.LazyRankDistribution``. Mean order is free, already
+    what the leaderboard sorts by elsewhere, and deterministic.
+    """
+    means = np.asarray(bundle.robustness.mean, dtype=float)
+    labels = list(bundle.labels)
+    return np.array(
+        sorted(range(len(labels)), key=lambda i: (-means[i], labels[i])),
+        dtype=int,
+    )
+
+
 def _print_multi_model_summary(
     bundle: MultiModelBundle,
     *,
@@ -634,6 +655,12 @@ def _print_multi_model_summary(
     print(f"{_BOLD}Best pair by mean:{_RESET} model='{_BRIGHT_GREEN}{best_model}{_RESET}'  template='{_BRIGHT_GREEN}{best_template}{_RESET}'")
     print()
 
+    # MultiModelBenchmark requires >= 2 models, so this section (comparing
+    # across models) always has something to show. The per-template section
+    # right below it doesn't have the same guarantee -- a single implicit
+    # template is common (e.g. a plain model-only comparison) -- so it, and
+    # the equally-degenerate per-model breakdown loop further down, are
+    # skipped when there's nothing to compare there.
     _print_loud_section("Model-level comparison (across all prompts):")
     _print_bundle_summary(
         bundle.model_level,
@@ -646,23 +673,23 @@ def _print_multi_model_summary(
         min_meaningful_diff=min_meaningful_diff,
         show_rank_probabilities=show_rank_probabilities,
     )
-
     print()
-    _print_loud_section("Cross-model per-template comparison (models collapsed):")
-    _print_bundle_summary(
-        bundle.template_level,
-        top_pairwise=top_pairwise,
-        line_width=line_width,
-        item_singular="template",
-        item_plural="templates",
-        pairwise_sort=pairwise_sort,
-        style=style,
-        min_meaningful_diff=min_meaningful_diff,
-        show_rank_probabilities=show_rank_probabilities,
-    )
-    best_idx = int(np.argmax(bundle.template_level.robustness.mean))
-    best_template = bundle.template_level.benchmark.template_labels[best_idx]
-    
+
+    if bundle.benchmark.n_templates > 1:
+        _print_loud_section("Cross-model per-template comparison (models collapsed):")
+        _print_bundle_summary(
+            bundle.template_level,
+            top_pairwise=top_pairwise,
+            line_width=line_width,
+            item_singular="template",
+            item_plural="templates",
+            pairwise_sort=pairwise_sort,
+            style=style,
+            min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
+        )
+        print()
+
     # Instability across runs across models
     instability_rows = _collect_cross_model_seed_instability_rows(bundle)
     if instability_rows:
@@ -674,38 +701,41 @@ def _print_multi_model_summary(
             f"(instability={instability:.4f}, {_instability_label(instability)})"
         )
 
-    for model_label, model_bundle in bundle.per_model.items():
-        print()
-        _print_loud_section(f"Per-Model Summary: {model_label}")
-        _print_bundle_summary(
-            model_bundle,
-            top_pairwise=top_pairwise,
-            line_width=line_width,
-            pairwise_sort=pairwise_sort,
-            style=style,
-            guidance=False,
-            show_rank_probabilities=show_rank_probabilities,
-        )
+    if bundle.benchmark.n_templates > 1:
+        for model_label, model_bundle in bundle.per_model.items():
+            print()
+            _print_loud_section(f"Per-Model Summary: {model_label}")
+            _print_bundle_summary(
+                model_bundle,
+                top_pairwise=top_pairwise,
+                line_width=line_width,
+                pairwise_sort=pairwise_sort,
+                style=style,
+                guidance=False,
+                show_rank_probabilities=show_rank_probabilities,
+            )
 
     print()
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
     _print_model_template_matrix(bundle)
 
-    # Shared by the (optional) P(Best) block below and the unconditional
-    # "Mean Performance" listing further down -- computed once here so the
-    # latter doesn't depend on show_rank_probabilities being True.
-    p_best = bundle.cross_model.rank_dist.p_best
-    expected_ranks = bundle.cross_model.rank_dist.expected_ranks
-    rank_labels = bundle.cross_model.rank_dist.labels
+    # The unconditional "Mean Performance" listing orders by mean, so it
+    # needs nothing from the rank distribution. P(Best)/E[Rank] are read
+    # only inside the show_rank_probabilities block below, which keeps the
+    # rank bootstrap genuinely opt-in.
+    rank_labels = bundle.cross_model.labels
     rank_pairs = [_split_model_template_label(label) for label in rank_labels]
     rank_bar_width = 14
     n_ranked_items = len(rank_labels)
     model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
     template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
-    top_indices = np.argsort(-p_best)
+    top_indices = _display_order(bundle.cross_model)
     n_show = len(top_indices)
 
     if show_rank_probabilities:
+        p_best = bundle.cross_model.rank_dist.p_best
+        expected_ranks = bundle.cross_model.rank_dist.expected_ranks
+        pbest_indices = np.argsort(-p_best)
         _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
         print(
             f"  {'Model':<{model_col_width}s} "
@@ -713,7 +743,7 @@ def _print_multi_model_summary(
             f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
             f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
         )
-        for idx in top_indices[:n_show]:
+        for idx in pbest_indices[:n_show]:
             model_label, template_label = rank_pairs[idx]
             model_label = _truncate_label(model_label, model_col_width)
             template_label = _truncate_label(template_label, template_col_width)
@@ -759,9 +789,10 @@ def _print_multi_model_summary(
     print()
     _print_subsection(f"--- {stat_label} Performance: All {n_show} (marginal CIs) ---")
     _ci_legend_mm = _legend_ci_label(style, int(round((1 - get_alpha_ci()) * 100)), cross_rob.multi_ci is not None)
+    _mean_marker_mm = _mean_marker_legend(style, stat_label.lower())
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]  "
-        f"(· ±1σ, {_ci_legend_mm}, ● {stat_label.lower()}, │ {ref_label_str})"
+        f"(· ±1σ, {_ci_legend_mm}{_mean_marker_mm}, │ {ref_label_str})"
     )
     print(
         f"  {'Model':<{model_col_width}s} "
@@ -824,7 +855,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # Labels are formatted as "model / template" by get_flat_result().
     cell_mean: dict[tuple[str, str], float] = {}
     for label, m in zip(
-        cross.rank_dist.labels,
+        cross.labels,
         cross.robustness.mean,
     ):
         parts = label.split(" / ", 1)
@@ -841,7 +872,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # estimate should not read as a decisive winner when the pairwise CIs
     # show it isn't distinguishable from its neighbors; that would defeat
     # the point of reporting calibrated intervals in the first place.
-    cross_labels_all = list(cross.rank_dist.labels)
+    cross_labels_all = list(cross.labels)
     cross_means_all = cross.robustness.mean
     sort_idx = list(np.argsort(-cross_means_all))
     labels_sorted = [cross_labels_all[i] for i in sort_idx]
@@ -907,7 +938,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     """Print executive leaderboard for cross-model (model/template) pairs."""
     cross = bundle.cross_model
-    labels = list(cross.rank_dist.labels)
+    labels = list(cross.labels)
     n = len(labels)
     if n < 2:
         return
@@ -936,7 +967,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
-    _cross_ci_header = "Wilson CI" if _uses_wilson_ci(cross) else "CI"
+    _cross_ci_header = "Wilson-flat CI" if _uses_wilson_ci(cross) else "CI"
     header = (
         f"  {'Model':<{model_w}s}"
         f"  {'Template':<{template_w}s}"
@@ -1010,81 +1041,42 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
 # Single-model bundle summary
 # ---------------------------------------------------------------------------
 
-def _print_pairwise_section(
+def _prepare_paired_pairwise_rows(
     bundle: "AnalysisBundle",
     *,
-    top_pairwise: int = None,
-    line_width: int,
-    sort: bool = True,
-    p_value_method: Optional[str] = None,
-    pairwise_sort: Literal["grouped", "significance"] = "grouped",
-    style: Literal["line", "gradient"] = "gradient",
-) -> None:
-    """Print the pairwise comparisons block for an AnalysisBundle.
+    p_value_method: Optional[str],
+    sort: bool,
+    pairwise_sort: Literal["grouped", "significance"],
+) -> tuple[Optional[list[dict]], dict]:
+    """Normalize an AnalysisBundle's pairwise results into the common row
+    shape :func:`_print_pairwise_section` renders, plus metadata describing
+    which optional columns/sections apply.
 
-    Extracted so it can be reused by both the full bundle summary and the
-    focused CompareReport summary without duplicating code.
-
-    Parameters
-    ----------
-    p_value_method : str or None
-        Which p-value column to show.  ``'auto'`` (default) picks the method
-        most commensurate with the CI: bootstrap p-value for bootstrap CI
-        paths, exact-test p-value for newcombe/fisher/sign paths, and
-        Wilcoxon signed-rank for LMM/other paths.  Explicit choices:
-        ``'boot'`` (result.p_value), ``'wsr'`` (Wilcoxon signed-rank),
-        ``'nem'`` (Nemenyi post-hoc).  Pass ``None`` to suppress p-values.
-    pairwise_sort : {"grouped", "significance"}
-        Sorting strategy for pairwise rows. ``"grouped"`` keeps a stable
-        left-item grouping, while ``"significance"`` sorts by p-value then
-        absolute effect size.
+    Extracted from the pre-unification body of ``_print_pairwise_section``
+    verbatim (same swap/canonicalization/sort/p-value-method-resolution
+    logic) so paired-path behavior is unchanged -- only repackaged so the
+    row-rendering core can be shared with the unpaired path via
+    :func:`_prepare_unpaired_pairwise_rows`. Returns ``(None, {})`` when
+    there's exactly one entity (nothing to compare), matching the old
+    early-return.
     """
     pair_item_col_width = 24
-    pair_stat_col_width = 8
-    pair_ci_col_width = 9
-    pair_sigma_col_width = 8
 
-    # Determine statistic label from the first result (all share the same statistic).
     first_result = next(iter(bundle.pairwise.results.values()), None)
+    if first_result is None:
+        return None, {}
     pair_stat_label = first_result.statistic.capitalize() if first_result else "Mean"
 
-    # Detect CI method family for auto p-value selection.
-    is_newcombe_pairwise = (
-        first_result is not None
-        and "newcombe" in first_result.test_method.lower()
-    )
-    is_sign_pairwise = (
-        first_result is not None
-        and "sign test" in first_result.test_method.lower()
-    )
-    is_bootstrap_path = (
-        first_result is not None
-        and "bootstrap" in first_result.test_method.lower()
-    )
-
-    # Whether simultaneous max-T CIs were used (affects p-value source for bootstrap paths).
+    is_newcombe_pairwise = "newcombe" in first_result.test_method.lower()
+    is_sign_pairwise = "sign test" in first_result.test_method.lower()
+    is_bootstrap_path = "bootstrap" in first_result.test_method.lower()
     using_max_t = bundle.pairwise.simultaneous_ci_method == "max_t"
-
-    # Whether Romano-Wolf step-down was the FWER correction that actually
-    # fired for this bundle (only known post-hoc, once all_pairwise() has
-    # run -- see _resolve_p_value_method's docstring). Guarded on
-    # len(results) > 1 because all_pairwise() still resolves and reports
-    # correction_method="romano_wolf" for a single-pair (k=2) bundle even
-    # though nothing is actually corrected there (no family to correct
-    # across) -- Wilcoxon must stay the default at k=2 regardless of N.
     is_romano_wolf_active = (
         bundle.pairwise.correction_method == "romano_wolf"
         and len(bundle.pairwise.results) > 1
     )
 
-    # Resolve the effective p-value source and column header.
     if p_value_method == "auto":
-        # Wilcoxon signed-ranks is the default pairwise test for any k >= 2
-        # (fig:fwer-decision-tree's standard workflow), *except* when
-        # Romano-Wolf step-down is the resolved correction -- it has no
-        # Wilcoxon-compatible joint construction (see
-        # romano_wolf_stepdown_pvalues's docstring) and produces its own
-        # mean-based bootstrap-t p-value instead, which is what's shown here.
         if is_romano_wolf_active:
             eff_p_source, p_col_header = "boot", "p (RW)"
         else:
@@ -1099,30 +1091,17 @@ def _print_pairwise_section(
     else:  # None
         eff_p_source, p_col_header = None, None
 
-    pair_p_col_width = max(10, len(p_col_header)) if p_col_header else 0
-
-    _pairwise_header_method = first_result.test_method
     corr = bundle.pairwise.correction_method
-    if eff_p_source is not None and corr and corr != "none":
-        _pairwise_header_method += f" ({corr}-corrected p-values)"
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
-    if sim_ci_method == "max_t":
-        _pairwise_header_method += " (simultaneous CIs computed with max-T)"
-    elif sim_ci_method == "bonferroni":
-        _pairwise_header_method += " (simultaneous CIs computed with Bonferroni)"
-    _print_subsection(f"--- Pairwise Comparisons ({_pairwise_header_method}) ---")
+    _pretty_ci_method = first_result.test_method[0].upper() + first_result.test_method[1:]
     pair_results = list(bundle.pairwise.results.values())
 
     # Canonical left/right ordering based on expected-rank order keeps rows
     # readable by preventing arbitrary A/B flips between adjacent rows.
+    _labels_for_order = list(bundle.labels)
     rank_order = {
-        label: idx
-        for idx, (_, label) in enumerate(
-            sorted(
-                zip(bundle.rank_dist.expected_ranks, bundle.rank_dist.labels),
-                key=lambda item: (float(item[0]), item[1]),
-            )
-        )
+        _labels_for_order[i]: idx
+        for idx, i in enumerate(_display_order(bundle))
     }
 
     if pair_results:
@@ -1131,7 +1110,7 @@ def _print_pairwise_section(
         )
         pair_item_col_width = min(30, max(12, max_label_len + 2))
 
-    normalized_rows = []
+    rows = []
     for result in pair_results:
         a = result.template_a
         b = result.template_b
@@ -1164,9 +1143,21 @@ def _print_pairwise_section(
             right_pos = pos_b
             swapped_multi_ci = result.multi_ci
 
+        if eff_p_source in {"max_t", "boot"}:
+            display_p = result.p_value
+        elif eff_p_source == "wsr":
+            display_p = result.wilcoxon_p
+        elif eff_p_source == "nem":
+            display_p = (
+                bundle.pairwise.friedman.get_nemenyi_p(str(left_item), str(right_item))
+                if bundle.pairwise.friedman is not None else None
+            )
+        else:
+            display_p = None
+
         # binary_confusion is symmetric in n11/n00; n10/n01 swap with direction
         # but for the bar we only need n_split = n10+n01, which is invariant.
-        normalized_rows.append(
+        rows.append(
             {
                 "left": left_item,
                 "right": right_item,
@@ -1176,9 +1167,9 @@ def _print_pairwise_section(
                 "ci_low": ci_low,
                 "ci_high": ci_high,
                 "std_diff": float(result.std_diff),
-                "rank_biserial": rank_biserial,
-                "p_value": result.p_value,
-                "wilcoxon_p": result.wilcoxon_p,
+                "es_value": rank_biserial,
+                "p_value": result.p_value,  # sort key -- always the bootstrap p, regardless of eff_p_source
+                "display_p": display_p,
                 "agreement_mcc": result.agreement_mcc,
                 "binary_confusion": result.binary_confusion,
                 "multi_ci": swapped_multi_ci,
@@ -1190,8 +1181,8 @@ def _print_pairwise_section(
 
     if sort:
         if pairwise_sort == "grouped":
-            normalized_rows = sorted(
-                normalized_rows,
+            rows = sorted(
+                rows,
                 key=lambda row: (
                     row["left_pos"],
                     row["right_pos"],
@@ -1200,8 +1191,8 @@ def _print_pairwise_section(
                 ),
             )
         else:
-            normalized_rows = sorted(
-                normalized_rows,
+            rows = sorted(
+                rows,
                 key=lambda row: (
                     row["p_value"],
                     -abs(row["point_diff"]),
@@ -1209,14 +1200,10 @@ def _print_pairwise_section(
                     row["right_pos"],
                 ),
             )
-    # By default, print all pairs unless top_pairwise is set.
-    if top_pairwise is None:
-        max_pairs = len(normalized_rows)
-    else:
-        max_pairs = max(0, min(top_pairwise, len(normalized_rows)))
 
-    # Friedman omnibus line (printed before the interval plot when pairs exist).
-    if max_pairs > 0 and bundle.pairwise.friedman is not None:
+    def _friedman_line() -> None:
+        if bundle.pairwise.friedman is None:
+            return
         fr = bundle.pairwise.friedman
         fr_p_str = _format_p_value(fr.p_value)
         fr_p_color = _BRIGHT_GREEN if fr.p_value <= 0.05 else _YELLOW
@@ -1229,6 +1216,290 @@ def _print_pairwise_section(
         if fr.p_value > 0.05:
             print(f"  {_YELLOW}[!] Friedman p > 0.05: no significant omnibus effect — treat pairwise results with caution.{_RESET}")
 
+    def _footer(_rows: list[dict], _max_pairs: int) -> None:
+        print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
+
+        # Short p-value-method name (no correction detail -- that's stated
+        # separately on the FWER-corrections line below) for the explicit
+        # methods summary. The fuller descriptive line further down (with
+        # correction detail folded in) still prints too.
+        p_value_method_label = None
+        if eff_p_source in {"max_t", "boot"}:
+            if is_romano_wolf_active and eff_p_source == "boot":
+                p_value_method_label = "Romano-Wolf step-down"
+            elif is_newcombe_pairwise:
+                p_value_method_label = "McNemar mid-p test"
+            elif is_sign_pairwise:
+                p_value_method_label = "Paired sign test"
+            elif eff_p_source == "max_t":
+                p_value_method_label = "Max-T bootstrap"
+            else:
+                p_value_method_label = "Bootstrap"
+        elif eff_p_source == "wsr":
+            p_value_method_label = "Wilcoxon signed-rank"
+        elif eff_p_source == "nem":
+            p_value_method_label = "Nemenyi post-hoc"
+
+        # Explicit methods summary, directly above the p-value-method detail
+        # line -- mirrors the matplotlib forest plot's subtitle, stated
+        # plainly rather than nested into the section header. Two lines:
+        # (1) CI method / p-value method / alpha, (2) simultaneous-CI method
+        # and the FWER correction applied to p-values, broken out separately
+        # since they can use different correction methods. Dimmed along with
+        # the rest of this footnote block (ES=, p-value detail, stars:) --
+        # methods detail, not part of the data itself.
+        _line1 = [f"CI method: {_pretty_ci_method}"]
+        if p_value_method_label:
+            _line1.append(f"p-value method: {p_value_method_label}")
+        _line1.append(f"α={get_alpha_ci():g}")
+        print(f"{_DIM}  {'  |  '.join(_line1)}{_RESET}")
+
+        _line2 = [f"Simultaneous CI method: {_pretty_simultaneous_ci(sim_ci_method)}"]
+        if p_value_method_label:
+            _line2.append(f"FWER correction for p-values: {_pretty_correction(corr)}")
+        print(f"{_DIM}  {'  |  '.join(_line2)}{_RESET}")
+
+        if eff_p_source in {"max_t", "boot"}:
+            if is_romano_wolf_active and eff_p_source == "boot":
+                print(f"{_DIM}  {p_col_header} = Romano-Wolf step-down (FWER-controlled){_RESET}")
+            elif is_newcombe_pairwise:
+                print(f"{_DIM}  {p_col_header} = McNemar mid-p test (two-sided, uncorrected){_RESET}")
+            elif is_sign_pairwise:
+                print(f"{_DIM}  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected){_RESET}")
+            elif eff_p_source == "max_t":
+                print(f"{_DIM}  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
+            else:
+                print(f"{_DIM}  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected){_RESET}")
+        elif eff_p_source == "wsr":
+            ppi_note = ", PPI-corrected" if getattr(bundle, "ppi_applied", False) else ""
+            print(f"{_DIM}  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note}){_RESET}")
+        elif eff_p_source == "nem":
+            print(f"{_DIM}  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled){_RESET}")
+        if eff_p_source is not None:
+            print(f"{_DIM}  stars: * p<0.01, ** p<0.001, *** p<0.0001{_RESET}")
+        print()
+        _cd_labels = list(bundle.labels)
+        labels_sorted = [_cd_labels[i] for i in _display_order(bundle)]
+        _print_critical_difference_groups(
+            bundle.pairwise,
+            labels_sorted=labels_sorted,
+            p_source="bootstrap",
+        )
+
+    meta = {
+        "section_header": f"--- Pairwise Comparisons ({_pretty_ci_method} CIs) ---",
+        "pair_stat_label": pair_stat_label,
+        "pair_item_col_width": pair_item_col_width,
+        "effect_label": "Left - Right",
+        "es_label": "ES",
+        "p_col_header": p_col_header,
+        "friedman_line_fn": _friedman_line,
+        "footer_fn": _footer,
+    }
+    return rows, meta
+
+
+_FAMILY_DISPLAY_UNPAIRED = {
+    "binary_proportion": "proportion difference (Δp)",
+    "rank_based": "stochastic dominance (θ = P(a>b))",
+}
+_ESTIMAND_LABEL_UNPAIRED = {"mean_diff": "Δ", "dominance": "θ"}
+
+
+def _prepare_unpaired_pairwise_rows(
+    result: "GroupComparisonResult",
+    *,
+    sort: bool,
+    pairwise_sort: Literal["grouped", "significance"],
+) -> tuple[list[dict], dict]:
+    """Normalize a GroupComparisonResult's pairwise results into the same
+    row shape :func:`_prepare_paired_pairwise_rows` produces.
+
+    The between-subjects engine always uses exactly one FWER scheme
+    (Bonferroni CI + Holm p) -- no Wilcoxon/Romano-Wolf/Newcombe/sign-test/
+    max-T/Nemenyi method-family detection needed, and no ranking bootstrap
+    to derive an alternate canonical left/right order from (natural
+    factor-level order, i.e. ``result.labels``, is already canonical).
+    ``point_diff``/``ci_low``/``ci_high`` are shifted by each pair's
+    ``null_value`` (0.5 for the rank-based dominance family, 0.0 for the
+    binary mean-difference family) so the shared axis/bar-rendering math in
+    :func:`_print_pairwise_section` -- which assumes a signed quantity
+    centered at zero, same convention the paired path's own "Left - Right"
+    difference already has -- works identically for both estimand kinds.
+    """
+    show_p = result.show_p_values
+    n_pairs = len(result.pairwise)
+    null_value = result.pairwise[0].null_value if result.pairwise else 0.0
+    estimand = result.pairwise[0].estimand if result.pairwise else "mean_diff"
+    est_symbol = _ESTIMAND_LABEL_UNPAIRED.get(estimand, "Δ")
+    # A shifted dominance probability (null=0.5) is a deviation, not the raw
+    # estimand -- label it "Δθ" so the column header doesn't silently claim
+    # to show raw θ. A mean/proportion difference (null=0.0) is unaffected
+    # by the shift, so its existing "Δ" label already describes it exactly.
+    pair_stat_label = f"Δ{est_symbol}" if null_value != 0.0 else est_symbol
+
+    # For the rank-based (dominance) family, Δθ alone doesn't say how far
+    # apart the groups are on the metric's own scale -- e.g. a 1-5 Likert
+    # score. Surface each pair's raw mean difference too (point estimate
+    # only, no separate CI -- same convention the paired path's own "ES"
+    # rank-biserial column uses), reusing the marginal means already
+    # computed for the "Mean Performance" section above this table.
+    mean_by_label = {g.label: g.mean for g in result.groups}
+    show_mean_diff = result.pairwise and result.pairwise[0].estimand == "dominance"
+
+    label_index = {lbl: i for i, lbl in enumerate(result.labels)}
+    rows = []
+    for p in result.pairwise:
+        row = {
+            "left": p.label_a,
+            "right": p.label_b,
+            "left_pos": label_index.get(p.label_a, 0),
+            "right_pos": label_index.get(p.label_b, 0),
+            "point_diff": p.point_estimate - null_value,
+            "ci_low": p.ci_low - null_value,
+            "ci_high": p.ci_high - null_value,
+            "std_diff": 0.0,  # no ±1σ "spread" concept for a pairwise estimate itself
+            "p_value": p.p_value,
+            "display_p": p.p_value if show_p else None,
+            "multi_ci": None,
+        }
+        if show_mean_diff:
+            row["es_value"] = mean_by_label[p.label_a] - mean_by_label[p.label_b]
+        rows.append(row)
+
+    if pairwise_sort not in {"grouped", "significance"}:
+        raise ValueError("pairwise_sort must be 'grouped' or 'significance'.")
+    if sort:
+        if pairwise_sort == "grouped":
+            rows = sorted(
+                rows,
+                key=lambda row: (row["left_pos"], row["right_pos"], row["p_value"], -abs(row["point_diff"])),
+            )
+        else:
+            rows = sorted(
+                rows,
+                key=lambda row: (row["p_value"], -abs(row["point_diff"]), row["left_pos"], row["right_pos"]),
+            )
+
+    def _footer(_rows: list[dict], _max_pairs: int) -> None:
+        if n_pairs > 1 and show_p:
+            print(
+                f"  {_DIM}Verdict reflects the {result.ci_correction}-corrected CI; p is "
+                f"independently {result.pvalue_correction}-corrected -- the two can rarely "
+                f"disagree right at the boundary, since they're different (both valid) "
+                f"FWER corrections.{_RESET}"
+            )
+        # Critical-difference rank bands, shared with the paired path's own
+        # (see _prepare_paired_pairwise_rows) -- reuses
+        # _critical_difference_groups/_print_critical_difference_groups
+        # unmodified via _GroupDiffResultsAsPairwiseMatrix, an adapter whose
+        # .simultaneous_ci_method sentinel routes it through the same
+        # CI-exclusion significance check GroupDiffResult.significant
+        # already uses (this engine has no p-value-threshold alternative
+        # the way the paired path's Wilcoxon/Nemenyi paths do). Sorted by
+        # mean descending -- there's no ranking bootstrap here, so this is
+        # the same "best first" order the executive summary below uses.
+        from evalstats.core.unpaired import _GroupDiffResultsAsPairwiseMatrix
+        labels_sorted = [g.label for g in sorted(result.groups, key=lambda g: -g.mean)]
+        print()
+        _print_critical_difference_groups(
+            _GroupDiffResultsAsPairwiseMatrix(result.pairwise),
+            labels_sorted=labels_sorted,
+            alpha=result.alpha,
+            p_source="bootstrap",
+        )
+
+    label_width = min(24, max(8, max((len(g) for g in result.labels), default=8)))
+    correction_note = ""
+    if n_pairs > 1:
+        correction_note = f", {result.ci_correction} CI" + (
+            f"/{result.pvalue_correction} p (family of {n_pairs})" if show_p else ""
+        )
+    meta = {
+        "section_header": f"--- Pairwise Comparisons ({_FAMILY_DISPLAY_UNPAIRED[result.family]}{correction_note}) ---",
+        "pair_stat_label": pair_stat_label,
+        "pair_item_col_width": label_width,
+        "effect_label": "Left - Right",
+        # Only the dominance family gets a secondary raw-mean-difference
+        # column -- the binary/mean_diff family's primary column already
+        # *is* the raw difference (Δp), so a second copy would be redundant.
+        "es_label": "Δmean" if show_mean_diff else None,
+        "p_col_header": "p" if show_p else None,
+        "friedman_line_fn": None,
+        "footer_fn": _footer,
+    }
+    return rows, meta
+
+
+def _print_pairwise_section(
+    bundle_or_result,
+    *,
+    top_pairwise: int = None,
+    line_width: int,
+    sort: bool = True,
+    p_value_method: Optional[str] = None,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
+) -> None:
+    """Print the pairwise comparisons block for either a paired
+    ``AnalysisBundle`` or an unpaired ``GroupComparisonResult``.
+
+    Shared by the paired path's full bundle summary and the unpaired path's
+    between-subjects summary (``print_group_comparison_summary``, also in
+    this module) -- the axis/legend/header/row-rendering core is identical
+    machinery either way (through ``_choose_interval_line``),
+    so one function renders both instead of two independently-drifting
+    implementations. What genuinely differs between the two designs (six
+    CI/p-value method families + Friedman/Nemenyi + critical-difference
+    rank bands for paired; one fixed Bonferroni-CI/Holm-p scheme for
+    unpaired, no ranking bootstrap) is resolved up front by
+    :func:`_prepare_paired_pairwise_rows`/:func:`_prepare_unpaired_pairwise_rows`
+    into the common row + metadata shape this function actually renders.
+    The Behavioral Agreement subsection (McNemar-style pass/fail bars) is
+    NOT handled here -- see :func:`_print_behavioral_agreement_section`,
+    paired-only, since ``agreement_mcc``/``binary_confusion`` need the same
+    item scored by both entities, which has no between-subjects equivalent.
+
+    Parameters
+    ----------
+    p_value_method : str or None
+        Paired-only. Which p-value column to show. See the pre-unification
+        docstring text preserved in :func:`_prepare_paired_pairwise_rows`
+        for the full method-selection semantics. Ignored for unpaired data
+        (that path's p-value display is controlled by
+        ``GroupComparisonResult.show_p_values`` instead).
+    pairwise_sort : {"grouped", "significance"}
+        Sorting strategy for pairwise rows. ``"grouped"`` keeps a stable
+        left-item grouping, while ``"significance"`` sorts by p-value then
+        absolute effect size.
+    """
+    if isinstance(bundle_or_result, AnalysisBundle):
+        rows, meta = _prepare_paired_pairwise_rows(
+            bundle_or_result, p_value_method=p_value_method, sort=sort, pairwise_sort=pairwise_sort,
+        )
+        if rows is None:
+            return
+    else:
+        rows, meta = _prepare_unpaired_pairwise_rows(
+            bundle_or_result, sort=sort, pairwise_sort=pairwise_sort,
+        )
+
+    _print_subsection(meta["section_header"])
+
+    if top_pairwise is None:
+        max_pairs = len(rows)
+    else:
+        max_pairs = max(0, min(top_pairwise, len(rows)))
+
+    if max_pairs > 0 and meta["friedman_line_fn"] is not None:
+        meta["friedman_line_fn"]()
+
+    pair_item_col_width = meta["pair_item_col_width"]
+    pair_stat_label = meta["pair_stat_label"]
+    es_label = meta["es_label"]
+    p_col_header = meta["p_col_header"]
+    pair_p_col_width = max(10, len(p_col_header)) if p_col_header else 0
+
     if max_pairs > 0:
         pair_max_abs = max(
             1e-12,
@@ -1240,194 +1511,206 @@ def _print_pairwise_section(
                     abs(float(row["point_diff"] - row["std_diff"])),
                     abs(float(row["point_diff"] + row["std_diff"])),
                 )
-                for row in normalized_rows[:max_pairs]
+                for row in rows[:max_pairs]
             ),
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
+        # Clamp the shared axis ONCE for the whole block, not per row. A single
+        # unbounded pair (paired._degenerate_pair_ci on zero-variance
+        # differences with no declared score_range) makes pair_max_abs
+        # infinite, and letting each row fall back to its own finite window
+        # would silently put the rows on different scales -- two intervals of
+        # identical width drawn at different lengths -- while the legend still
+        # advertises one axis. The whole point of a shared axis is that bars
+        # are comparable down the column, so the finite rows must keep sharing
+        # it and the legend must report the axis actually drawn.
+        if not (np.isfinite(pair_low) and np.isfinite(pair_high)):
+            _cands: list[float] = []
+            for row in rows[:max_pairs]:
+                for key in ("point_diff", "ci_low", "ci_high"):
+                    _cands.append(float(row[key]))
+                _cands.append(float(row["point_diff"] - row["std_diff"]))
+                _cands.append(float(row["point_diff"] + row["std_diff"]))
+            _cands.append(0.0)  # the zero reference is always drawn
+            pair_low, pair_high = _finite_axis(pair_low, pair_high, tuple(_cands))
         # gradient mode always produces a gradient (synthesized when multi_ci is absent)
         _any_multi_ci = (style == "gradient") or any(
-            row.get("multi_ci") is not None for row in normalized_rows[:max_pairs]
+            row.get("multi_ci") is not None for row in rows[:max_pairs]
         )
         _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
         _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
+        _pair_mean_marker = _mean_marker_legend(style, pair_stat_label.lower())
         print(
-            f"  legend: (· ±1σ, {_pair_ci_legend}, ● {pair_stat_label.lower()}, │ zero)    "
+            f"  legend: (· ±1σ, {_pair_ci_legend}{_pair_mean_marker}, │ zero)    "
             f"axis: [{pair_low:+.3f}, {pair_high:+.3f}]    "
-            "effect: Left - Right"
+            f"effect: {meta['effect_label']}"
         )
         header = (
             f"  {'Left':<{pair_item_col_width}s} {'Right':<{pair_item_col_width}s} "
             f"{'Interval Plot':<{line_width}s} "
-            f"{pair_stat_label:>{pair_stat_col_width}s} "
-            f"{'CI Low':>{pair_ci_col_width}s} {'CI High':>{pair_ci_col_width}s} "
-            f"{'ES':>{pair_sigma_col_width}s}"
+            f"{pair_stat_label:>8s} "
+            f"{'CI Low':>9s} {'CI High':>9s}"
         )
+        if es_label:
+            header += f" {es_label:>8s}"
         if p_col_header:
             header += f" {p_col_header:>{pair_p_col_width}s}"
         print(header)
 
-    for row_data in normalized_rows[:max_pairs]:
-        line = _choose_interval_line(
-            mean=float(row_data["point_diff"]),
-            ci_low=float(row_data["ci_low"]),
-            ci_high=float(row_data["ci_high"]),
-            spread_low=float(row_data["point_diff"] - row_data["std_diff"]),
-            spread_high=float(row_data["point_diff"] + row_data["std_diff"]),
-            axis_low=pair_low,
-            axis_high=pair_high,
-            width=line_width,
-            style=style,
-            multi_ci=row_data.get("multi_ci"),
-        )
-        left_label = _truncate_label(str(row_data["left"]), pair_item_col_width)
-        right_label = _truncate_label(str(row_data["right"]), pair_item_col_width)
-        d_val = float(row_data["rank_biserial"])
-        d_str = f"{d_val:>{pair_sigma_col_width}.3f}"
-        row = (
-            f"  {left_label:<{pair_item_col_width}s} "
-            f"{right_label:<{pair_item_col_width}s} "
-            f"{line:<{line_width}s} "
-            f"{float(row_data['point_diff']):+{pair_stat_col_width}.4f} "
-            f"{float(row_data['ci_low']):+{pair_ci_col_width}.4f} "
-            f"{float(row_data['ci_high']):+{pair_ci_col_width}.4f} "
-            f"{d_str}"
-        )
-        if eff_p_source in {"max_t", "boot"}:
-            p_val = row_data["p_value"]
-        elif eff_p_source == "wsr":
-            p_val = row_data["wilcoxon_p"]
-        elif eff_p_source == "nem":
-            p_val = (
-                bundle.pairwise.friedman.get_nemenyi_p(str(row_data["left"]), str(row_data["right"]))
-                if bundle.pairwise.friedman is not None else None
+        for row_data in rows[:max_pairs]:
+            line = _choose_interval_line(
+                mean=float(row_data["point_diff"]),
+                ci_low=float(row_data["ci_low"]),
+                ci_high=float(row_data["ci_high"]),
+                spread_low=float(row_data["point_diff"] - row_data["std_diff"]),
+                spread_high=float(row_data["point_diff"] + row_data["std_diff"]),
+                axis_low=pair_low,
+                axis_high=pair_high,
+                width=line_width,
+                style=style,
+                multi_ci=row_data.get("multi_ci"),
             )
-        else:
-            p_val = None
-        if eff_p_source is not None:
-            row += f" {_format_p_value(p_val):>{pair_p_col_width}s}"
-        print(row)
+            left_label = _truncate_label(str(row_data["left"]), pair_item_col_width)
+            right_label = _truncate_label(str(row_data["right"]), pair_item_col_width)
+            row_str = (
+                f"  {left_label:<{pair_item_col_width}s} "
+                f"{right_label:<{pair_item_col_width}s} "
+                f"{line:<{line_width}s} "
+                f"{float(row_data['point_diff']):+8.4f} "
+                f"{float(row_data['ci_low']):+9.4f} "
+                f"{float(row_data['ci_high']):+9.4f}"
+            )
+            if es_label:
+                row_str += f" {float(row_data['es_value']):>8.3f}"
+            if p_col_header:
+                row_str += f" {_format_p_value(row_data.get('display_p')):>{pair_p_col_width}s}"
+            print(row_str)
 
     if max_pairs == 0:
         print("  (no pairwise comparisons)")
-    elif max_pairs > 0:
-        print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
-        if eff_p_source in {"max_t", "boot"}:
-            if is_romano_wolf_active and eff_p_source == "boot":
-                print(f"  {p_col_header} = Romano-Wolf bootstrap step-down (FWER-controlled; no Wilcoxon-compatible joint form exists, see romano_wolf_stepdown_pvalues)")
-            elif is_newcombe_pairwise:
-                print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
-            elif is_sign_pairwise:
-                print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
-            elif eff_p_source == "max_t":
-                print(f"  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs)")
-            else:
-                print(f"  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected)")
-        elif eff_p_source == "wsr":
-            ppi_note = ", PPI-corrected" if getattr(bundle, "ppi_applied", False) else ""
-            print(f"  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note})")
-        elif eff_p_source == "nem":
-            print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
-        if eff_p_source is not None:
-            print("  stars: * p<0.01, ** p<0.001, *** p<0.0001")
-        print()
-        labels_sorted = [
-            label
-            for _, label in sorted(
-                zip(bundle.rank_dist.expected_ranks, bundle.rank_dist.labels),
-                key=lambda item: (float(item[0]), item[1]),
-            )
-        ]
-        _print_critical_difference_groups(
-            bundle.pairwise,
-            labels_sorted=labels_sorted,
-            p_source="bootstrap",
-        )
+    else:
+        meta["footer_fn"](rows, max_pairs)
 
-    # --- Behavioral Agreement subsection (binary data only) ---
+
+def _print_behavioral_agreement_section(
+    bundle: "AnalysisBundle",
+    *,
+    top_pairwise: int = None,
+    sort: bool = True,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
+) -> None:
+    """Print the Pass/Fail Agreement (McNemar-style) subsection for binary
+    paired data. Paired-only, by design: ``agreement_mcc``/``binary_confusion``
+    require the *same item* scored by both entities to know whether they got
+    it right or wrong together, which has no between-subjects equivalent
+    (disjoint groups have no shared items at all).
+    """
+    rows, meta = _prepare_paired_pairwise_rows(
+        bundle, p_value_method=None, sort=sort, pairwise_sort=pairwise_sort,
+    )
+    if rows is None:
+        return
+    if top_pairwise is None:
+        max_pairs = len(rows)
+    else:
+        max_pairs = max(0, min(top_pairwise, len(rows)))
+
     agr_rows = [
-        r for r in normalized_rows[:max_pairs]
+        r for r in rows[:max_pairs]
         if r.get("agreement_mcc") is not None and r.get("binary_confusion") is not None
     ]
     agr_rows.sort(key=lambda row: float(row["agreement_mcc"]), reverse=True)
-    if agr_rows:
-        bar_width = 20
-        mcc_col_width = 6
-        strength_col_width = 14
-        agr_item_col_width = pair_item_col_width
+    if not agr_rows:
+        return
 
-        _print_subsection("\n--- Pass/Fail Agreement ---")
-        print(f"  Are pairs getting the same items right and wrong?")
-        print(f"  \u2588 both pass  \u2591 both fail  {_BRIGHT_RED}\u2592{_RESET} disagree  "
-              f"(MCC: 1=identical, 0=random, \u22121=opposite)")
-        print()
+    bar_width = 20
+    mcc_col_width = 6
+    strength_col_width = 14
+    agr_item_col_width = meta["pair_item_col_width"]
 
-        agr_header = (
-            f"  {'Left':<{agr_item_col_width}s} {'Right':<{agr_item_col_width}s}"
-            f" {'Plot':<{bar_width+2}s} {'MCC':>{mcc_col_width}s}"
-            f"  {'Agreement':<{strength_col_width}s}  Interpretation"
+    _print_subsection("\n--- Pass/Fail Agreement ---")
+    print(f"  Are pairs getting the same items right and wrong?")
+    print(f"  █ both pass  ░ both fail  {_BRIGHT_RED}▒{_RESET} disagree  "
+          f"(MCC: 1=identical, 0=random, −1=opposite)")
+    print()
+
+    agr_header = (
+        f"  {'Left':<{agr_item_col_width}s} {'Right':<{agr_item_col_width}s}"
+        f" {'Plot':<{bar_width+2}s} {'MCC':>{mcc_col_width}s}"
+        f"  {'Agreement':<{strength_col_width}s}  Interpretation"
+    )
+    print(agr_header)
+
+    for row in agr_rows:
+        n11, n10, n01, n00 = row["binary_confusion"]
+        bar = _agreement_bar(n11, n10, n01, n00, width=bar_width)
+        mcc = row["agreement_mcc"]
+        left_label = _truncate_label(str(row["left"]), agr_item_col_width)
+        right_label = _truncate_label(str(row["right"]), agr_item_col_width)
+        print(
+            f"  {left_label:<{agr_item_col_width}s} {right_label:<{agr_item_col_width}s}"
+            f" [{bar}] {mcc:>+{mcc_col_width}.3f}"
+            f"  {_mcc_strength(mcc):<{strength_col_width}s}  {_mcc_interpretation(mcc)}"
         )
-        print(agr_header)
-
-        for row in agr_rows:
-            n11, n10, n01, n00 = row["binary_confusion"]
-            bar = _agreement_bar(n11, n10, n01, n00, width=bar_width)
-            mcc = row["agreement_mcc"]
-            left_label = _truncate_label(str(row["left"]), agr_item_col_width)
-            right_label = _truncate_label(str(row["right"]), agr_item_col_width)
-            print(
-                f"  {left_label:<{agr_item_col_width}s} {right_label:<{agr_item_col_width}s}"
-                f" [{bar}] {mcc:>+{mcc_col_width}.3f}"
-                f"  {_mcc_strength(mcc):<{strength_col_width}s}  {_mcc_interpretation(mcc)}"
-            )
-        print()
+    print()
 
 
 def _print_mean_advantage(
-    bundle: "AnalysisBundle",
     *,
+    labels: list[str],
+    mean: np.ndarray,
+    std: np.ndarray,
+    ci_low: np.ndarray,
+    ci_high: np.ndarray,
+    multi_ci_per_entity: list,
+    resolved_ci_method: str,
     item_singular: str = "template",
     line_width: int,
     template_col_width: int = 24,
     style: Literal["line", "gradient"] = "gradient",
 ) -> None:
-    """Print the absolute performance interval-plot table for an AnalysisBundle.
+    """Print the absolute performance interval-plot table for a set of entities.
 
     Shows each entity's absolute mean with marginal bootstrap CIs (single-sample,
     independent per entity) and intrinsic spread bands.  A reference line marks
-    the grand mean (or the specified reference entity) for visual comparison.
+    the grand mean of the passed entities for visual comparison.
+
+    Shared by the paired path (``_print_bundle_summary``, entities all scored
+    on the same items -- a ``RobustnessResult``) and the unpaired path
+    (``print_group_comparison_summary``, also in this module, disjoint
+    items per group -- a ``list[GroupStat]``) -- both reduce to the same "N
+    entities, each with a mean/CI/spread" shape by the time they call this,
+    so one function renders both instead of two independently-drifting
+    per-entity loops. ``multi_ci_per_entity`` takes an already-per-entity-
+    sliced list (``{alpha: (lo, hi)}`` or ``None`` per entity) rather than a
+    combined dict-of-arrays, so callers with either shape (a
+    ``RobustnessResult.multi_ci`` sliced via ``_rob_multi_ci_at``, or a
+    ``GroupStat.multi_ci`` list that's already this shape) both fit without
+    conversion inside this function.
     """
     item_singular_title = item_singular.capitalize()
     stat_label = "Mean"
-    rob = bundle.robustness
-    ref_val = float(np.mean(rob.mean))
-
-    # Per-entity absolute values.
-    abs_means = np.array([float(rob.mean[i]) for i in range(len(rob.labels))])
-
-    abs_ci_lows = rob.ci_low
-    abs_ci_highs = rob.ci_high
+    mean = np.asarray(mean, dtype=float)
+    std = np.asarray(std, dtype=float)
+    ci_low = np.asarray(ci_low, dtype=float)
+    ci_high = np.asarray(ci_high, dtype=float)
+    ref_val = float(np.mean(mean))
 
     # ±1σ spread around the absolute mean.
-    abs_sigma_lows = abs_means - rob.std
-    abs_sigma_highs = abs_means + rob.std
+    sigma_lows = mean - std
+    sigma_highs = mean + std
 
     # Axis bounds: cover means, CIs, and ±1σ spread.
-    all_vals = np.concatenate([
-        abs_means,
-        abs_ci_lows,
-        abs_ci_highs,
-        abs_sigma_lows,
-        abs_sigma_highs,
-    ])
+    all_vals = np.concatenate([mean, ci_low, ci_high, sigma_lows, sigma_highs])
     val_range = float(np.max(all_vals) - np.min(all_vals))
     pad = max(val_range * 0.05, 1e-4)
     ma_low = float(np.min(all_vals)) - pad
     ma_high = float(np.max(all_vals)) + pad
 
-    _ci_method = (bundle.resolved_ci_method or "").lower()
-    if _uses_wilson_ci(bundle):
-        ci_note = "Wilson CIs"
+    _ci_method = (resolved_ci_method or "").lower()
+    if _ci_method in {"wilson", "newcombe", "bayes_binary"}:
+        ci_note = "Wilson-flat CIs"
     elif _ci_method == "nig":
         ci_note = "marginal NIG CIs"
     elif _ci_method == "logit_t":
@@ -1441,37 +1724,64 @@ def _print_mean_advantage(
     _print_subsection(f"--- {stat_label} Performance ({ci_note}) ---")
     ref_label = "grand mean"
     ci_pct = int(round((1 - get_alpha_ci()) * 100))
-    _ci_legend_ma = _legend_ci_label(style, ci_pct, rob.multi_ci is not None)
+    _any_multi_ci = any(m is not None for m in multi_ci_per_entity)
+    _ci_legend_ma = _legend_ci_label(style, ci_pct, _any_multi_ci)
+    _mean_marker_ma = _mean_marker_legend(style, stat_label.lower())
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]"
-        f"  (· ±1σ, {_ci_legend_ma}, ● {stat_label.lower()}, │ {ref_label})"
+        f"  (· ±1σ, {_ci_legend_ma}{_mean_marker_ma}, │ {ref_label})"
     )
     print(
         f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
         f"{'CI Low':>9s} {'CI High':>9s}"
     )
-    for i, label in enumerate(rob.labels):
+    for i, label in enumerate(labels):
         template_label = _truncate_label(label, template_col_width)
         line = _choose_interval_line(
-            mean=abs_means[i],
-            ci_low=float(abs_ci_lows[i]),
-            ci_high=float(abs_ci_highs[i]),
-            spread_low=float(abs_sigma_lows[i]),
-            spread_high=float(abs_sigma_highs[i]),
+            mean=float(mean[i]),
+            ci_low=float(ci_low[i]),
+            ci_high=float(ci_high[i]),
+            spread_low=float(sigma_lows[i]),
+            spread_high=float(sigma_highs[i]),
             axis_low=ma_low,
             axis_high=ma_high,
             width=line_width,
             reference=ref_val,
             style=style,
-            multi_ci=_rob_multi_ci_at(rob.multi_ci, i),
+            multi_ci=multi_ci_per_entity[i],
         )
         print(
             f"  {template_label:<{template_col_width}s} "
             f"{line:<{line_width}s} "
-            f"{abs_means[i]:>7.3f} "
-            f"{float(abs_ci_lows[i]):>8.3f} "
-            f"{float(abs_ci_highs[i]):>8.3f}"
+            f"{float(mean[i]):>7.3f} "
+            f"{float(ci_low[i]):>8.3f} "
+            f"{float(ci_high[i]):>8.3f}"
         )
+
+
+def _print_ppi_banner(alignment_result) -> None:
+    """Print the standard "PPI-CORRECTED" banner + inline alignment report.
+
+    Shared by the paired path's ``_print_bundle_summary`` and the unpaired
+    path's ``print_group_comparison_summary`` (also in this module) --
+    previously two copy-pasted, near-identical blocks; unified so a banner
+    text/formatting change only needs to happen once.
+    """
+    banner = "═" * 58
+    print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
+    print(
+        f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED — every estimate below relies on the "
+        f"alignment report printed here first.{_RESET}"
+    )
+    print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
+    if alignment_result is not None:
+        alignment_result.summary()
+    else:
+        print(
+            f"{_BOLD}{_BRIGHT_MAGENTA}(Alignment report unavailable -- run "
+            f"judge_alignment(...).summary() directly.){_RESET}"
+        )
+    print()
 
 
 def _print_bundle_summary(
@@ -1492,7 +1802,9 @@ def _print_bundle_summary(
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
-    template_col_width = 24
+    template_col_width = min(
+        24, max(len(item_singular), max(len(l) for l in bundle.robustness.labels)) + 2
+    )
 
     print(f"Shape: {bundle.shape}")
     n_runs = bundle.benchmark.n_runs
@@ -1505,7 +1817,10 @@ def _print_bundle_summary(
     )
     print()
 
-    _print_subsection("--- Robustness ---")
+    if getattr(bundle, "ppi_applied", False):
+        _print_ppi_banner(bundle.alignment_result)
+
+    _print_subsection("--- Descriptive Statistics ---")
     _rob_df = bundle.robustness.summary_table()
     _rob_df.index.name = item_singular
     print(_rob_df.to_string())
@@ -1538,7 +1853,16 @@ def _print_bundle_summary(
         print()
 
     _print_mean_advantage(
-        bundle,
+        labels=bundle.robustness.labels,
+        mean=bundle.robustness.mean,
+        std=bundle.robustness.std,
+        ci_low=bundle.robustness.ci_low,
+        ci_high=bundle.robustness.ci_high,
+        multi_ci_per_entity=[
+            _rob_multi_ci_at(bundle.robustness.multi_ci, i)
+            for i in range(len(bundle.robustness.labels))
+        ],
+        resolved_ci_method=bundle.resolved_ci_method,
         item_singular=item_singular,
         line_width=line_width,
         template_col_width=template_col_width,
@@ -1553,6 +1877,11 @@ def _print_bundle_summary(
         p_value_method=p_value_method,
         pairwise_sort=pairwise_sort,
         style=style,
+    )
+    _print_behavioral_agreement_section(
+        bundle,
+        top_pairwise=top_pairwise,
+        pairwise_sort=pairwise_sort,
     )
 
     # Seed variance section (only when seeded data is present).
@@ -1651,24 +1980,29 @@ def _print_seed_variance(
         f"  key: ▁–█ = per-input noise   "
         f"(globally scaled; █ = {global_cell_max:.4f})"
     )
-    num_w = 10
+    # Wide enough for "instability" (11 chars) -- with num_w=10 that header
+    # overflowed its own field by 1 char and dragged every header after it
+    # out of alignment with the data rows below.
+    num_w = len("instability")
     consistency_w = 18
+    verdicts = [_instability_label(float(v)) for v in sv.instability]
+    verdict_w = max(len("Verdict"), max(len(v) for v in verdicts))
     print(
         f"  {item_singular.capitalize():<{template_col_width}s}  "
         f"{'Per-input noise':<{strip_width}s}  "
-        f"{'seed_std':>{num_w}s}  "
+        f"{'run_std':>{num_w}s}  "
         f"{'input_std':>{num_w}s}  "
         f"{'total_std':>{num_w}s}  "
         f"{'instability':>{num_w}s}  "
         f"{'Consistency (ICC)':<{consistency_w}s}  "
-        f"Verdict"
+        f"{'Verdict':<{verdict_w}s}"
     )
     for i, label in enumerate(sv.labels):
         strip = _seed_noise_strip(
             sv.per_cell_seed_std[i], global_cell_max, max_width=strip_width
         )
         instability = float(sv.instability[i])
-        verdict = _instability_label(instability)
+        verdict = verdicts[i]
         verdict_color = _instability_color(instability)
         icc = float(sv.icc[i])
         icc_str = "—" if np.isnan(icc) else f"{icc:.2f} ({_consistency_label(icc)})"
@@ -1681,17 +2015,15 @@ def _print_seed_variance(
             f"{np.sqrt(sv.total_var[i]):>{num_w}.4f}  "
             f"{instability:>{num_w}.4f}  "
             f"{icc_color}{icc_str:<{consistency_w}s}{_RESET}  "
-            f"{verdict_color}{verdict}{_RESET}"
+            f"{verdict_color}{verdict:<{verdict_w}s}{_RESET}"
         )
     print(
-        f"{_DIM}  instability = mean std across repeated runs, in score units "
-        f"(how many points a score typically moves between runs){_RESET}"
+        f"{_DIM}  instability = how many points a score typically moves "
+        f"between repeated runs{_RESET}"
     )
     print(
-        f"{_DIM}  Consistency (ICC) = intraclass correlation = input_var / "
-        f"(input_var + seed_var) — share of total variation that's real "
-        f"input-level signal rather than run noise (bands: <0.50 poor, "
-        f"0.50-0.75 moderate, 0.75-0.90 good, >0.90 excellent; Koo & Li 2016){_RESET}"
+        f"{_DIM}  Consistency (ICC) = how much of the difference between "
+        f"inputs is real signal, rather than run-to-run noise{_RESET}"
     )
     print()
 
@@ -1897,9 +2229,10 @@ def _print_factorial_lmm_summary(
             level_w = min(28, max(len("Level"), max(len(str(v)) for v in mm_sorted["level"]) + 2))
 
             _ci_legend_mm = _legend_ci_label(style, ci_pct, style == "gradient")
+            _mean_marker_lmm = _mean_marker_legend(style, "mean")
             print(
                 f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-                f"(· ±SE, {_ci_legend_mm}, ● mean, │ factor mean)"
+                f"(· ±SE, {_ci_legend_mm}{_mean_marker_lmm}, │ factor mean)"
             )
             print(
                 f"  {'Level':<{level_w}s} {'Interval Plot':<{line_width}s} "
@@ -2096,12 +2429,17 @@ def _gradient_interval_line(
 ) -> str:
     """Render a one-line gradient CI plot using Unicode block characters.
 
-    Opacity mapping (outermost → innermost):
-      beyond 99.9% CI → ' ' (invisible)
-      99% – 99.9% CI  → '░' (10 % opacity)
-      95% – 99% CI    → '▒' (medium)
-      90% – 95% CI    → '▓' (high)
-      inside 90% CI   → '█' (fully opaque)
+    Opacity mapping (outermost → innermost), for the default
+    ``GRADIENT_CI_ALPHAS`` of (0.32, 0.10, 0.05, 0.01):
+      beyond 99% CI  → ' ' (invisible)
+      95% – 99% CI   → '░' (10 % opacity)
+      90% – 95% CI   → '▒' (medium)
+      68% – 90% CI   → '▓' (high)
+      inside 68% CI  → '█' (fully opaque)
+
+    Bands are paired to ``sorted(multi_ci)`` positionally, so a caller passing a
+    different alpha ladder gets the same outermost-to-innermost shading at
+    whatever levels it supplied.
 
     The ±1σ spread dots ('·') appear only where they peek beyond all CI bands.
     Falls back to ``_ascii_interval_line`` when fewer than 2 CI levels are present.
@@ -2148,7 +2486,12 @@ def _gradient_interval_line(
             chars[i] = char
 
     ref_idx = to_idx(reference)
-    mean_idx = to_idx(mean)
+    # No marker is drawn at the mean, deliberately. A point marker invites the
+    # reader to treat one value as the answer and the interval around it as
+    # decoration, which is the reading gradient plots exist to avoid
+    # (Correll & Gleicher, "Error bars considered harmful"). `mean` is still a
+    # parameter because _ascii_interval_line, the <2-band fallback above, does
+    # mark it.
     chars[ref_idx] = "│"
 
     # The reference line can obscure the tail of a CI band when the tail
@@ -2188,6 +2531,36 @@ def _synth_multi_ci_from_se(
     }
 
 
+def _finite_axis(
+    axis_low: float,
+    axis_high: float,
+    candidates: tuple[float, ...],
+) -> tuple[float, float]:
+    """Return a finite (axis_low, axis_high) for the ASCII interval plots.
+
+    Substitutes the spread of whatever finite values the row does carry when a
+    supplied bound is non-finite, and falls back to a unit window around 0 when
+    nothing finite is available. Purely a drawing concern -- the printed
+    numeric bounds are untouched.
+    """
+    lo, hi = float(axis_low), float(axis_high)
+    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+        return lo, hi
+    finite = [float(c) for c in candidates if c is not None and np.isfinite(float(c))]
+    if np.isfinite(lo):
+        finite.append(lo)
+    if np.isfinite(hi):
+        finite.append(hi)
+    if not finite:
+        return -1.0, 1.0
+    f_lo, f_hi = min(finite), max(finite)
+    if f_hi <= f_lo:
+        pad = max(abs(f_lo), 1.0) * 0.5
+        return f_lo - pad, f_hi + pad
+    pad = (f_hi - f_lo) * 0.15
+    return f_lo - pad, f_hi + pad
+
+
 def _choose_interval_line(
     *,
     mean: float,
@@ -2203,7 +2576,31 @@ def _choose_interval_line(
     multi_ci: Optional[dict[float, tuple[float, float]]] = None,
 ) -> str:
     """Dispatch to gradient or line renderer based on style and data availability."""
+    # A non-finite bound is a real result, not a bug: paired._degenerate_pair_ci
+    # reports (-inf, +inf) for a zero-variance difference on unbounded data,
+    # where no finite interval has guaranteed coverage. Both renderers map a
+    # value onto an axis via (x - axis_low) / (axis_high - axis_low), which is
+    # NaN when the axis itself is infinite, so clamp the drawn axis to the
+    # finite information in the row. The interval still *prints* as -inf/inf in
+    # the CI Low/CI High columns -- this only bounds the little ASCII plot, and
+    # an interval that runs off both ends of it is the correct picture.
+    axis_low, axis_high = _finite_axis(
+        axis_low, axis_high,
+        candidates=(mean, ci_low, ci_high, spread_low, spread_high, reference),
+    )
     effective_multi_ci = multi_ci
+    if not (np.isfinite(ci_low) and np.isfinite(ci_high)):
+        # The primary interval is unbounded, but the gradient bands handed in
+        # can still be zero-width: paired.py builds its `mci` dict per alpha
+        # from the method's own CI function, and t_interval_ci_1d keeps its
+        # (mean, mean) contract on a zero-variance sample. The renderer
+        # normally trusts multi_ci over the primary CI, which here would draw
+        # a single opaque block at the point estimate -- the exact picture of
+        # false certainty this branch exists to retract -- immediately beside
+        # a printed -inf/+inf. Drop the bands and draw the primary interval,
+        # so the plot says what the numbers say. Whether that marginal
+        # contract should itself move is a separate, statistical question.
+        effective_multi_ci = None
     if style == "gradient" and effective_multi_ci is None:
         # Synthesize gradient from the primary CI via normal z-scaling.
         # Appropriate for Wald-type CIs (LMM); a reasonable approximation elsewhere.
@@ -2237,6 +2634,40 @@ def _rob_multi_ci_at(
     return {a: (float(lo[idx]), float(hi[idx])) for a, (lo, hi) in rob_multi_ci.items()}
 
 
+_CORRECTION_DISPLAY_NAMES = {
+    "romano_wolf": "Romano-Wolf",
+    "fdr_bh": "FDR (BH)",
+    "bonferroni": "Bonferroni",
+    "holm": "Holm",
+    "hochberg": "Hochberg",
+    "shaffer": "Shaffer",
+    "max_t": "max-T",
+    "none": "none",
+}
+
+
+def _pretty_correction(code: Optional[str]) -> str:
+    """Human-readable name for a FWER correction method code."""
+    if not code:
+        return "none"
+    return _CORRECTION_DISPLAY_NAMES.get(code, code.replace("_", " ").title())
+
+
+_SIMULTANEOUS_CI_DISPLAY_NAMES = {
+    "max_t": "max-T",
+    "sidak": "Šidák",
+    "boot": "Joint bootstrap",
+    "bonferroni": "Bonferroni",
+}
+
+
+def _pretty_simultaneous_ci(code: Optional[str]) -> str:
+    """Human-readable name for a simultaneous-CI method code."""
+    if not code:
+        return "none"
+    return _SIMULTANEOUS_CI_DISPLAY_NAMES.get(code, code.replace("_", " ").title())
+
+
 def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
     """Return the CI portion of a legend string for the given style."""
     if style == "gradient" and multi_ci_available:
@@ -2246,6 +2677,21 @@ def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
         )
         return f"░▒▓█ CI gradient [{bands}]"
     return f"─ {ci_pct}% CI"
+
+
+def _mean_marker_legend(style: str, label: str) -> str:
+    """Return the ', ● <label>' legend fragment, or '' when the renderer
+    won't actually draw a '●' anywhere.
+
+    _gradient_interval_line (style="gradient", the default everywhere in
+    this file) computes a mean index but never assigns a '●' character --
+    only _ascii_interval_line (style="line") does. A legend that always
+    said "● mean" regardless of style was misleading readers into looking
+    for a marker that gradient output never draws.
+    """
+    if style == "gradient":
+        return ""
+    return f", ● {label}"
 
 
 def _ascii_interval_line(
@@ -2576,7 +3022,7 @@ def _print_critical_difference_groups(
     rank_pos = {label: idx + 1 for idx, label in enumerate(labels_sorted)}
 
     if pairwise.simultaneous_ci_method is not None:
-        source_label = f"{(1-alpha)*100:.0f}% CI, {pairwise.simultaneous_ci_method}-adjusted"
+        source_label = f"{(1-alpha)*100:.0f}% CI"
     else:
         source_label = {
             "bootstrap": "p (boot)",
@@ -2632,46 +3078,62 @@ def _assign_significance_groups(
 ) -> dict[str, str]:
     """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.
 
-    Templates in the same maximal non-significant rank band share an ID.
-    Group #1 is the band that contains the rank-1 template. Any template not
-    found in any CD group receives a unique ID (it is distinctly ranked).
+    Templates in the same maximal non-significant rank band share an ID, and
+    IDs are non-decreasing down the rank-sorted list (group #1 always holds
+    the rank-1 template). For #2 onward, when maximal bands overlap -- e.g.
+    A~B and B~C are each individually non-significant but A~C is
+    significant, the transitivity caveat inherent to critical-difference
+    diagrams (Demsar 2006) -- the whole chain is merged into one group,
+    since each entity can only carry a single ID in this table (unlike a CD
+    diagram, which can draw overlapping bands as separate lines).
+
+    #1 is deliberately NOT extended this way: it's the one tier
+    ``_exec_verdict`` turns into an explicit "tied with X as best" claim, so
+    membership there must mean "provably indistinguishable from the actual
+    top performer" (the single maximal band containing rank 0), not merely
+    "reachable from it via a chain of individually-nonsignificant
+    neighbors". Chaining #1 the same way #2+ do would let a template many
+    links down the chain -- one the rank-1 template IS significantly better
+    than, directly -- inherit a "tied as best" verdict it doesn't deserve.
+    Anything past #1's direct band still gets its own (possibly
+    chain-merged) tier via the normal algorithm, so it correctly reads
+    "Significant drop-off" instead.
     """
     if alpha is None:
         alpha = get_alpha_ci()
     groups = _critical_difference_groups(
         pairwise, labels_sorted=labels_sorted, alpha=alpha, p_source=p_source,
     )
-    rank_map = {label: i for i, label in enumerate(labels_sorted)}
-    groups_sorted = sorted(groups, key=lambda g: min(rank_map.get(l, 999) for l in g))
-    top_label = labels_sorted[0]
+    rank_of = {label: i for i, label in enumerate(labels_sorted)}
+
+    # For each label, the rightmost rank index reached by any maximal CD band
+    # it belongs to (its own rank if it belongs to none) -- used for #2+.
+    reach = {label: rank_of[label] for label in labels_sorted}
+    for group in groups:
+        end_idx = max(rank_of[l] for l in group)
+        for label in group:
+            reach[label] = max(reach[label], end_idx)
+
+    # #1's own (non-transitive) extent: just the single maximal band
+    # containing labels_sorted[0], if any.
+    top_reach = rank_of[labels_sorted[0]]
+    for group in groups:
+        if labels_sorted[0] in group:
+            top_reach = max(top_reach, max(rank_of[l] for l in group))
 
     label_to_group: dict[str, str] = {}
-
-    # Group #1 is reserved for the top-ranked item and any non-significant ties
-    # that share its maximal contiguous rank band.
-    label_to_group[top_label] = "#1"
-    for group in groups_sorted:
-        if top_label in group:
-            for label in group:
-                label_to_group[label] = "#1"
-
-    group_idx = 1
-    for group in groups_sorted:
-        if top_label in group:
-            continue
-        new_members = [l for l in group if l not in label_to_group]
-        if new_members:
-            group_id = f"#{group_idx + 1}"
+    group_idx = 0
+    current_end_idx = -1
+    for idx, label in enumerate(labels_sorted):
+        if idx > current_end_idx:
             group_idx += 1
-            for label in new_members:
-                label_to_group[label] = group_id
-
-    # Templates not in any CD group each get their own unique letter.
-    for label in labels_sorted:
-        if label not in label_to_group:
-            group_id = f"#{group_idx + 1}"
-            label_to_group[label] = group_id
-            group_idx += 1
+            current_end_idx = top_reach if group_idx == 1 else reach[label]
+        elif group_idx > 1:
+            current_end_idx = max(current_end_idx, reach[label])
+        # group_idx == 1 and idx <= current_end_idx: stay pinned at
+        # top_reach regardless of this label's own (possibly further-
+        # reaching) chain -- see the direct-vs-transitive note above.
+        label_to_group[label] = f"#{group_idx}"
 
     return label_to_group
 
@@ -3013,7 +3475,7 @@ def _print_executive_summary(
 
     Shows each template's significance group, mean score, bootstrap CI,
     optional stability (when seed data is present), optional Trade-off
-    status (when ``compare(..., secondary=...)`` was passed -- see
+    status (when ``compare(..., secondary_metric=...)`` was passed -- see
     ``_print_pareto_section``), and a plain-language verdict so the user can
     assess results at a glance without scrolling up. The Trade-off column
     surfaces the secondary-metric verdict right next to the primary-metric
@@ -3023,7 +3485,7 @@ def _print_executive_summary(
     (instead of the bare "Verdict") so it reads as scoped to the primary
     metric alone, rather than as the final word once a second axis exists.
     """
-    labels = list(bundle.rank_dist.labels)
+    labels = list(bundle.labels)
     n = len(labels)
     if n < 2:
         return
@@ -3063,7 +3525,7 @@ def _print_executive_summary(
     # Across Runs" table above it, so bar heights are comparable across rows
     # and across the two tables.
     global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
-    # "Trade-off vs {secondary}" names the second axis explicitly (truncated
+    # "Trade-off vs {secondary_metric}" names the second axis explicitly (truncated
     # -- an arbitrary column name shouldn't be able to blow out this table's
     # width), pairing with "On {metric}" below so the two columns' headers
     # alone state both axes without needing the Pareto section above.
@@ -3075,7 +3537,7 @@ def _print_executive_summary(
     pareto_w = max([len(tradeoff_header)] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
-    ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
+    ci_col_header = "Wilson-flat CI" if _uses_wilson_ci(bundle) else "CI"
 
     # Header row (no ANSI codes so widths match exactly).
     header_parts = [
@@ -3097,7 +3559,7 @@ def _print_executive_summary(
     )
     if has_pareto:
         # "On {metric}" first (echoes the Mean/CI columns just shown), then
-        # "Trade-off vs {secondary}" -- reads as "here's the primary-metric
+        # "Trade-off vs {secondary_metric}" -- reads as "here's the primary-metric
         # call, and here's how that changes once the other axis counts too."
         header_parts.append(f"  {verdict_header:<{verdict_w}s}")
         header_parts.append(f"  {tradeoff_header}")
@@ -3154,7 +3616,7 @@ def _print_executive_summary(
             row += f"  {row_color}{noise_plain}{_RESET}" if row_color else f"  {noise_plain}"
             row += f"  {row_color}{stab_plain}{_RESET}" if row_color else f"  {stab_plain}"
 
-        # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
+        # "On {metric}" (verdict) first, then "Trade-off vs {secondary_metric}" --
         # matches the header order above.
         row += f"  {verdict_str}"
 
@@ -3213,6 +3675,104 @@ def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
     print()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Between-subjects (design="unpaired") summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+def print_group_comparison_summary(result: "GroupComparisonResult", *, style: str = "gradient") -> None:
+    """Print the console summary for a between-subjects
+    ``compare(design="unpaired")`` result.
+
+    Deliberately narrower than the paired path's summary (no forest-plot
+    brackets) but otherwise mirrors it section for section: per-group means
+    with gradient CIs, a pairwise comparison table (with critical-difference
+    rank bands), the omnibus test at k>=3, a Pareto-front section when
+    ``secondary_metric=`` was passed, and an executive summary leaderboard.
+
+    Reuses the paired path's rendering functions directly rather than
+    reimplementing them -- the PPI banner (``_print_ppi_banner``), the
+    per-entity means table (``_print_mean_advantage``), the pairwise
+    comparison table (``_print_pairwise_section``, whose
+    ``_prepare_unpaired_pairwise_rows`` also drives the critical-difference
+    bands), the Pareto-front section (``_print_pareto_section``, when
+    present) and callout (``_print_pareto_callout``), and the executive
+    summary (``_print_executive_summary``) are the *same* functions the
+    paired path calls, not reimplementations, so a change to any of them
+    renders identically for both paths. What's genuinely unpaired-specific
+    (this engine's fixed Bonferroni-CI/Holm-p FWER scheme, vs. the paired
+    path's six CI/p-value method families plus Friedman/Nemenyi; its own
+    per-group joint bootstrap for the Pareto front, since there's no shared
+    item pool across disjoint groups) is resolved into the same shapes
+    those shared renderers already consume, via small duck-typed adapters
+    in ``evalstats.core.unpaired`` (``_GroupStatsAsRobustness``,
+    ``_GroupDiffResultsAsPairwiseMatrix``, ``_GroupComparisonResultAsBundle``).
+    The Behavioral Agreement (McNemar-style) subsection is paired-only and
+    never called here -- ``agreement_mcc``/``binary_confusion`` need the
+    same item scored by both entities, which has no between-subjects
+    equivalent.
+    """
+    from evalstats.core.unpaired import _GroupComparisonResultAsBundle
+
+    print(f"{_BOLD}Between-subjects comparison{_RESET}  "
+          f"(design=unpaired; factor={result.factor_col!r}, metric={result.metric_col!r})")
+    item_note = " (synthetic -- no item column found; each row is its own item)" if result.item_col_synthetic else ""
+    print(f"Item column: {result.item_col!r}{item_note}")
+    print(f"Groups: {len(result.groups)}  |  Score type: {result.score_type}  |  "
+          f"Family: {_FAMILY_DISPLAY_UNPAIRED[result.family]}")
+    print()
+
+    if result.ppi_applied:
+        _print_ppi_banner(result.alignment_result)
+
+    # ── Per-group means ──────────────────────────────────────────────────────
+    label_width = min(24, max(8, max(len(g.label) for g in result.groups)))
+    line_width = 44
+    _print_mean_advantage(
+        labels=[g.label for g in result.groups],
+        mean=np.array([g.mean for g in result.groups]),
+        std=np.array([g.std for g in result.groups]),
+        ci_low=np.array([g.ci_low for g in result.groups]),
+        ci_high=np.array([g.ci_high for g in result.groups]),
+        multi_ci_per_entity=[g.multi_ci for g in result.groups],
+        resolved_ci_method=result.groups[0].method,
+        item_singular="group",
+        line_width=line_width,
+        template_col_width=label_width,
+        style=style,
+    )
+    print()
+
+    # ── Omnibus test ─────────────────────────────────────────────────────────
+    if result.omnibus_test_name is not None:
+        _print_subsection(f"--- Omnibus Test: {result.omnibus_test_name} ---")
+        p_str = f"{result.omnibus_p_value:.4f}" if result.omnibus_p_value >= 0.0001 else f"{result.omnibus_p_value:.2e}"
+        print(f"  statistic = {result.omnibus_statistic:.4f}   p = {p_str}"
+              f"{'  (uncorrected)' if result.ppi_applied else ''}")
+        if result.omnibus_corrected_p_value is not None:
+            cp = result.omnibus_corrected_p_value
+            cp_str = f"{cp:.4f}" if cp >= 0.0001 else f"{cp:.2e}"
+            print(f"  PPI-corrected p = {cp_str}")
+        print()
+
+    # ── Pairwise table (includes critical-difference rank bands) ───────────
+    _print_pairwise_section(result, line_width=line_width, style=style)
+
+    # ── Pareto front (secondary_metric=), printed right before the executive
+    # summary -- same positioning as the paired path. ──────────────────────
+    if result.pareto is not None:
+        print()
+        _print_pareto_section(result.pareto, metric=result.metric_col, show_rank_probabilities=False)
+
+    # ── Executive summary leaderboard ───────────────────────────────────────
+    print()
+    _print_executive_summary(
+        _GroupComparisonResultAsBundle(result),
+        item_singular="group", pareto=result.pareto, metric=result.metric_col,
+    )
+    if result.pareto is not None:
+        _print_pareto_callout(result.pareto, metric=result.metric_col)
+
+
 def _print_next_steps_guidance(
     bundle: "AnalysisBundle",
     *,
@@ -3244,8 +3804,25 @@ def _print_next_steps_guidance(
     max_ci_half = max(ci_halves)
     max_gap = max(gaps)
 
+    if not np.isfinite(max_ci_half):
+        # An unbounded interval -- paired._degenerate_pair_ci reports
+        # (-inf, +inf) for a pair whose per-input differences are all
+        # identical when the metric has no declared bounds. Every branch
+        # below scales a target sample size by max_ci_half, so they would
+        # either print "~inf" as guidance or, where the projection is
+        # rounded to an int, raise OverflowError outright. The useful advice
+        # here isn't about sample size at all: bounds are what make the
+        # interval finite, so ask for them and stop.
+        print()
+        print("  At least one comparison has an unbounded interval: its per-input")
+        print("  differences are all identical, and this metric has no declared")
+        print("  range, so its mean can't be bounded at any confidence level.")
+        print("  More inputs won't resolve that on their own -- pass")
+        print("  score_range=(min, max) to get a finite interval.")
+        return
+
     # Entity-level grouping — mirrors the executive summary leaderboard
-    labels = list(bundle.rank_dist.labels)
+    labels = list(bundle.labels)
     means = bundle.robustness.mean
     sort_idx = list(np.argsort(-means))
     labels_sorted = [labels[i] for i in sort_idx]

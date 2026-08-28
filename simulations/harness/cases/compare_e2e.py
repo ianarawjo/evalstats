@@ -25,6 +25,26 @@ of the above ever combine -- WITH PPI alignment correction layered on top of
 FWER control, at several human-label fractions, alongside a WITHOUT-PPI
 baseline for direct comparison.
 
+The two ppi_config levels answer DIFFERENT questions and are not a
+before/after of the same scenario:
+
+  ppi_config="none"    the TRUSTED-SCORES baseline. No judge bias, no PPI:
+                       the ordinary use where someone analyses judge scores
+                       they have no reason to distrust. Its estimand is
+                       E[llm_score], and it is what shows whether evalstats
+                       ITSELF is calibrated. Deliberately unbiased -- see
+                       _run_cell's judge_biases for why biasing this row
+                       makes its Type-I column measure judge bias rather
+                       than calibration, and read as a library failure.
+  ppi_config="frac=X"  the CORRECTION case. Differential judge bias IS
+                       applied (see DEFAULT_JUDGE_BIAS_TYPE) and PPI has to
+                       remove it. Its estimand is E[human label].
+
+So "none" is not a weaker version of the PPI rows; power is not comparable
+across the two (different judge, different estimand). The like-for-like
+power comparisons live WITHIN each PPI row, against its own oracle and
+subset-only reference arms (see CompareE2EResult's oracle_*/subset_*).
+
 Coarse/breadth-first by design (see this case's planning doc): the grid is
 large (eval_type x shape x k x N x ppi_config x null/effect), run at a
 modest ``reps`` per cell. The question this case answers is "does
@@ -70,13 +90,14 @@ import numpy as np
 import pandas as pd
 
 import evalstats as es
-from evalstats.alignment import validate_alignment
+from evalstats.alignment import judge_alignment
+from evalstats.core.stats_utils import interval_score
 
 from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
-    BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_effect_magnitude,
-    _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
+    BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_bias_magnitude,
+    _jb_effect_magnitude, _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
 )
 from . import CaseResult
 
@@ -118,7 +139,35 @@ SHAPES_BY_EVAL_TYPE: dict[str, list[ShapeSpec]] = {
 # not _jb_effect_magnitude directly -- see that wrapper's docstring for why
 # (its Beta(icc=1.0) truth model clips near {0,1}, attenuating an
 # uncompensated shift to ~55-59% of its nominal value).
-DEFAULT_EFFECT_FRAC = 0.15
+EFFECT_FRAC_BY_EVAL_TYPE: dict[str, float] = {
+    "continuous": 0.95, "likert": 0.22, "binary": 0.10,
+}
+"""Per-eval-type non-null effect size, calibrated so the ORACLE arm (every
+item human-labelled -- the power ceiling) lands near 0.80 at the mid cell
+(k=3, N=100), measured against each eval type's first four shapes:
+
+    continuous 0.95 -> oracle 0.828
+    likert     0.22 -> oracle 0.828
+    binary     0.10 -> oracle 0.750
+
+Targeting the ORACLE (not PPI) is what makes the power rows readable: the
+ceiling sits mid-range, so the power-vs-N curve rises across the grid
+instead of pinning at 0 or 1, and PPI/subset-only have room to separate
+BELOW it. A ceiling at 1.000 hides every difference the plot exists to show.
+
+Replaces a single shared DEFAULT_EFFECT_FRAC=0.15, which was calibrated
+against the old icc=1.0 generator and did not survive the move to
+DEFAULT_ICC=0.20: at 0.15 the same nominal effect gave oracle power of 0.047
+on continuous (statistically null -- its "PPI beats subset-only" result was
+real but meaningless at that level) while giving 0.953 on binary (saturated).
+_jb_effect_magnitude standardizes to each eval type's own population SD,
+which equalizes the effect in SD units but NOT its detectability once the
+per-item noise this DGP now has is in play."""
+
+
+def _effect_frac_for(eval_type: str) -> float:
+    """Non-null effect size for *eval_type* -- see EFFECT_FRAC_BY_EVAL_TYPE."""
+    return EFFECT_FRAC_BY_EVAL_TYPE.get(eval_type, 0.50)
 
 
 def _effect_step_for(eval_type: str, frac: float) -> float:
@@ -134,8 +183,105 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # actually engages -- see _aggregate_group, which uses k==2 rows for the
 # "pairwise, uncorrected" metric and k>2 rows for "family-wise, corrected".
 DEFAULT_K_VALUES = [2, 3, 5, 10]
-DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800]
-DEFAULT_AGREEMENT_RATE = 0.85  # fixed judge quality -- matches this session's one-off investigations
+_K_NOTE = """Type-I error and family-wise coverage are k>2-ONLY metrics (see
+_aggregate_group), so a run passing --k-values 2 3 leaves them a single
+qualifying k value and every k=2 cell contributes nothing to either. Including
+k=5 doubles both denominators for ~1.6x runtime -- the cheapest precision
+available in this case, and it improves two of the four calibration metrics at
+once. Prefer adding a k over raising --reps when Type-I is the binding
+constraint."""
+DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800, 1000]
+"""Items per arm. The top end exists for the N/N_lab axis specifically: with
+an absolute label budget (see _n_labeled_for) the ratio is N/n_lab, so
+reaching 1000 puts a 30-label budget at a ratio of ~33. That is the regime
+PPI is actually for -- gain comes from the UNLABELLED items -- and the trend
+is what a fraction-based grid cannot show at all, since a fraction pins the
+ratio to 1/frac for every N."""
+DEFAULT_ICC = 0.20
+
+DEFAULT_ICC_VALUES: tuple[float, ...] = (0.05, 0.20, 0.60)
+"""icc values swept on the no-PPI arm. ONE definition, read by both
+official_args and the --icc-values argparse default, so a CLI run and the
+official preset cannot disagree about what the sweep is -- they did briefly,
+and a full-grid run silently produced a single-icc grid.
+
+0.20 is the realistic point: cross-model correlation measured on the real
+corpora is 0.146 mean / 0.103 median, and icc=0.20 reproduces r=0.170. 0.05
+is a stress point below that and 0.60 a robustness point above (higher than
+any real corpus). Note this is the CROSS-ARM correlation -- different models
+on shared items -- not the multi-run ICC (~0.68), which is a different axis
+and is not exercised at runs=1."""
+"""Item-level reliability of the TRUTH generator, matching
+scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
+in cases/pvalues.py runs at).
+
+Was 1.0 -- "no noise at all, every observed difference is real" -- which
+made each arm share the SAME per-item truth, so an arm-vs-arm paired
+difference was a pure constant shift: measured sd 0.0013 with 68 distinct
+values across 4000 items. That is not a plausible model-comparison setup
+(different models produce different outputs, so their human scores differ
+per item), and it broke two things at once:
+
+  * it is the degenerate input that collapsed the PPI joint bootstrap's
+    per-replicate SE (see evalstats.api._JOINT_BOOT_SE_REL_FLOOR), and
+  * it inflated the subset-only reference arm to power 1.000 on 6 of 7
+    continuous shapes -- 20 noiseless human labels detect a constant
+    difference perfectly -- making "PPI must beat subset-only" an
+    unwinnable bar for reasons that had nothing to do with PPI.
+
+At 0.20 the paired truth difference has sd 0.377 across 3073 distinct
+values, i.e. a real per-item signal to estimate."""
+
+AGREEMENT_RATE_BY_EVAL_TYPE: dict[str, float] = {
+    "binary": 0.92, "continuous": 0.40, "likert": 0.60,
+}
+"""Per-eval-type judge quality, calibrated so each lands near rho^2 ~ 0.64 --
+the judge-alignment tier cases/pvalues.py's PPI sweeps use -- measured at
+DEFAULT_ICC against each eval type's first shape:
+
+    binary     0.92 -> rho^2 0.643      (flip probability 0.08)
+    continuous 0.40 -> rho^2 0.653
+    likert     0.60 -> rho^2 0.646
+
+A single shared rate cannot do this: the same nominal "agreement" maps to a
+very different rho per eval type, because _apply_judge_noise's noise is a
+fraction of scale span for numeric data but a flip probability for binary.
+The previous single 0.85 gave rho^2 0.972 (continuous) / 0.937 (likert) --
+a judge far better than any real one, which is exactly the regime where PPI
+has the least to prove."""
+
+DEFAULT_JUDGE_BIAS_TYPE = "differential"
+"""Judge bias applied across arms, mirroring _ppi_power_baseline's own
+bias_type: "differential" biases ONLY arm 0, so a relative/paired comparison
+sees a real judge-induced difference that PPI's rectifier has to remove.
+The previous model had NO bias at all (measured per-arm bias -0.0012 /
+-0.0015 / -0.0027), i.e. it never exercised the failure mode PPI exists to
+correct. "constant" biases every arm equally and "none" disables it."""
+
+# Oracle/subset-only reference estimators (see CompareE2EResult) feed TRUTH
+# values directly to compare(), with NO noise -- correct in principle (an
+# "oracle" IS the ground truth), but a real bug for CONTINUOUS data
+# specifically: sample_group_truth's icc=1.0 applies `effects=` as a
+# deterministic, per-item-IDENTICAL shift (see that function's own
+# docstring: "icc=1.0 means no noise at all"), so for un-rounded continuous
+# values the per-item PAIRED DIFFERENCE between any two arms is exactly
+# constant across every item (confirmed directly: sample std of diffs was
+# 1.1e-17, i.e. zero) -- any variance-based CI (logit_t, smooth_bootstrap,
+# and evalstats' own default construction) built from that collapses to a
+# near-zero-width interval, giving spuriously ~100% power (a symptom of
+# gross overconfidence, not genuine statistical strength) rather than a
+# real small-vs-large-N story. NOT an issue for binary (each item's {0,1}
+# realization is its own independent Bernoulli draw, not a deterministic
+# shift of a shared latent value) or likert (rounding to the integer scale
+# breaks the exact constancy for items near a rounding boundary) -- both
+# already have genuine non-degenerate per-item diff variance under icc=1.0.
+# Fix: apply a SMALL amount of realistic labeler noise (not the LLM judge's
+# own DEFAULT_AGREEMENT_RATE-level noise -- an "oracle" should still be
+# near-perfect) when building oracle/subset's continuous scores specifically,
+# just enough to break the exact-zero-variance degeneracy. Zero-mean
+# (Gaussian) for continuous, so truth_means stays the correct, unbiased
+# coverage-check reference -- no change needed there.
+ORACLE_NOISE_AGREEMENT_RATE = 0.99
 
 # compare()'s own default is n_bootstrap=10_000 (evalstats/core/router.py's
 # analyze()) -- this dominates per-call cost far more than n_mc (which floors
@@ -170,6 +316,24 @@ REFERENCE_ESTIMATOR_K = 3
 # are GUARANTEED to raise before wasting compute generating data for them.
 _PPI_MIN_N_LAB = 15
 _PPI_MIN_N_ALL = 50
+_PPI_MAX_LAB_SHARE = 0.60
+"""Upper bound on n_lab / n_items for a PPI cell.
+
+PPI's entire premise is that MOST items are unlabelled and the judge supplies
+the rest; labelling 60%+ of them is not a setting anyone would deploy, and at
+the limit n_lab == n_items it is degenerate rather than merely unusual -- with
+zero unlabelled items the rectifier has nothing to correct and the joint
+bootstrap has no unlabelled term at all (_ppi_bootstrap_t_joint_stats returns
+None on that branch). Those cells passed the n_lab>=15 / n_all>=50 floor while
+being statistically empty: measured Type-I fell to ~0.000 against a nominal
+0.05 at the first N where each fixed label budget became legal (n_lab == N),
+i.e. a test that essentially never rejects, which then read on the calibration
+plot as a large "conservative" excursion rather than as an excluded
+configuration.
+
+The fraction-based grid never exposed this because a fraction pins the share
+by construction; an absolute label budget (see _n_labeled_for) sweeps N past
+it, so the bound has to be stated explicitly."""
 
 # One big, one-off Monte-Carlo draw used to estimate each shape's true mean
 # numerically (works uniformly for "param" AND "custom" shapes, without
@@ -192,6 +356,11 @@ class CompareE2EResult:
     ppi_config: str  # "none" | "frac=0.10" | "frac=0.20" | "frac=0.40"
     is_null: bool
     n_reps: int
+    icc: float = DEFAULT_ICC
+    """The cell's intraclass correlation -- sample_group_truth's signal/noise
+    split. Part of the cell KEY whenever --icc-values sweeps it: without it
+    two cells differing only in icc are indistinguishable in the saved CSV and
+    silently pool together in every downstream aggregation."""
     n_errors: int = 0
     """Reps where compare() itself raised (e.g. a genuinely-degenerate draw) --
     excluded from all rate denominators below, which use n_reps - n_errors."""
@@ -205,6 +374,12 @@ class CompareE2EResult:
     marginal_covered/marginal_total's coverage. bundle.robustness's per-arm CI
     is NOT multiplicity-adjusted by k (see CompareE2EResult module notes), so
     unlike pairwise_covered below this needs no k-based split."""
+    marginal_score_sum: float = 0.0
+    """Sum of evalstats.core.stats_utils.interval_score(ci_low, ci_high,
+    true_value, alpha) across the same checks as marginal_total -- the SAME
+    metric ci_single.py/ci_paired.py report as "Score" (width + (2/alpha) *
+    miss-distance when uncovered, lower is better), so this is
+    directly comparable across the harness, not a compare_e2e-only number."""
     pairwise_covered: int = 0
     pairwise_total: int = 0
     """Total pairwise-CI checks across all C(k,2) pairs and all successful
@@ -216,6 +391,13 @@ class CompareE2EResult:
     artifact of FWER widening. k==2 rows report each pair's OWN calibration
     with no correction confound (Sidak's alpha_adj reduces to plain alpha
     when there's only 1 pair)."""
+    pairwise_width_sum: float = 0.0
+    pairwise_score_sum: float = 0.0
+    """Sum of pairwise CI width / interval_score across the same checks as
+    pairwise_total. Same k==2-vs-k>2 split applies: k==2 rows give the
+    uncorrected per-pair width/score baseline; k>2 rows give the FWER-widened
+    per-pair width/score -- the direct "what does simultaneous protection
+    cost in width/score" comparison, on the SAME scale ci_paired.py uses."""
     family_covered: int = 0
     family_total: int = 0
     """Family-wise (simultaneous) coverage: a rep counts as 'covered' only if
@@ -273,17 +455,66 @@ class CompareE2EResult:
     """Successful subset-only computations this cell -- see oracle_n_ok."""
 
 
+def _agreement_for(eval_type: str) -> float:
+    """Judge quality for *eval_type* -- see AGREEMENT_RATE_BY_EVAL_TYPE."""
+    return AGREEMENT_RATE_BY_EVAL_TYPE.get(eval_type, 0.60)
+
+
+def _judge_biases_for(eval_type: str, k: int, bias_type: str = DEFAULT_JUDGE_BIAS_TYPE) -> np.ndarray:
+    """Per-arm judge bias, mirroring scenarios.synthetic._jb_biases.
+
+    "differential" biases arm 0 only; "constant" biases every arm equally
+    (which a paired comparison should cancel out); "none" disables it.
+    Magnitude comes from the same standardized helpers the PPI sweeps use:
+    _jb_bias_magnitude for numeric scales (0.30 population SDs of the eval
+    type's own truth distribution), and PPI_BINARY_BIAS_MAGNITUDES'
+    "moderate" flip-probability skew for binary, whose bias is a
+    one-directional flip rather than an additive offset."""
+    mag = 0.10 if eval_type == "binary" else _jb_bias_magnitude(eval_type)
+    if bias_type == "none":
+        return np.zeros(k)
+    if bias_type == "constant":
+        return np.full(k, mag)
+    if bias_type == "differential":
+        b = np.zeros(k)
+        b[0] = mag
+        return b
+    raise ValueError(f"Unknown bias_type: {bias_type!r}")
+
+
 def _apply_judge_noise(
     truth: np.ndarray, eval_type: str, rng: np.random.Generator, agreement_rate: float,
+    biases: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Deliberately simple judge-noise model -- see module docstring."""
+    """Judge model: noise at *agreement_rate*, plus an optional per-arm
+    bias (see _judge_biases_for). Still far simpler than
+    scenarios.synthetic.generate_judge_bias_cell's full bias/noise family
+    (no slope miscalibration, no MNAR labeling), but no longer the
+    unbiased near-perfect judge this case started with -- see
+    AGREEMENT_RATE_BY_EVAL_TYPE and DEFAULT_JUDGE_BIAS_TYPE.
+
+    *biases* is one value per arm, matching ``truth``'s first axis. For
+    binary it is a one-directional flip probability (the biased arm's 0s
+    get pushed to 1), since an additive offset is meaningless on {0, 1};
+    for numeric scales it is an additive offset applied before the
+    scale's own clipping/rounding, so boundary effects still apply.
+    """
+    if biases is None:
+        biases = np.zeros(truth.shape[0])
+    biases = np.asarray(biases, dtype=float).reshape(-1, 1)
+
     if eval_type == "binary":
         flip = rng.random(truth.shape) >= agreement_rate
-        return np.where(flip, 1.0 - truth, truth)
+        out = np.where(flip, 1.0 - truth, truth)
+        # Differential bias: push this arm's 0s upward, the binary analogue
+        # of an additive offset (see _jb_llm_binary's flip-probability skew).
+        up = rng.random(truth.shape) < biases
+        return np.where(up, 1.0, out)
+
     lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
     span = hi - lo
     noise_sd = 0.5 * (1.0 - agreement_rate) * span
-    noisy = truth + rng.normal(0.0, noise_sd, size=truth.shape)
+    noisy = truth + biases + rng.normal(0.0, noise_sd, size=truth.shape)
     noisy = np.clip(noisy, lo, hi)
     if eval_type == "likert":
         noisy = np.rint(noisy)
@@ -292,7 +523,8 @@ def _apply_judge_noise(
 
 def _reference_means_for(
     shape: ShapeSpec, eval_type: str, k: int, effects: np.ndarray, agreement_rate: float,
-    rng: np.random.Generator,
+    rng: np.random.Generator, icc: float = DEFAULT_ICC, biases: Optional[np.ndarray] = None,
+    compute_llm_means: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numerically estimate each arm's TWO possible ground-truth references
     via one large draw -- works uniformly for "param" and "custom" shapes
@@ -312,11 +544,43 @@ def _reference_means_for(
                      would be comparing compare()'s CI to the wrong target
                      entirely, not a real coverage failure.
     """
-    draw = sample_group_truth(shape, _TRUE_MEAN_MC_N, 1, k, 1.0, rng, effects=effects)[:, :, 0]  # (k, N)
+    # icc/biases MUST match the cells' own generator -- these means are the
+    # targets coverage is scored against, so a mismatch silently scores every
+    # CI against the wrong truth (icc alone moves the arm-1-vs-2 gap from
+    # -0.0180 at icc=1.0 to -0.0122 at icc=0.20).
+    draw = sample_group_truth(shape, _TRUE_MEAN_MC_N, 1, k, icc, rng, effects=effects)[:, :, 0]  # (k, N)
     truth_means = draw.mean(axis=1)
-    llm_draw = _apply_judge_noise(draw, eval_type, rng, agreement_rate)
+    if not compute_llm_means:
+        # Both arms now estimate truth_means (the no-PPI arm no longer applies
+        # judge noise, so E[llm score] == E[truth] there). Skipping the second
+        # 200k-item draw + judge-noise pass saves it per cell.
+        return truth_means, truth_means
+    llm_draw = _apply_judge_noise(draw, eval_type, rng, agreement_rate, biases)
     llm_means = llm_draw.mean(axis=1)
     return truth_means, llm_means
+
+
+def _n_labeled_for(n_items: int, frac: float) -> int:
+    """Labelled-item count for a PPI cell.
+
+    ``frac`` carries two meanings, disambiguated by magnitude:
+      < 1   a FRACTION of n_items (the original behaviour, e.g. 0.20)
+      >= 1  an ABSOLUTE label count (e.g. 30), held FIXED as n_items varies
+
+    The absolute form exists because PPI's whole value proposition is the
+    N/N_lab ratio -- gain comes from the UNLABELLED items -- and a
+    fraction-based grid cannot show that axis at all: it pins the ratio to
+    1/frac for every N, so sweeping N moves both arms together and the
+    comparison against the human-labels-only floor stays flat. Measured at
+    fixed n_lab=60, PPI's power advantage over that floor grows +0.144 ->
+    +0.300 as N/N_lab goes 2 -> 10, none of which is visible at a fixed
+    frac=0.40 (ratio 2.5).
+
+    It also lets the grid sit at label counts a practitioner would actually
+    collect: N_lab ~ 30 is the usual lower bound for a human-labelled
+    subset, and a fraction grid only hits it by coincidence at one N.
+    """
+    return int(round(frac)) if frac >= 1 else max(1, round(n_items * frac))
 
 
 def _ppi_applicable(k: int, n_items: int, frac: float) -> bool:
@@ -324,9 +588,12 @@ def _ppi_applicable(k: int, n_items: int, frac: float) -> bool:
     checks (n_lab >= 15, n_all >= 50) -- pre-filters cells GUARANTEED to
     raise, rather than generating data for them every rep only to hit the
     same ValueError deterministically."""
-    n_lab = max(1, round(n_items * frac))
+    n_lab = _n_labeled_for(n_items, frac)
     n_all = k * n_items
-    return n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL
+    # An absolute label count can also exceed the items available, and a
+    # too-LARGE labelled share is excluded as well -- see _PPI_MAX_LAB_SHARE.
+    return (n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL
+            and n_lab <= n_items * _PPI_MAX_LAB_SHARE)
 
 
 def _build_dataframe(
@@ -359,22 +626,28 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
 
     marginal_total = marginal_covered = 0
     marginal_width_sum = 0.0
+    marginal_score_sum = 0.0
     for i, lbl in enumerate(labels):
         lbl_s = str(lbl)
         ci_lo, ci_hi = rob.ci_low[i], rob.ci_high[i]
         if np.isfinite(ci_lo) and np.isfinite(ci_hi):
             marginal_total += 1
             marginal_width_sum += ci_hi - ci_lo
+            marginal_score_sum += interval_score(ci_lo, ci_hi, label_to_true[lbl_s], alpha)
             if ci_lo <= label_to_true[lbl_s] <= ci_hi:
                 marginal_covered += 1
 
     pairwise_total = pairwise_covered = 0
+    pairwise_width_sum = 0.0
+    pairwise_score_sum = 0.0
     any_sig = False
     extreme_p = None
     all_pairs_covered = True
     for (a, b), pr in bundle.pairwise.results.items():
         true_diff = label_to_true[str(a)] - label_to_true[str(b)]
         pairwise_total += 1
+        pairwise_width_sum += pr.ci_high - pr.ci_low
+        pairwise_score_sum += interval_score(pr.ci_low, pr.ci_high, true_diff, alpha)
         pair_covered = pr.ci_low <= true_diff <= pr.ci_high
         if pair_covered:
             pairwise_covered += 1
@@ -390,26 +663,51 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
 
     return dict(
         marginal_covered=marginal_covered, marginal_total=marginal_total,
-        marginal_width_sum=marginal_width_sum,
+        marginal_width_sum=marginal_width_sum, marginal_score_sum=marginal_score_sum,
         pairwise_covered=pairwise_covered, pairwise_total=pairwise_total,
+        pairwise_width_sum=pairwise_width_sum, pairwise_score_sum=pairwise_score_sum,
         family_covered=(1 if all_pairs_covered else 0), family_total=1,
         any_reject=any_reject, extreme_reject=extreme_reject,
     )
 
 
-def _run_truth_only_compare(scores: np.ndarray, rng: np.random.Generator, score_range, n_bootstrap: int):
+#: compare() kwargs for the rank-based pathway the PAPER reports: Friedman
+#: omnibus, then Wilcoxon signed-rank pairwise (already ``pairwise_test="auto"``'s
+#: pick for any k), then Shaffer as the FWER post-hoc. compare()'s own default
+#: resolves ``correction="auto"`` to Romano-Wolf, which is the better method and
+#: stays the default here -- but it is NOT the pathway the paper validates and
+#: reports, so a reviewer cannot check the reported path against the oracle and
+#: human-subset arms without this. Opt in with --classical-rank-path.
+#:
+#: Applied to EVERY arm (PPI, oracle, human-subset) or the comparison would be
+#: apples-to-oranges: the reference arms would still be Romano-Wolf.
+CLASSICAL_RANK_KWARGS = {"omnibus": True, "correction": "shaffer"}
+
+
+def _run_truth_only_compare(
+    scores: np.ndarray, rng: np.random.Generator, score_range, n_bootstrap: int,
+    es_eval_type: Optional[str] = None, classical_rank: bool = False,
+):
     """Run compare() directly on TRUTH values as the score (no judge noise,
     no alignment= needed -- there's no judge bias to correct when every
     point already IS the ground truth). Used for the two reference-estimator
     comparisons: 'oracle' (every item human-labeled, scores=full truth array)
     and 'subset-only' (only the labeled items, scores=truth[:, labeled_items],
     the LLM-scored majority discarded entirely). Returns the bundle, or None
-    if compare() itself failed."""
+    if compare() itself failed.
+
+    es_eval_type : compare()'s own eval_type=("likert"|"continuous"|None)
+        kwarg -- see _run_cell's docstring note on why this is passed
+        explicitly rather than left to auto-detection."""
     df = _build_dataframe(scores, None)
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     kwargs = {"n_bootstrap": n_bootstrap}
+    if classical_rank:
+        kwargs.update(CLASSICAL_RANK_KWARGS)
     if score_range is not None:
         kwargs["score_range"] = score_range
+    if es_eval_type is not None:
+        kwargs["eval_type"] = es_eval_type
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cr = es.compare(evaldata, factors="model", metric="score", rng=rng, **kwargs)
@@ -428,6 +726,8 @@ def _run_cell(
     seed,
     n_bootstrap: int = DEFAULT_BOOTSTRAP_N,
     reference_estimator_k: Optional[int] = REFERENCE_ESTIMATOR_K,
+    classical_rank: bool = False,
+    icc: float = DEFAULT_ICC,
 ) -> CompareE2EResult:
     """Run all reps for one cell, aggregating coverage/Type-I/power counts.
 
@@ -437,31 +737,86 @@ def _run_cell(
     representative k keeps that cost from applying to the WHOLE grid. Pass
     None to compute it for every k (more complete, much slower)."""
     rng = np.random.default_rng(seed)
-    ppi_config = "none" if ppi_frac is None else f"frac={ppi_frac:.2f}"
+    cell_icc = float(icc)
+    ppi_config = ("none" if ppi_frac is None else
+                  (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1 else f"frac={ppi_frac:.2f}"))
     compute_reference = reference_estimator_k is None or k == reference_estimator_k
 
-    effect_step = 0.0 if is_null else _effect_step_for(eval_type, DEFAULT_EFFECT_FRAC)
+    effect_step = 0.0 if is_null else _effect_step_for(eval_type, _effect_frac_for(eval_type))
     effects = np.arange(k, dtype=float) * effect_step
-    truth_means, llm_means = _reference_means_for(
-        shape, eval_type, k, effects, DEFAULT_AGREEMENT_RATE, rng,
+    agreement_rate = _agreement_for(eval_type)
+    # Judge bias applies to the PPI cells ONLY. The no-PPI ("none") cells are
+    # this case's TRUSTED-SCORES baseline: the ordinary use where a user
+    # analyses judge scores they have no reason to distrust, which is what
+    # shows whether evalstats itself is calibrated. Biasing them instead
+    # measures something else entirely and mislabels it:
+    #
+    #   a no-PPI cell's estimand is E[llm_score] (see the true_means line
+    #   below). Under differential bias, arm 0's E[llm_score] genuinely
+    #   differs from the others' EVEN WHEN is_null=True, because the bias is
+    #   a real shift in the thing being estimated. The uncorrected test then
+    #   correctly rejects, and the "Type-I error" column reports that as
+    #   miscalibration -- it is not. It is power to detect judge bias, under
+    #   a null that is not null for that estimand. Measured before this fix:
+    #   likert "none" Type-I read 28.1% / 50.2% / 79.4% at N=50/100/200,
+    #   rising with N exactly as a real effect does, while marginal coverage
+    #   stayed at a healthy 95.5% -- the tell that nothing was actually
+    #   miscalibrated.
+    #
+    # So: "none" rows answer "is evalstats calibrated on trustworthy
+    # scores?", and the frac=X rows answer "does PPI recover calibration
+    # when the judge IS biased?". Both are needed, and conflating them makes
+    # the first unreadable.
+    judge_biases = (
+        _judge_biases_for(eval_type, k) if ppi_frac is not None else np.zeros(k)
+    )
+    truth_means, _ = _reference_means_for(
+        shape, eval_type, k, effects, agreement_rate, rng,
+        icc=cell_icc, biases=judge_biases, compute_llm_means=False,
     )
     # PPI cells estimate E[human label]; raw (no-PPI) cells can only ever
     # estimate E[llm_score] -- checking coverage against the wrong one of
     # these is not a real coverage failure, see _reference_means_for.
-    true_means = truth_means if ppi_frac is not None else llm_means
+    # BOTH arms now target truth_means. PPI cells always did (they estimate
+    # E[human label]). No-PPI cells used to target llm_means, because they
+    # analysed judge-noised scores; with that noise layer gone they analyse
+    # the truth draw directly, so the two targets coincide (measured max
+    # |truth_means - llm_means| = 0.003 at zero bias).
+    true_means = truth_means
     extreme_true_gap = true_means[-1] - true_means[0]
 
-    n_labeled = max(1, round(n_items * ppi_frac)) if ppi_frac is not None else 0
+    n_labeled = _n_labeled_for(n_items, ppi_frac) if ppi_frac is not None else 0
     score_range = EVAL_TYPE_SCALE_BOUNDS[eval_type] if eval_type == "likert" else None
+    # compare()'s own eval_type=("likert"|"continuous") kwarg -- narrower
+    # than this file's own eval_type (which also has "binary"/"grades",
+    # neither meaningful to compare()'s param). Passed explicitly rather
+    # than left to compare()'s auto-detection (which would otherwise infer
+    # the same thing from the data's own quantization grid) so this test's
+    # intent is pinned down in the code, not implicit -- and so a future
+    # reader isn't left wondering whether a compare() call quietly started
+    # resolving to nig instead of logit_t because of a detection heuristic,
+    # rather than a deliberate choice recorded here.
+    es_eval_type = eval_type if eval_type in ("likert", "continuous") else None
 
     result = CompareE2EResult(
         eval_type=eval_type, shape_label=shape.label, k=k, n_items=n_items,
-        ppi_config=ppi_config, is_null=is_null, n_reps=n_reps,
+        ppi_config=ppi_config, is_null=is_null, n_reps=n_reps, icc=cell_icc,
     )
 
     for _rep in range(n_reps):
-        truth = sample_group_truth(shape, n_items, 1, k, 1.0, rng, effects=effects)[:, :, 0]  # (k, n_items)
-        llm_scores = _apply_judge_noise(truth, eval_type, rng, DEFAULT_AGREEMENT_RATE)
+        truth = sample_group_truth(shape, n_items, 1, k, cell_icc, rng, effects=effects)[:, :, 0]  # (k, n_items)
+        # Judge noise is applied ONLY on the PPI path, where it carries the
+        # differential bias PPI exists to remove. The no-PPI arm analyses the
+        # truth draw directly, which makes its DGP bit-for-bit identical to
+        # scenarios.synthetic.build_multiarm_sources(effect_mode="ramp") --
+        # the same builder cases/pvalues.py's multiarm and simultaneous_ci
+        # sweeps use (asserted by tests/test_compare_e2e_dgp.py). Layering a
+        # second rater-noise pass on top of sample_group_truth's own icc
+        # noise put this arm at r(arm_i, arm_j)=0.37, below the lowest point
+        # (0.49) ci_paired's official icc sweep ever validates -- so the CI
+        # methods were being exercised outside the regime they were tuned in.
+        llm_scores = (truth if ppi_frac is None
+                      else _apply_judge_noise(truth, eval_type, rng, agreement_rate, judge_biases))
 
         human_scores = None
         labeled_items = None
@@ -478,10 +833,20 @@ def _run_cell(
             if ppi_frac is not None:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    ar = validate_alignment(evaldata, llm_metric="score", human_groundtruth="human_score")
+                    # ci=False: compare()'s PPI correction reads only the
+                    # alignment POINT ESTIMATES, so the per-metric bootstrap
+                    # CIs judge_alignment() computes by default are pure cost
+                    # here -- verified output-identical, and ~72% of a PPI
+                    # cell's runtime.
+                    ar = judge_alignment(evaldata, llm_metric="score",
+                                         human_groundtruth="human_score", ci=False)
                     kwargs["alignment"] = {"score": ar}
+            if classical_rank:
+                kwargs.update(CLASSICAL_RANK_KWARGS)
             if score_range is not None:
                 kwargs["score_range"] = score_range
+            if es_eval_type is not None:
+                kwargs["eval_type"] = es_eval_type
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 cr = es.compare(evaldata, factors="model", metric="score", rng=rng, **kwargs)
@@ -498,8 +863,11 @@ def _run_cell(
         result.marginal_covered += sc["marginal_covered"]
         result.marginal_total += sc["marginal_total"]
         result.marginal_width_sum += sc["marginal_width_sum"]
+        result.marginal_score_sum += sc["marginal_score_sum"]
         result.pairwise_covered += sc["pairwise_covered"]
         result.pairwise_total += sc["pairwise_total"]
+        result.pairwise_width_sum += sc["pairwise_width_sum"]
+        result.pairwise_score_sum += sc["pairwise_score_sum"]
         result.family_covered += sc["family_covered"]
         result.family_total += sc["family_total"]
         result.any_reject += sc["any_reject"]
@@ -513,7 +881,16 @@ def _run_cell(
         # oracle_n_ok/subset_n_ok, the denominators _aggregate_group uses.
         if compute_reference and ppi_frac is None:
             try:
-                oracle_bundle = _run_truth_only_compare(truth, rng, score_range, n_bootstrap)
+                # Continuous only: see ORACLE_NOISE_AGREEMENT_RATE's docstring
+                # -- raw truth has an exactly-zero-variance paired diff under
+                # icc=1.0's deterministic shift, degenerating any CI built
+                # from it. Binary/likert don't need this (already
+                # non-degenerate) and stay on raw truth.
+                oracle_scores = (
+                    _apply_judge_noise(truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
+                    if eval_type == "continuous" else truth
+                )
+                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap, es_eval_type, classical_rank)
                 if oracle_bundle is not None:
                     osc = _score_bundle(oracle_bundle, truth_means, k, alpha, is_null)
                     result.oracle_marginal_covered += osc["marginal_covered"]
@@ -529,7 +906,12 @@ def _run_cell(
                 pass
         elif compute_reference:
             try:
-                subset_bundle = _run_truth_only_compare(truth[:, labeled_items], rng, score_range, n_bootstrap)
+                subset_truth = truth[:, labeled_items]
+                subset_scores = (
+                    _apply_judge_noise(subset_truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
+                    if eval_type == "continuous" else subset_truth
+                )
+                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap, es_eval_type, classical_rank)
                 if subset_bundle is not None:
                     ssc = _score_bundle(subset_bundle, truth_means, k, alpha, is_null)
                     result.subset_marginal_covered += ssc["marginal_covered"]
@@ -555,11 +937,12 @@ _CELLS: list[dict] = []  # fork-inherited worker state for run_simulation
 
 
 def _run_cell_worker(args: tuple) -> CompareE2EResult:
-    idx, n_reps, alpha, seed, n_bootstrap, reference_estimator_k = args
+    idx, n_reps, alpha, seed, n_bootstrap, reference_estimator_k, classical_rank = args
     cell = _CELLS[idx]
     return _run_cell(
         cell["eval_type"], cell["shape"], cell["k"], cell["n_items"], cell["ppi_frac"], cell["is_null"],
         n_reps, alpha, seed, n_bootstrap=n_bootstrap, reference_estimator_k=reference_estimator_k,
+        classical_rank=classical_rank, icc=cell.get("icc", DEFAULT_ICC),
     )
 
 
@@ -605,7 +988,7 @@ class _ProgressReporter:
 
 def build_cells(
     eval_types: list[str], scenario_suite: str, k_values: list[int], sizes: list[int],
-    ppi_fracs: tuple[Optional[float], ...],
+    ppi_fracs: tuple[Optional[float], ...], icc_values: Optional[list[float]] = None,
 ) -> tuple[list[dict], list[str]]:
     """Enumerate every (eval_type, shape, k, n_items, ppi_config, is_null)
     cell, pre-filtering PPI configs that are guaranteed to fail evalstats'
@@ -621,14 +1004,23 @@ def build_cells(
                 for n_items in sizes:
                     for ppi_frac in ppi_fracs:
                         if ppi_frac is not None and not _ppi_applicable(k, n_items, ppi_frac):
-                            key = f"k={k},n={n_items},frac={ppi_frac:.2f}"
+                            key = (f"k={k},n={n_items},"
+                                   + (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1
+                                      else f"frac={ppi_frac:.2f}"))
                             skipped_ppi[key] = skipped_ppi.get(key, 0) + 1
                             continue
-                        for is_null in (True, False):
-                            cells.append(dict(
-                                eval_type=eval_type, shape=shape, k=k, n_items=n_items,
-                                ppi_frac=ppi_frac, is_null=is_null,
-                            ))
+                        # icc is swept on the NO-PPI arm only: there it is the
+                        # sole noise knob, and a single value is exactly the
+                        # blind spot that hid NIG's dispersion sensitivity. On
+                        # the PPI arm judge noise dominates, so extra icc cells
+                        # buy little for their cost.
+                        cell_iccs = (icc_values or [DEFAULT_ICC]) if ppi_frac is None else [DEFAULT_ICC]
+                        for cell_icc in cell_iccs:
+                            for is_null in (True, False):
+                                cells.append(dict(
+                                    eval_type=eval_type, shape=shape, k=k, n_items=n_items,
+                                    ppi_frac=ppi_frac, is_null=is_null, icc=float(cell_icc),
+                                ))
     if skipped_ppi:
         skip_notes.append(
             "Skipped PPI configs below evalstats' own minimum-sample-size floor "
@@ -642,12 +1034,21 @@ def run_simulation(
     cells: list[dict], n_reps: int, alpha: float, seed: int = 42,
     progress_mode: str = "bar", n_workers: int = 1,
     n_bootstrap: int = DEFAULT_BOOTSTRAP_N, reference_estimator_k: Optional[int] = REFERENCE_ESTIMATOR_K,
+    null_reps_mult: float = 1.0, classical_rank: bool = False,
 ) -> list[CompareE2EResult]:
     global _CELLS
     _CELLS = cells
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(i, n_reps, alpha, s, n_bootstrap, reference_estimator_k) for i, s in enumerate(child_seeds)]
+    # Null cells may run MORE reps than non-null ones (see --null-reps-mult).
+    # Type-I is a null-only quantity, so every non-null cell contributes
+    # nothing to it; scaling only the null side buys Type-I precision without
+    # paying for power precision that is already sufficient.
+    args_list = [
+        (i, int(round(n_reps * (null_reps_mult if cells[i]["is_null"] else 1))),
+         alpha, s, n_bootstrap, reference_estimator_k, classical_rank)
+        for i, s in enumerate(child_seeds)
+    ]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="compare_e2e")
     results: list[CompareE2EResult] = []
@@ -704,6 +1105,12 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     marg_cov_den = sum(r.marginal_total for r in rows)
     pair_cov_den = sum(r.pairwise_total for r in k2_rows)
     fam_cov_den = sum(r.family_total for r in kgt2_rows)
+    # Width/score are per-PAIR quantities (unlike family_covered/family_total,
+    # the per-REP "ALL pairs held" event) -- k>2's per-pair width/score reuses
+    # pairwise_width_sum/pairwise_total filtered to k>2 rows, giving the
+    # direct "what does FWER widening cost in width/score" comparison against
+    # k==2's own pairwise_width_sum/pairwise_total.
+    fam_pair_den = sum(r.pairwise_total for r in kgt2_rows)
     type1_den = sum(r.n_reps - r.n_errors for r in null_rows)
     power_den = sum(r.n_reps - r.n_errors for r in eff_rows)
     # Reference-estimator power/Type-I: oracle_n_ok is only nonzero on
@@ -717,8 +1124,13 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     return dict(
         marg_cov=(sum(r.marginal_covered for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
         marg_width=(sum(r.marginal_width_sum for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
+        marg_score=(sum(r.marginal_score_sum for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
         pair_cov=(sum(r.pairwise_covered for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
+        pair_width=(sum(r.pairwise_width_sum for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
+        pair_score=(sum(r.pairwise_score_sum for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
         fam_cov=(sum(r.family_covered for r in kgt2_rows) / fam_cov_den) if fam_cov_den else float("nan"),
+        fam_width=(sum(r.pairwise_width_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
+        fam_score=(sum(r.pairwise_score_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         type1=(sum(r.any_reject for r in null_rows) / type1_den) if type1_den else float("nan"),
         power=(sum(r.extreme_reject for r in eff_rows) / power_den) if power_den else float("nan"),
         oracle_type1=(sum(r.oracle_any_reject for r in null_rows) / oracle_type1_den) if oracle_type1_den else float("nan"),
@@ -1078,19 +1490,38 @@ def save_results_artifacts(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "n_reps", "n_errors",
-            "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width",
-            "pairwise_covered", "pairwise_total", "pairwise_coverage",
+            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "icc", "n_reps", "n_errors",
+            "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width", "marginal_mean_score",
+            "pairwise_covered", "pairwise_total", "pairwise_coverage", "pairwise_mean_width", "pairwise_mean_score",
             "family_covered", "family_total", "family_coverage",
             "any_reject", "extreme_reject", "type1_rate", "power_rate",
             "oracle_n_ok", "oracle_type1_rate", "oracle_power_rate",
             "subset_n_ok", "subset_type1_rate", "subset_power_rate",
+            # Raw sums/counts, so the CSV is a LOSSLESS serialization of
+            # CompareE2EResult -- every rate column above is derivable from
+            # these, but not the reverse (the reference-arm coverage counts
+            # appear nowhere else, and reconstructing width/score sums from
+            # the rounded means loses precision). Anything rebuilding results
+            # to regenerate a plot should read these, not the rates.
+            "marginal_width_sum", "marginal_score_sum",
+            "pairwise_width_sum", "pairwise_score_sum",
+            "oracle_marginal_covered", "oracle_marginal_total",
+            "oracle_pairwise_covered", "oracle_pairwise_total",
+            "oracle_family_covered", "oracle_family_total",
+            "oracle_any_reject", "oracle_extreme_reject",
+            "subset_marginal_covered", "subset_marginal_total",
+            "subset_pairwise_covered", "subset_pairwise_total",
+            "subset_family_covered", "subset_family_total",
+            "subset_any_reject", "subset_extreme_reject",
         ])
         for r in results:
             n_ok = r.n_reps - r.n_errors
             marg_cov = r.marginal_covered / r.marginal_total if r.marginal_total else float("nan")
             marg_width = r.marginal_width_sum / r.marginal_total if r.marginal_total else float("nan")
+            marg_score = r.marginal_score_sum / r.marginal_total if r.marginal_total else float("nan")
             pair_cov = r.pairwise_covered / r.pairwise_total if r.pairwise_total else float("nan")
+            pair_width = r.pairwise_width_sum / r.pairwise_total if r.pairwise_total else float("nan")
+            pair_score = r.pairwise_score_sum / r.pairwise_total if r.pairwise_total else float("nan")
             fam_cov = r.family_covered / r.family_total if r.family_total else float("nan")
             type1 = r.any_reject / n_ok if (r.is_null and n_ok) else float("nan")
             power = r.extreme_reject / n_ok if (not r.is_null and n_ok) else float("nan")
@@ -1099,13 +1530,23 @@ def save_results_artifacts(
             subset_type1 = r.subset_any_reject / r.subset_n_ok if (r.is_null and r.subset_n_ok) else float("nan")
             subset_power = r.subset_extreme_reject / r.subset_n_ok if (not r.is_null and r.subset_n_ok) else float("nan")
             writer.writerow([
-                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, r.n_reps, r.n_errors,
-                r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}",
-                r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}",
+                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, f"{r.icc:.4f}", r.n_reps, r.n_errors,
+                r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}", f"{marg_score:.6f}",
+                r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}", f"{pair_width:.6f}", f"{pair_score:.6f}",
                 r.family_covered, r.family_total, f"{fam_cov:.6f}",
                 r.any_reject, r.extreme_reject, f"{type1:.6f}", f"{power:.6f}",
                 r.oracle_n_ok, f"{oracle_type1:.6f}", f"{oracle_power:.6f}",
                 r.subset_n_ok, f"{subset_type1:.6f}", f"{subset_power:.6f}",
+                repr(float(r.marginal_width_sum)), repr(float(r.marginal_score_sum)),
+                repr(float(r.pairwise_width_sum)), repr(float(r.pairwise_score_sum)),
+                r.oracle_marginal_covered, r.oracle_marginal_total,
+                r.oracle_pairwise_covered, r.oracle_pairwise_total,
+                r.oracle_family_covered, r.oracle_family_total,
+                r.oracle_any_reject, r.oracle_extreme_reject,
+                r.subset_marginal_covered, r.subset_marginal_total,
+                r.subset_pairwise_covered, r.subset_pairwise_total,
+                r.subset_family_covered, r.subset_family_total,
+                r.subset_any_reject, r.subset_extreme_reject,
             ])
 
     summary_path = out_base / f"{run_stem}_summary.log"
@@ -1144,6 +1585,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sizes", type=int, nargs="+", default=DEFAULT_SIZES, metavar="N")
     parser.add_argument("--ppi-fracs", type=str, nargs="+", default=["none", "0.10", "0.20", "0.40"], metavar="FRAC",
                          help="'none' (no PPI) or a label fraction in (0, 1].")
+    parser.add_argument("--icc-values", type=float, nargs="+", default=list(DEFAULT_ICC_VALUES),
+                         metavar="ICC",
+                         help="Sweep sample_group_truth's signal/noise split on the NO-PPI arm "
+                              "(PPI cells stay at the default, where judge noise dominates). "
+                              f"Default {list(DEFAULT_ICC_VALUES)}, matching official_args -- pass a "
+                              f"single value (e.g. --icc-values {DEFAULT_ICC}) for the cheaper grid. "
+                              "ci_paired's official sweep uses 0.05/0.20/0.40/0.60/0.80.")
     parser.add_argument("--reps", type=int, default=100, metavar="N")
     parser.add_argument("--bootstrap-n", type=int, default=DEFAULT_BOOTSTRAP_N, metavar="N",
                          help=f"n_bootstrap passed to every compare() call (default {DEFAULT_BOOTSTRAP_N}, vs. "
@@ -1168,9 +1616,29 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Append a LaTeX booktabs key-summary table (the paper table) to the saved summary .log file.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
+    parser.add_argument("--classical-rank-path", action="store_true", default=False,
+                         help="Drive compare() down the rank-based pathway the paper reports "
+                              "(Friedman omnibus + Wilcoxon pairwise + Shaffer FWER) instead of "
+                              "letting correction=auto resolve to Romano-Wolf. Applied to the PPI, "
+                              "oracle and human-subset arms alike so the comparison stays "
+                              "like-for-like. Off by default: Romano-Wolf is the better method and "
+                              "remains what compare() recommends.")
+    parser.add_argument("--null-reps-mult", type=float, default=1.0, metavar="M",
+                         help="Run null cells at M x --reps (default 1.0 = same as non-null). "
+                              "Type-I error is a NULL-ONLY quantity, so non-null cells contribute "
+                              "nothing to its precision, and it is by far the widest-banded metric "
+                              "in this case: one decision per replicate rather than k CIs, null "
+                              "cells only, and k>2 cells only, which together leave it a ~10x "
+                              "smaller denominator than marginal coverage (1400 vs 14000 at "
+                              "reps=200). Scaling only the null side buys that precision without "
+                              "paying for power precision that is already ample -- M=4 quarters "
+                              "the Type-I variance for ~2.5x runtime instead of the 4x a blanket "
+                              "--reps increase would cost.")
 
 
 def _parse_ppi_fracs(raw: list[str]) -> tuple[Optional[float], ...]:
+    """"none", a fraction < 1 (e.g. 0.20), or an absolute label count >= 1
+    (e.g. 30) held fixed across n_items -- see _n_labeled_for."""
     out: list[Optional[float]] = []
     for s in raw:
         if s.lower() == "none":
@@ -1209,6 +1677,11 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         eval_types=["binary", "continuous", "likert"],
         k_values=DEFAULT_K_VALUES, sizes=DEFAULT_SIZES,
         ppi_fracs=["none", "0.10", "0.20", "0.40"],
+        # Sweeps the no-PPI arm's signal/noise split across ci_paired's
+        # low/mid/high (its official sweep is 0.05-0.80). A single icc is what
+        # let the Likert NIG interval's dispersion sensitivity go unseen; three
+        # points cost +70% cells against +139% for the full five.
+        icc_values=list(DEFAULT_ICC_VALUES),
         reps=100, alpha=0.05, seed=base_seed, progress="bar", save_results="save",
         out_dir="simulations/out", plots="save", plots_dir=None, latex=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
@@ -1216,8 +1689,29 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
+def official_args_classical_rank(base_seed: int = 42) -> argparse.Namespace:
+    """official_args, but down the rank-based pathway the paper reports
+    (see CLASSICAL_RANK_KWARGS): Friedman omnibus, Wilcoxon pairwise,
+    Shaffer FWER, on the PPI, oracle and human-subset arms alike.
+
+    This is the official arm, not the plain one, because the paper
+    validates and reports the rank-based tests -- so this is the
+    configuration a reviewer can actually check against the oracle and
+    human-subset references. compare()'s own recommendation is still
+    Romano-Wolf (correction="auto"), which official_args below keeps
+    available; the discrepancy is discussed in the paper rather than
+    hidden."""
+    args = official_args(base_seed)
+    args.classical_rank_path = True
+    return args
+
+
 def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
-    return [("synthetic", official_args(base_seed))]
+    return [
+        ("synthetic (Friedman/Wilcoxon/Shaffer -- the reported path)",
+         official_args_classical_rank(base_seed)),
+        ("synthetic (Romano-Wolf -- compare()'s own default)", official_args(base_seed)),
+    ]
 
 
 def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
@@ -1249,6 +1743,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         ppi_fracs = _parse_ppi_fracs(args.ppi_fracs)
         cells, skip_notes = build_cells(
             args.eval_types, args.scenario_suite, args.k_values, args.sizes, ppi_fracs,
+            icc_values=getattr(args, "icc_values", None),
         )
         for note in skip_notes:
             print(f"  Note: {note}")
@@ -1257,9 +1752,11 @@ def run(args: argparse.Namespace) -> CaseResult:
         reference_k = getattr(args, "reference_k", REFERENCE_ESTIMATOR_K)
         results = run_simulation(
             cells, n_reps=args.reps, alpha=args.alpha, seed=args.seed,
+            null_reps_mult=getattr(args, "null_reps_mult", 1.0),
             progress_mode=args.progress, n_workers=getattr(args, "workers", 1),
             n_bootstrap=getattr(args, "bootstrap_n", DEFAULT_BOOTSTRAP_N),
             reference_estimator_k=(None if reference_k == -1 else reference_k),
+            classical_rank=getattr(args, "classical_rank_path", False),
         )
         print_report(results, alpha=args.alpha)
         print_key_summary(overall_summary_rows(results), alpha=args.alpha)

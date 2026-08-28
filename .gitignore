@@ -22,6 +22,9 @@ simulations/out/*
 !simulations/out/judge_bias_privacy_judge_items.csv
 !simulations/out/judge_bias_iclr_metareview.csv
 !simulations/out/judge_bias_iclr_metareview_items.csv
+!simulations/out/results_why_ppi_shrink_1_over_0.md
+!simulations/out/appstore_scenario_reviews.csv
+!simulations/out/appstore_scenario_judge_scores.csv
 .agent-study-venv-full/
 .agent-study-venv-baseline/
 .agent-study-venv-runner/
@@ -39,3 +42,8 @@ simulations/harness/revise_latex_tables.py
 simulations/PPI_TESTBED_REVIEW.md
 coefs.csv
 examples/.cache/
+lit_review/api_key.txt
+simulations/papers
+
+# Simulation and LaTeX scratch logs (drift.log, texput.log, ...)
+*.log

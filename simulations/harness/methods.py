@@ -75,6 +75,52 @@ recorded results over. Does not help ci_paired's use of
 logit_t (rescaled_ci recentres a paired diff near 0.5 regardless of raw
 skew, where order=2's boundary-only correction never activates)."""
 
+LOGIT_T_DITHER = Method("logit_t_dither", "#ceb483")  # pastel tint of LOGIT_T's #a6761d
+SMOOTH_BOOTSTRAP_DITHER = Method("smooth_bootstrap_dither", "#c4abdb")  # pastel tint of SMOOTH_BOOTSTRAP's #9467bd
+"""ci_paired.py-only, non-binary eval types (see that file's
+add_dither_extras): the SAME logit_t/smooth_bootstrap paired-diff CI, but
+with U(-half, +half) jitter added independently to each arm's raw values
+before differencing (then clipped back to the scale), where half is
+auto-detected per rep from the data's own quantization grid via
+_detect_dither_halfwidth -- 0.0 (no jitter) if none is found. Fixes a real, severe
+small-N pathology distinct from LOGIT_T_2ND's: on a PAIRED diff of two
+highly-correlated (shared-item) LIKERT arms, rounding mostly cancels
+between arms -- most items round to the identical integer in both arms
+(diff=0), and only the rare item whose latent value sits near a rounding
+boundary shows a nonzero diff. At small N it's entirely plausible NONE of
+the sampled items are boundary-adjacent, so the sample's diffs come out
+literally constant, collapsing the sample variance to ~0 regardless of the
+(real, nonzero) population-level diff variance -- any variance-based CI
+built from that is catastrophically overconfident. Confirmed via
+simulations/investigate_likert_family_wise_smalln.py: plain logit_t's
+family-wise (Sidak-widened, k=10 arms) coverage was 14.5% at n=10 (vs. 95%
+nominal); logit_t_dither recovered to a stable ~92% across n=10-60. NOT the
+same mechanism LOGIT_T_2ND targets (that's single-sample boundary-hugging
+skew) and does NOT help ci_single -- see that file's own likert check,
+which showed plain logit_t already well-calibrated there (worst case 93.8%
+at n=10) -- this is a paired-diff-specific pathology. nig_ci_1d fixes the
+SAME failure via a wider prior instead, but was found to cost FAR more:
+near-zero power at small N/moderate k (0.2% at k=3, n=10) vs. dithering's
+much smaller power cost, because nig's conservatism is unconditional while
+dithering targets the actual missing variance directly.
+
+Also tried on CONTINUOUS data with a hardcoded +-0.5 jitter (for
+transparency/direct comparison against likert) and that was BROKEN: +-0.5
+is calibrated to undo exactly one unit of INTEGER rounding, but on
+continuous's own [0, 1]-scale data it's HALF the entire range, causing
+heavy boundary clipping and a systematic bias in the mean. Unlike random
+noise, that bias doesn't shrink with N while the CI does, so coverage got
+WORSE as N grows rather than converging: 0.936 -> 0.800 (n=10 -> n=100) in
+nested-mode screening. Replacing the hardcoded width with
+_detect_dither_halfwidth's data-driven detection fixes this generally: it
+returns 0.0 (no jitter, dither variant reduces exactly to its base method)
+on genuinely continuous data with no recurring gap, so it's now safe to
+run on any non-binary type, and it ALSO catches the case a fixed
+eval_type check never could -- data labeled "continuous" that's actually
+coarse in practice (e.g. a judge that only emits a handful of distinct
+values), which would otherwise silently re-trigger the same rounding-
+cancellation pathology likert has."""
+
 BINARY_SINGLE_EXTRA_METHODS = [WILSON, JEFFREYS, WALD, CLOPPER_PEARSON, BAYES_SINGLE]
 CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
 CONTINUOUS_EXTRA_METHODS_WITH_LOGIT_T_2ND = [BETA, LOGIT_T, LOGIT_T_2ND, NIG, EL]
@@ -85,15 +131,14 @@ variant, not a distinct recommended method)."""
 # ---------------------------------------------------------------------------
 # Paired (pairwise-difference) extras -- for cases/ci_paired.py once ported
 # ---------------------------------------------------------------------------
-NEWCOMBE = Method("newcombe_score", "#aec7e8")
-TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
-"""evalstats.tests._ppi_paired_tango's default construction -- PPI++ closed-
+MJ_FLOOR = Method("mj_floor")  # no color in the legacy palette; uses the default
+"""evalstats.tests._ppi_paired_mj_floor's default construction -- PPI++ closed-
 form power-tuned lambda* since the validation documented at
-TANGO_FIXED_LAMBDA (below); see that Method's docstring for the legacy
+MJ_FLOOR_FIXED_LAMBDA (below); see that Method's docstring for the legacy
 fixed-lambda=1 construction and the comparison it's kept for."""
-PPI_WILSON = Method("ppi_wilson", "#c49c94")
+PPI_WILSON = Method("ppi_wilson", "#e377c2")
 """PPI-corrected single-sample Wilson score interval (evalstats.tests.
-_ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
+_ppi_single_wilson) -- a binary-proportion analogue of MJ_FLOOR's paired
 Wilson-style effective-n trick, for a single-sample (not two/paired-group)
 mean estimand. Deliberately not named "wilson" -- that name is already
 BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
@@ -111,7 +156,20 @@ TABLE routes non-binary robustness CIs to. Deliberately distinct from
 BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
 construction) -- same reason PPI_WILSON isn't named "wilson": different
 estimand, would silently collide if given the same Method name."""
-PPI_T_INTERVAL = Method("ppi_t_interval", "#08519c")
+PPI_BONETT_PRICE = Method("ppi_bonett_price", "#556b2f")
+"""PPI-corrected Bonett-Price adjusted-Wald interval for the paired BINARY
+difference (evalstats.tests._ppi_paired_bonett_price). Deliberately distinct
+from BONETT_PRICE, the non-PPI ci_paired entry of the same underlying
+construction: the two are reported in different sweeps, and sharing a Method
+name would make a `bonett_price` row ambiguous between the corrected and
+uncorrected estimand -- the same reason PPI_WILSON is not named "wilson".
+Deliberately SHARES BONETT_PRICE's colour (#556b2f) so the method reads the
+same across the ci_paired and PPI figures. Safe because the colour test
+enforces distinctness only within co-plotted groups, and no figure draws a
+PPI method beside its non-PPI namesake; against its actual figure-mates
+(ppi_wilson/ppi_t_interval/ppi_logit_t) it sits at dE 46/82/50.
+Replaced MJ_FLOOR in the official PPI set on 2026-08-26."""
+PPI_T_INTERVAL = Method("ppi_t_interval", "#8c564b")
 """PPI-corrected closed-form (no-bootstrap) t-interval for an unbounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_t_interval
 / _ppi_paired_t_interval, both thin wrappers around evalstats.ppi.
@@ -140,7 +198,7 @@ _ppi_single_t_interval), split out for the same reason
 PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T -- see PPI_T_INTERVAL's
 docstring. Targets an unbounded numeric single-sample mean estimand, the
 non-binary/non-[0,1]-bounded counterpart to PPI_WILSON's role."""
-PPI_LOGIT_T = Method("ppi_logit_t", "#8dd3c7")
+PPI_LOGIT_T = Method("ppi_logit_t", "#a6761d")
 """PPI-corrected closed-form (no-bootstrap) logit-t CI for a [lo, hi]-bounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_logit_t /
 _ppi_paired_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct -- the
@@ -164,11 +222,44 @@ robustness method -- the non-binary counterpart to PPI_WILSON's binary
 role; every real dataset ppi_real.py checks is already rescaled to [0, 1]
 (see RealJudgeBiasCorpus), so this applies uniformly there."""
 TANGO_SCC = Method("tango_scc", "#b15928")
+#: The GENUINE Tango (1998) asymptotic score interval, in closed form via
+#: Chang et al. (2024)'s quartic with the continuity correction set to zero.
+#: Validated against the published limits in Fagerland, Lydersen & Laake
+#: (2014) Table V. Added 2026-08-24 so the paper can compare the real Tango
+#: against MJ_FLOOR, which was previously (and wrongly) labelled "tango".
+TANGO_EXACT = Method("tango_exact", "#7b3294")
+#: May & Johnson (1997) eq. 11 exactly as published, with NO discordance
+#: floor. Included as the baseline that shows why MJ_FLOOR floors it: this
+#: degenerates to zero width at n10=n01=0 and under-covers at low
+#: discordance (0.787 vs nominal 0.95 at n=15, S=0.10).
+MJ_UNFLOORED = Method("mj_unfloored", "#c2a5cf")
+#: Bonett & Price (2012) Laplace-adjusted Wald -- the PRIME recommendation of
+#: Fagerland, Lydersen & Laake (2014) Table IX for a CI on the difference
+#: between paired proportions. Validated against their Table V.
+BONETT_PRICE = Method("bonett_price", "#556b2f")  # olive -- #fdae61 sat only
+#: deltaE 9 from bayes_indep_comp's #ffbb78, i.e. indistinguishable in a legend.
+#: Newcombe (1998) method 10, the square-and-add / MOVER-Wilson interval --
+#: also recommended by Fagerland et al. (2014) Table IX, and validated
+#: against their Table V. This is the ONLY Newcombe interval in evalstats;
+#: the previous discordant-pairs "newcombe_score" was removed 2026-08-24
+#: because it is a different method and covers poorly.
+NEWCOMBE_MOVER = Method("newcombe_mover", "#aec7e8")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
 PAIRWISE_EXTRA_METHODS = [T_INTERVAL, LOGIT_T, NIG, EL]
-BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
+DITHER_EXTRA_METHODS = [LOGIT_T_DITHER, SMOOTH_BOOTSTRAP_DITHER]
+"""ci_paired.py-only, non-binary eval types -- see LOGIT_T_DITHER's
+docstring. Structurally a SEPARATE list from PAIRWISE_EXTRA_METHODS (not
+folded into it) since the actual jitter is data-gated (auto-detected per
+rep, a no-op when the data shows no quantization grid), but runs BY
+DEFAULT for all non-binary cells whenever --methods doesn't exclude them --
+same default-inclusion behavior as PAIRWISE_EXTRA_METHODS itself
+(ci_paired.py's `_want` returns True for everything when --methods is
+unset), NOT the hidden opt-in-only precedent LOGIT_T_2ND uses. Pass
+--methods without these two names to exclude them if only comparing the
+pre-existing battery."""
+BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE_MOVER, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 # ---------------------------------------------------------------------------
 # Nested-mode methods -- for ci_single.py's/ci_paired.py's --nested-mode,
@@ -204,14 +295,86 @@ BAYES_DIFF_NESTED = Method("bayes_diff_nested", "#d95f02")
 SMOOTH_DIFF_NESTED = Method("smooth_diff_nested", "#7570b3")
 PAIR_DIFF_NESTED_METHODS = [BOOTSTRAP_DIFF_NESTED, BAYES_DIFF_NESTED, SMOOTH_DIFF_NESTED]
 
-TANGO_FLAT = Method("tango_flat", "#e7298a")
-TANGO_MEAN = Method("tango_mean", "#8c564b")
+MJ_FLOOR_FLAT = Method("mj_floor_flat", "#e7298a")
+MJ_FLOOR_MEAN = Method("mj_floor_mean", "#8c564b")
 NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
-BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
+#: Bonett-Price on run 0 only -- the single-run reference the multi-run
+#: variants have to beat, and the direct counterpart of MJ_FLOOR_FLAT.
+#: Muted olive, deliberately in the same family as BONETT_PRICE's #556b2f
+#: (deltaE 26, so still distinguishable) since it IS that method, on one run.
+BONETT_PRICE_FLAT = Method("bonett_price_flat", "#a0a871")
+BINARY_PAIR_FLAT_METHODS = [
+    MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BONETT_PRICE_FLAT,
+    BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
+]
 
-TANGO_MULTIRUN_EFFECTIVE = Method("tango_multirun_effective", "#a6761d")
-TANGO_MULTIRUN_MOMENTS = Method("tango_multirun_mmnt", "#1b9e77")
-BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
+#: RETIRED 2026-08-25. mj_floor_er's Kish effective-runs term cancels exactly
+#: when its max() does not clamp and inflates variance up to 2.8x when it
+#: does, making it inert in the high-ICC regime real eval data occupies and
+#: conservative elsewhere; mj_floor_mmnt is algebraically the same interval as
+#: the cluster variant whenever its floor does not clip. Neither is swept any
+#: more. MJ_FLOOR_CLUSTER is retained as the one multi-run mj_floor comparator:
+#: plain item-level variance, no R_eff, nothing to go wrong in the variance.
+#: NOTE it still carries the family's centre shrinkage d_hat/(1 + z^2/n), which
+#: uses the ITEM count only and is therefore untouched by R -- so it inherits
+#: the same lopsided-scenario coverage tail. It is a comparator, not a fallback.
+MJ_FLOOR_CLUSTER = Method("mj_floor_cluster", "#a6761d")
+
+# Multi-run Bonett-Price (evalstats.core.resampling, added 2026-08-25 so the
+# single-run winner has a multi-run entry to run against MJ_FLOOR_ER). All
+# three are one estimator -- a Wald interval on the per-item mean difference
+# over the sample augmented by two Laplace pseudo-items at delta = +1 and -1
+# -- separated only by the floor they put on the item-level variance, so
+# their widths always order CLUSTER <= MMNT <= ER. Each reduces EXACTLY to
+# BONETT_PRICE at runs == 1. See the derivation block above
+# _bp_item_moments in evalstats/core/resampling.py.
+#: No floor: the single-run construction carried over unchanged, with the
+#: item as the unit of analysis. The most principled of the three -- the
+#: item-level variance already absorbs between-run correlation, and a
+#: correctly-specified Kish design effect provably reduces to it.
+BONETT_PRICE_CLUSTER = Method("bonett_price_cluster", "#3585f7")
+#: RETIRED 2026-08-25: _er and _mmnt only add a floor to the item-level
+#: variance, and neither floor ever fires -- the Laplace pseudo-items already
+#: dominate it. On the real-data nested sweep all three agreed to four
+#: decimals, so they were three rows of the same interval. CLUSTER is kept
+#: because it is the one with no floor at all, and so the only one that
+#: describes in a sentence: the single-run construction with the item as the
+#: unit of analysis.
+#: Yang, Sun & Hardin (2012) X^2_Score: Tango's score statistic with the
+#: Eliasziw-Donner variance inflation, inverted through the same quartic as the
+#: unclustered case. THE published competitor for clustered matched-pair CIs --
+#: reproduces their worked example exactly and reduces to tango_scc(c=0) when
+#: there is no clustering.
+CLUSTERED_SCORE = Method("clustered_score", "#4a148c")
+#: NOT SWEPT. Yang et al. (2010) modified Obuchowski is cluster-level and
+#: estimates no ICC, but it carries no small-sample adjustment: at R=1 it is
+#: bit-identical to the unregularised Wald on item differences, and it returns
+#: a zero-width interval at zero discordance. Measured MinCov .613 with 231 of
+#: 10140 real-data cells below .93 -- far worse than anything else credible.
+#: The implementation and its validation against clust.bin.pair are retained
+#: in evalstats.core.resampling as a citable negative result.
+#: Pseudo-item MAGNITUDE Laplace-shrunk toward the R=1 reference of 1, with
+#: BP's own weight of two pseudo-items:
+#: m2 = (sum delta^2 + 2)/(sum u + 2). Reduces to BONETT_PRICE at R=1 by the
+#: identity sum(delta^2) == sum(u) there. See
+#: evalstats.core.resampling.bonett_price_paired_ci_multirun_shrunk.
+BONETT_PRICE_SHRUNK = Method("bonett_price_shrunk", "#c2185b")
+
+BINARY_PAIR_NESTED_METHODS = [
+    MJ_FLOOR_CLUSTER, BONETT_PRICE_CLUSTER, BONETT_PRICE_SHRUNK, CLUSTERED_SCORE,
+]
+"""Every multi-run binary pairwise CI the harness can run, selectable by name
+via --methods. NOT what runs by default -- see BINARY_PAIR_NESTED_OFFICIAL."""
+
+BINARY_PAIR_NESTED_OFFICIAL = [
+    m for m in BINARY_PAIR_NESTED_METHODS if m is not BONETT_PRICE_CLUSTER
+]
+"""The default (--methods unset) multi-run binary set. BONETT_PRICE_CLUSTER is
+excluded: it is the same estimator as BONETT_PRICE_SHRUNK with the pseudo-item
+magnitude pinned at 1 instead of shrunk, so reporting both invites readers to
+treat a parameter setting as a competing method. It stays implemented and
+selectable (--methods bonett_price_cluster) as the ablation showing what the
+magnitude shrinkage buys."""
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI
@@ -220,19 +383,30 @@ BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
 # not a CI -- distinct from the CI-coverage methods above even where a name
 # overlaps conceptually (e.g. BOOTSTRAP/BCA/BAYES_BOOTSTRAP/SMOOTH_BOOTSTRAP
 # are reused as-is; "newcombe"/"bayes_binary" are NOT the same underlying
-# computation as ci_paired's "newcombe_score"/"bayes_indep_comp", so they get
+# computation as ci_paired's "newcombe_mover"/"bayes_indep_comp", so they get
 # distinct Method instances despite the conceptual overlap).
 # ---------------------------------------------------------------------------
 MCNEMAR = Method("mcnemar", "#393b79")
+#: McNemar MID-P. Fagerland, Lydersen & Laake (2014) sec. 9.1 recommend the
+#: asymptotic and mid-p McNemar tests and recommend AGAINST the exact
+#: conditional test (MCNEMAR above) as markedly conservative. Added
+#: 2026-08-25 so the sweep compares the recommended test, not only the
+#: one evalstats currently reports alongside its binary paired CIs.
+MCNEMAR_MIDP = Method("mcnemar_midp", "#00868b")
 PERMUTATION = Method("permutation", "#8c6d31")
 SIGN_TEST = Method("sign_test", "#843c39")
+#: REMOVED from the p-value sweep 2026-08-25. "newcombe" is a CI method,
+#: not a test: evalstats returns McNemar alongside the Newcombe interval,
+#: so as a p-value row it reproduced mcnemar exactly (and now reproduces
+#: mcnemar_midp exactly). Kept defined because summary labels still refer
+#: to it, but no longer swept as if it were a distinct test.
 NEWCOMBE_PVAL = Method("newcombe", "#7b4173")
 BAYES_BINARY = Method("bayes_binary", "#5254a3")
 WILCOXON = Method("wilcoxon", "#8ca252")
 PAIRED_T = Method("paired_t", "#bd9e39")
 PAIRWISE_PVALUE_METHODS = [
-    MCNEMAR, BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
-    PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
+    MCNEMAR, MCNEMAR_MIDP, BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
+    PERMUTATION, SIGN_TEST, BAYES_BINARY, WILCOXON, PAIRED_T,
 ]
 
 # ---------------------------------------------------------------------------
@@ -346,7 +520,13 @@ SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
 # above -- see its comment for the p-value-side analogue.
 # ---------------------------------------------------------------------------
 CORR_SIDAK = Method("sidak", "#31a354")
-CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
+#: `boot`, but with the joint level calibrated against the per-pair CI
+#: formula's OWN finite-sample behaviour instead of the nominal normal
+#: quantile -- see evalstats.core.paired._calibrated_joint_critical_value.
+#: Exists because `boot`'s alpha_eff step assumes ci_func(., a) covers
+#: exactly 1-a, which Bonett-Price does not (delta up to +4.3pp at n=10).
+CORR_BOOT_CAL = Method("boot_cal", "#756bb1")
+CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT, CORR_BOOT_CAL]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
@@ -373,17 +553,17 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # (continuous/likert/grades) only -- unlike PAIRED_T/BAYES_BOOTSTRAP, not
 # extended to binary, since bootstrap_t's value is specifically for
 # resampling-based CI estimation on numeric data at N>=50 (ci_paired.py).
-# TANGO (reusing ci_paired's existing "tango_score" Method instance) is the
+# MJ_FLOOR (reusing ci_paired's existing "mj_floor" Method instance) is the
 # mirror image: binary paired data ONLY, not numeric -- PPI-corrects
-# evalstats.core.resampling.tango_paired_ci's score interval by substituting
+# evalstats.core.resampling.mj_floor_paired_ci's score interval by substituting
 # an effective-n derived from PPI's two-term variance into its Wilson-style
-# shrinkage formula (see evalstats.tests._ppi_paired_tango); fully
+# shrinkage formula (see evalstats.tests._ppi_paired_mj_floor); fully
 # closed-form, no bootstrap resampling.
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#1f77b4")
 TTEST_WELCH = Method("ttest_welch", "#d62728")
-# TANGO_FIXED_LAMBDA (evalstats.tests._ppi_paired_tango(..., power_tune=False)):
-# the legacy fixed-lambda=1 rectifier TANGO itself used before PPI++'s
+# MJ_FLOOR_FIXED_LAMBDA (evalstats.tests._ppi_paired_mj_floor(..., power_tune=False)):
+# the legacy fixed-lambda=1 rectifier MJ_FLOOR itself used before PPI++'s
 # closed-form variance-minimizing lambda* became the default -- the same
 # derivation _analytic_mean_correct/_analytic_logit_t_correct already use
 # for ppi_t_interval/ppi_logit_t (this estimand, mean(a_i - b_i), is
@@ -397,43 +577,39 @@ TTEST_WELCH = Method("ttest_welch", "#d62728")
 # plus_plus*.py and simulations/investigate_compound_ppi_fwer_power.py
 # (the compound PPI+FWER path's own detection-power measurement) for the
 # validation behind the flip.
-TANGO_FIXED_LAMBDA = Method("tango_fixed_lambda", "#41b6c4")  # teal -- distinct from TANGO's default grey
+MJ_FLOOR_FIXED_LAMBDA = Method("mj_floor_fixed_lambda", "#41b6c4")  # teal -- distinct from MJ_FLOOR's default grey
 # MWU family: five PPI corrections for the same classical test (Mann-Whitney
 # U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
-# evalstats.tests.mannwhitney's "method" values one-to-one -- see that
-# function's docstring for the full mechanism/tradeoff of each. MWU="global"
-# (the default), MWU_MNAR_EXPERIMENTAL="mnar_experimental",
-# MWU_MNAR_POOLED (not directly selectable via mannwhitney(), the pooled-
-# resampling variant "local" is built on), MWU_ADAPTIVE="adaptive",
-# MWU_RIDGE="ridge". cases/ppi_real.py's twogroup check dropped
-# MWU_MNAR_EXPERIMENTAL from its default plots since real-data judge bias
-# isn't MNAR, so there's nothing there for the local rectifier to buy over
-# MWU -- see _twogroup_methods_for's docstring.
+# MWU is evalstats.tests.mannwhitney's only PPI correction (the global
+# rectifier). Four local-rectifier variants -- mwu_mnar_experimental,
+# mwu_mnar_pooled, mwu_adaptive, mwu_ridge -- were REMOVED on 2026-08-21:
+# none was ever in PPI_OFFICIAL_TEST_METHODS or exercised by a single unit
+# test, and all three local-rectifier constructions proved badly broken on
+# binary data even under plain MCAR (coverage 0.00-0.06 at a real effect vs
+# MWU's 0.989; see evalstats.tests._ppi_kruskal_wallis_pairwise_mnar_experimental's
+# docstring for the mechanism). mannwhitney's "method" parameter went with
+# them.
 MWU = Method("mwu", "#2ca02c")
-MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
-MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MNAR_EXPERIMENTAL's purple
-MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
-MWU_RIDGE = Method("mwu_ridge", "#c49c94")  # muted brown -- distinct from the MWU family's greens/purples
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
 # KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the same
-# omnibus test, the MWU/MWU_MNAR_EXPERIMENTAL story generalized one level up
+# omnibus test -- the two-group global-vs-local rectifier story generalized one level up
 # (k independent groups instead of 2) -- see
 # evalstats.tests.kruskalwallis's "method" docstring for the full
 # mechanism/tradeoff. KRUSKAL="global" (the default, global rectifier),
 # KRUSKAL_MNAR_EXPERIMENTAL="mnar_experimental" (local rectifier: fixes MNAR
 # labeling at the cost of MCAR calibration, kept for direct comparison and
 # for anyone deliberately studying MNAR robustness). Same color convention
-# as MWU/MWU_MNAR_EXPERIMENTAL: the default occupies the original primary
-# shade, the alternate gets a lighter tint.
+# convention: the default occupies the original primary shade, the
+# alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -443,18 +619,23 @@ PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
-        MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL,
-        LMM, LMM_FACTORIAL, LMM_RUNS, TANGO_FIXED_LAMBDA,
+        KRUSKAL_MNAR_EXPERIMENTAL,
+        LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
+        # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
+        # fixed-lambda sibling) remain implemented and selectable via
+        # --tests, but are no longer part of the official sweep.
+        MJ_FLOOR,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
-PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
-(both fix real MNAR-labeling miscalibration in their global-rectifier
-sibling, but cost real MCAR calibration doing so -- see
-evalstats.tests.mannwhitney's and kruskalwallis's "method" docstrings).
-Both remain selectable via --tests mwu_mnar_experimental / --tests
-kruskal_mnar_experimental for direct comparison or studying MNAR robustness
-deliberately.
+PPI_TEST_METHODS entry except kruskal_mnar_experimental (it fixes real
+MNAR-labeling miscalibration in its global-rectifier sibling, but costs real
+MCAR calibration doing so -- see evalstats.tests.kruskalwallis's "method"
+docstring). It remains selectable via --tests kruskal_mnar_experimental for
+direct comparison or studying MNAR robustness deliberately. Its two-group
+counterpart mwu_mnar_experimental, and the mwu_mnar_pooled/mwu_adaptive/
+mwu_ridge variants, were removed entirely on 2026-08-21 -- see MWU's
+comment above.
 
 lmm/lmm_factorial/lmm_runs are excluded from the official set: not
 currently part of the reported result set, so there's no point paying their
@@ -472,16 +653,17 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
-    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
+    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE_MOVER, MJ_FLOOR, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
-] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
+] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
-    + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
+    + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BONETT_PRICE_FLAT] + BINARY_PAIR_NESTED_METHODS
+    + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE]
 ) + [
-    MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
-    PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
+    MCNEMAR, MCNEMAR_MIDP, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
+    PPI_WILSON, PPI_BONETT_PRICE, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, TANGO_FIXED_LAMBDA,
+    TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
@@ -499,5 +681,21 @@ def get_method_color(name: str) -> str:
 
 
 def order_present_methods(present_names: set[str]) -> list[Method]:
-    """Filter REPORT_METHOD_ORDER down to methods actually present, preserving canonical order."""
+    """Filter REPORT_METHOD_ORDER down to methods actually present, preserving canonical order.
+
+    Raises on a method that was computed but never registered in
+    REPORT_METHOD_ORDER. Previously such a method was silently dropped, so it
+    would burn simulation time and then produce zero rows in every table and
+    plot with no diagnostic -- a failure that looks like "the sweep skipped my
+    method" rather than "the registry is missing an entry".
+    """
+    known = {m.name for m in REPORT_METHOD_ORDER}
+    unregistered = sorted(present_names - known)
+    if unregistered:
+        raise KeyError(
+            f"methods present in results but absent from REPORT_METHOD_ORDER: "
+            f"{unregistered}. Add them to REPORT_METHOD_ORDER in "
+            f"simulations/harness/methods.py, or they will not appear in any "
+            f"table or plot."
+        )
     return [m for m in REPORT_METHOD_ORDER if m.name in present_names]

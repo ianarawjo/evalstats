@@ -22,6 +22,8 @@ from evalstats.io import from_dataframe
 from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
+from evalstats.core.design import detect_paired
+from evalstats.core.unpaired import compare_unpaired, GroupComparisonResult
 from evalstats.core.stats_utils import correct_pvalues
 from evalstats.core.summary import (
     print_analysis_summary,
@@ -68,7 +70,7 @@ class ComparisonResult:
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
         self._min_meaningful_diff = min_meaningful_diff
         self._variance_components: Optional[dict] = None  # set by MC alignment loop
-        self._pareto: Optional[dict] = None  # set by _run_pareto_if_needed when secondary= is passed
+        self._pareto: Optional[dict] = None  # set by _run_pareto_if_needed when secondary_metric= is passed
         # Bootstrap P(Best)/E[Rank] output is opt-in, not opt-out: it reads as
         # a confident, almost authoritative verdict (e.g. "63.6% probability
         # of being best") even when the underlying CIs overlap heavily and the
@@ -212,7 +214,7 @@ class ComparisonResult:
             return
         pair.summary()
 
-    def plot(self, method: str = "bar", **kwargs):
+    def plot(self, method: str = "forest", **kwargs):
         """Visualize comparison results.
 
         Parameters
@@ -220,12 +222,27 @@ class ComparisonResult:
         method : str
             Plot type:
 
-            * ``"bar"`` (default) — accuracy bar chart via
-              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`.
-            * ``"forest"`` — horizontal CI forest plot via
-              :func:`~evalstats.vis.forest.plot_ci_forest`.
+            * ``"forest"`` (default) — horizontal CI forest plot via
+              :func:`~evalstats.vis.forest.plot_ci_forest`, gradient-banded
+              (68/90/95/99% nested confidence bands) by default -- the same
+              richer CI picture the terminal's ``.summary()`` gradient plot
+              already shows, in matplotlib. Pass ``style="single"`` to fall
+              back to one plain CI band per entity, or ``color_rule="factor"``
+              / a colour name to color by entity identity instead of
+              significance tier.
+            * ``"bar"`` — accuracy bar chart via
+              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`. A quick,
+              uncorrected view (no CIs) -- useful before statistical
+              analysis, not as a substitute for it.
             * ``"cd"`` — critical difference diagram via
               :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
+            * ``"pareto"`` — uncertainty-aware trade-off scatter via
+              :func:`~evalstats.vis.pareto.plot_pareto_tradeoff`. Only
+              available when ``compare(..., secondary_metric=...)`` was passed;
+              raises otherwise. One bootstrap point cloud per entity plus a
+              percentile band over per-replicate Pareto frontiers, colored
+              by calibrated status (frontier / dominated / ambiguous) --
+              see :attr:`pareto_status`.
 
         **kwargs
             Forwarded to the underlying plot function.
@@ -243,10 +260,19 @@ class ComparisonResult:
         elif method == "cd":
             from evalstats.vis.critical_difference import plot_critical_difference
             return plot_critical_difference(self, **kwargs)
+        elif method == "pareto":
+            if self._pareto is None:
+                raise ValueError(
+                    "method='pareto' requires compare(..., secondary_metric=...) "
+                    "to have been passed -- no Pareto analysis was run for "
+                    "this result."
+                )
+            from evalstats.vis.pareto import plot_pareto_tradeoff
+            return plot_pareto_tradeoff(self._pareto, metric=self._metric, **kwargs)
         else:
             raise ValueError(
                 f"Unknown plot method: {method!r}. "
-                "Expected 'bar', 'forest', or 'cd'."
+                "Expected 'bar', 'forest', 'cd', or 'pareto'."
             )
 
     def report(self, format: str = "markdown") -> str:
@@ -286,6 +312,10 @@ class ComparisonResult:
                 ci_high=float(rob.ci_high[i]) if rob.ci_high is not None else 1.0,
                 median=float(rob.median[i]),
                 std=float(rob.std[i]),
+                multi_ci=(
+                    {a: (float(lo[i]), float(hi[i])) for a, (lo, hi) in rob.multi_ci.items()}
+                    if rob.multi_ci is not None else None
+                ),
             )
             for i, lbl in enumerate(bundle.benchmark.template_labels)
         }
@@ -394,7 +424,7 @@ class ComparisonResult:
         if not isinstance(self._analysis, MultiModelBundle):
             return None
         cross = self._analysis.cross_model
-        labels = list(cross.rank_dist.labels)
+        labels = list(cross.labels)
         if len(labels) < 2:
             return None
         means = cross.robustness.mean
@@ -410,10 +440,61 @@ class ComparisonResult:
         return top_pairs or None
 
     @property
+    def model_labels(self) -> Optional[list]:
+        """Model-axis labels for a two-factor (model, prompt) comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's model axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.model_labels)
+
+    @property
+    def prompt_labels(self) -> Optional[list]:
+        """Prompt/template-axis labels for a two-factor comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's template axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.template_labels)
+
+    def as_view(self, factor: Literal["model", "prompt"]) -> "ComparisonResult":
+        """Return this two-factor comparison collapsed onto a single axis.
+
+        E.g. ``result.as_view("model")`` averages over prompts to compare
+        models; ``result.as_view("prompt")`` averages over models to compare
+        prompts. Only valid for a two-factor comparison (see
+        :attr:`cross_model`) — raises otherwise.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            raise ValueError(
+                "as_view() requires a two-factor comparison (built with "
+                "compare(..., factors=['model', 'prompt']), or "
+                "factors='model'/'prompt' when both columns are present)."
+            )
+        view_map = {"model": "model_level", "prompt": "template_level"}
+        if factor not in view_map:
+            raise ValueError(f"factor={factor!r} must be 'model' or 'prompt'.")
+        return ComparisonResult(
+            self._analysis,
+            factors=self._factors,
+            metric=self._metric,
+            baseline=self._baseline,
+            alpha=self._alpha,
+            filtered_df=self._df,
+            _mmb_view=view_map[factor],
+            min_meaningful_diff=self._min_meaningful_diff,
+            show_rank_probabilities=self._show_rank_probabilities,
+        )
+
+    @property
     def pareto_status(self) -> Optional[dict]:
         """Per-entity three-state Pareto classification, or ``None``.
 
-        Populated only when ``compare(..., secondary=...)`` was passed.
+        Populated only when ``compare(..., secondary_metric=...)`` was passed.
         Keys are entity labels, values are
         :class:`~evalstats.core.pareto.ParetoStatus` (``.status`` is one of
         ``"frontier"``, ``"dominated"``, ``"ambiguous"`` -- see that class's
@@ -430,7 +511,7 @@ class ComparisonResult:
     def pareto_frontier_probability(self) -> Optional[dict]:
         """Per-entity ``P(entity is Pareto-optimal)``, or ``None``.
 
-        Populated only when ``compare(..., secondary=...)`` was passed. Keys
+        Populated only when ``compare(..., secondary_metric=...)`` was passed. Keys
         are entity labels, values are the fraction of joint bootstrap
         replicates in which that entity was non-dominated -- a continuous
         probability, not the calibrated three-state label
@@ -845,11 +926,12 @@ def _bridge_to_io(
 # PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
+_PPI_PAIRWISE_SUPPORTED = ("bonett_price", "mj_floor", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
 _PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
 
 
-def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
+def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng,
+                           score_range: Optional[tuple[float, float]] = None):
     """Dispatch to the PPI-corrected pairwise implementation of *method*.
 
     Only methods with a validated PPI-corrected counterpart (see
@@ -864,12 +946,15 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     silently collide with that existing mapping.
     """
     from evalstats.tests import (
-        _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
+        _ppi_paired_mj_floor, _ppi_paired_bonett_price, _ppi_paired_bootstrap_t,
+        _ppi_paired_bayes_bootstrap,
         _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
         _ppi_paired_t_interval, _ppi_paired_logit_t,
     )
-    if method == "tango":
-        return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
+    if method == "bonett_price":
+        return _ppi_paired_bonett_price(a, b, a_lab, b_lab, alpha)
+    if method == "mj_floor":
+        return _ppi_paired_mj_floor(a, b, a_lab, b_lab, alpha)
     if method == "bootstrap_t":
         return _ppi_paired_bootstrap_t(a, b, a_lab, b_lab, alpha, n_boot, rng)
     if method == "bayes_bootstrap":
@@ -880,7 +965,14 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         # lo/hi default (0.0, 1.0): this dispatch path has no score_range
         # concept (see _run_alignment_ppi's is_bounded_01_scores check --
         # "bounded_01" always means raw scores are literally in [0, 1] here).
-        return _ppi_paired_logit_t(a, b, a_lab, b_lab, alpha)
+        # lo/hi MUST come from the resolved score_range, not the (0, 1)
+        # default: logit-t is scale-dependent, and this method is reachable
+        # for any bounded numeric scale (likert 1-5, grades 0-100), not just
+        # [0, 1]. Passing the wrong bounds returns a CI on the [0, 1] scale
+        # while the estimand lives on the real one -- 0% coverage, not a
+        # subtle miscalibration.
+        _lo, _hi = score_range if score_range is not None else (0.0, 1.0)
+        return _ppi_paired_logit_t(a, b, a_lab, b_lab, alpha, lo=_lo, hi=_hi)
     if method in ("t_interval", "bootstrap"):
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "wilcoxon":
@@ -897,6 +989,12 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         # production stays aligned with what's actually been exercised by
         # that sanctioned pipeline until "ridge" gets its own official
         # pass.
+        # KNOWN, NOT FIXED (2026-08-24): conservative on likert. Mid-rank
+        # placement over a 5-level scale collapses the influence function
+        # (~22% tied pairs), giving corrected Type-I ~0.011 vs ~0.04 for the
+        # parametric tests. Unlike wilcoxon, this path never reaches
+        # correct()'s smoothed-bootstrap jitter (ppi._tie_jitter_scale) --
+        # the likeliest fix, but unvalidated here. Errs safe (under-rejects).
         return _ppi_two_sample(a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
@@ -920,6 +1018,13 @@ def _ppi_pairwise_unpaired_fallback(a, b, a_lab, b_lab, alpha: float, n_boot: in
     """
     from evalstats.tests import _ppi_two_sample
     return _ppi_two_sample(a, b, a_lab, b_lab, lambda ya, yb: float(ya.mean() - yb.mean()), alpha, n_boot, rng)
+
+
+_JOINT_BOOT_SE_REL_FLOOR = 0.20
+"""Relative floor on a bootstrap replicate's SE, as a fraction of the
+observed SE, inside :func:`_ppi_bootstrap_t_joint_stats`. See the comment at
+its use site for the failure mode this prevents and how 0.20 was calibrated.
+Set to 0.0 to reproduce the pre-fix behaviour exactly."""
 
 
 def _ppi_bootstrap_t_joint_stats(
@@ -959,7 +1064,7 @@ def _ppi_bootstrap_t_joint_stats(
     estimate/variance use the same closed-form variance-minimizing
     lambda* :func:`evalstats.ppi._analytic_mean_point_se` derives for
     ``ppi_t_interval``/``ppi_logit_t``/Tango (since evalstats.tests.
-    _ppi_paired_tango's own power-tuning flip), instead of the fixed
+    _ppi_paired_mj_floor's own power-tuning flip), instead of the fixed
     lambda=1 rectifier -- generalized here to a per-pair lambda*, computed
     once per pair (closed-form, not re-estimated per bootstrap replicate,
     avoiding the "double dipping" undercoverage a same-draw lambda/CI
@@ -1001,7 +1106,9 @@ def _ppi_bootstrap_t_joint_stats(
         full matrix (Romano-Wolf's step-down) use it directly), and
         ``t_obs`` has shape ``(k,)``.
     """
-    from evalstats.ppi import _POWER_TUNE_SHRINKAGE_C
+    from evalstats.ppi import (
+        _adaptive_shrink_lambda, _analytic_mean_lambda_replicates, _lambda_var_inflation,
+    )
 
     k = len(pair_keys)
 
@@ -1029,6 +1136,7 @@ def _ppi_bootstrap_t_joint_stats(
     point_ests = np.empty(k)
     obs_se = np.empty(k)
     lam = np.ones(k)
+    lambda_extra_var = np.zeros(k)  # per-pair r_term**2 * Var(lambda_hat), held fixed across replicates like lam
     for p_idx, (ea, eb) in enumerate(pair_keys):
         ia, ib = entity_idx[ea], entity_idx[eb]
         d_all = scores_2d[ia] - scores_2d[ib]
@@ -1062,17 +1170,40 @@ def _ppi_bootstrap_t_joint_stats(
             float(np.cov(d_lab_true, d_lab_llm, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
         )
 
-        lam_p = 1.0
+        lam_p_raw = 1.0
         denom = var_unlab_n + var_hat_lab_n
         if denom > 1e-12:
-            lam_p = min(max(cov_lab_n / denom, 0.0), 1.0)
-        lam_p = 1.0 - (1.0 - lam_p) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_p_raw = min(max(cov_lab_n / denom, 0.0), 1.0)
+        # Adaptive shrinkage (see evalstats.ppi._adaptive_shrink_lambda's
+        # docstring for the shared rationale) -- was previously fixed
+        # toward a target of 1 regardless of what the data supported,
+        # unlike every other power_tune site in this codebase. Falls back
+        # to target=1 when d_lab_true is near-degenerate, same guard
+        # evalstats.ppi._analytic_mean_point_se uses.
+        raw_var_lab_true = float(np.var(d_lab_true, ddof=1)) if n_lab > 1 else 0.0
+        raw_var_lab_llm = float(np.var(d_lab_llm, ddof=1)) if n_lab > 1 else 0.0
+        if n_lab <= 1 or raw_var_lab_true < raw_var_lab_llm * 1e-6:
+            lam_p_replicates = None
+        else:
+            lam_p_replicates = _analytic_mean_lambda_replicates(d_lab_true, d_lab_llm, var_unlab_n, n_lab)
+        lam_p = _adaptive_shrink_lambda(lam_p_raw, lam_p_replicates, n_lab)
         lam[p_idx] = lam_p
 
         point_ests[p_idx] = f_lab + lam_p * (f_unlab - f_hat_lab)
         var_estimate = max(
             var_lab_n + lam_p * lam_p * (var_unlab_n + var_hat_lab_n) - 2.0 * lam_p * cov_lab_n, 0.0,
         )
+        # Precompute the extra variance ONCE per pair, from the OBSERVED
+        # (fixed) r_term -- not re-derived per bootstrap replicate below --
+        # matching how lam itself is held fixed across every replicate for
+        # this pair. An earlier version used each replicate's own resampled
+        # r_term_b instead, making the injected variance data-dependent
+        # within the bootstrap itself; a paired high-rep recheck confirmed
+        # that was the cause of a real FWER regression in one tested
+        # condition (fixed by holding r_term fixed here) -- see
+        # simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 20/21.
+        lambda_extra_var[p_idx] = _lambda_var_inflation(f_unlab - f_hat_lab, lam_p_replicates)
+        var_estimate += lambda_extra_var[p_idx]
         obs_se[p_idx] = np.sqrt(var_estimate)
 
     boot_theta = np.empty((n_boot, k))
@@ -1116,10 +1247,56 @@ def _ppi_bootstrap_t_joint_stats(
         var_b = np.maximum(
             var_lab_b + lam_col * lam_col * (var_unlab_b + var_hat_lab_b) - 2.0 * lam_col * cov_lab_b, 0.0,
         )
+        # Same fixed per-pair extra variance as obs_se above, broadcast
+        # across every replicate (not re-derived per replicate) -- see the
+        # comment there.
+        var_b = var_b + lambda_extra_var[:, np.newaxis]
         boot_theta[start:stop] = theta_b.T
         boot_se[start:stop] = np.sqrt(var_b).T
         start = stop
 
+    # Floor each replicate's SE relative to the OBSERVED one before
+    # studentizing. T is a studentized statistic, so the meaningful scale
+    # for "this replicate's SE is degenerate" is obs_se, not an absolute
+    # constant -- and the previous guard was absolute (1e-12), which cannot
+    # catch a boot_se that is small-but-nonzero.
+    #
+    # Why it matters: when a pair is near-degenerate (a paired difference
+    # with almost no item-level spread -- e.g. two nearly identical arms, or
+    # a generator that shifts every item by the same constant), a resample
+    # can draw an almost-constant vector, collapsing boot_se far below
+    # obs_se and sending |T| to 60-2000. Because BOTH consumers of this
+    # joint resample reduce it with a MAX over pairs
+    # (_ppi_romano_wolf_pvalues_from_joint_stats' step-down suffix-max, and
+    # _M_b_from_T for max-T/"boot" CI widening), one such pair poisons every
+    # other pair in the family: measured on a k=3 cell, a degenerate pair
+    # with |T|max=66 drove the UNRELATED extreme pair's Romano-Wolf p from
+    # ~0 to 0.363 while its own CI still excluded 0 by a wide margin -- the
+    # p-value and the CI contradicting each other inside one bundle.
+    #
+    # Calibration of the 0.20 coefficient: under regularity boot_se/obs_se
+    # concentrates at 1 with sd ~ 1/sqrt(2*n_lab) (~0.11 at n_lab=40), so
+    # 0.20 sits many sd below anything a well-behaved resample produces.
+    # Measured binding rates (fraction of replicates floored): 0.0000% on
+    # every non-degenerate condition tested (k=3/5, N=100-400,
+    # n_lab=20-160, judge rho=0.80-0.99, including the small-n_lab +
+    # excellent-judge corner where boot_se is most variable), versus
+    # 12-19% on the degenerate cells this exists for. It is inert where the
+    # bootstrap is healthy and only engages where it has broken down.
+    # Validated for FWER, not just power. Note the ordinary nulls are
+    # UNINFORMATIVE for that: under them the paired truth difference is
+    # exactly constant (uniq==1), so boot_se never collapses and the floor
+    # is inert -- Type-I is then identical for trivial reasons. The real
+    # test is a null where the floor DOES bind, i.e. the near-identical-arms
+    # case above: arms sharing a base, each perturbing a small random subset
+    # of items by +/- delta with mean-zero signs, so the null holds exactly
+    # while d_true has several distinct values and tiny variance. With
+    # binding up to 12% of replicates under that null, FWER is unchanged
+    # (largest move +0.0025 at 0.28% binding, 0.23 MC SE, on 400 reps).
+    # Power on the degenerate alternative recovers 0.6425 -> 0.9975 (k=3
+    # N=100), 0.3850 -> 1.0000 (k=5) with FWER byte-identical.
+    # See simulations/investigate_joint_bootstrap_se_floor_*.py.
+    boot_se = np.maximum(boot_se, _JOINT_BOOT_SE_REL_FLOOR * obs_se[np.newaxis, :])
     se_boot_safe = np.where(boot_se > 1e-12, boot_se, 1.0)
     T = (boot_theta - point_ests[np.newaxis, :]) / se_boot_safe  # (n_boot, k)
 
@@ -1266,7 +1443,8 @@ def _ppi_alpha_eff_from_M_b(M_b: np.ndarray, ci: float) -> float:
     return min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
 
 
-def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
+def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng,
+                             score_range: Optional[tuple[float, float]] = None):
     """Dispatch to the PPI-corrected single-sample implementation of *method*."""
     from evalstats.tests import (
         _ppi_single_wilson, _ppi_single_bootstrap_t, _ppi_single_t_interval, _ppi_single_logit_t,
@@ -1278,8 +1456,10 @@ def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, r
     if method == "ppi_t_interval":
         return _ppi_single_t_interval(a, a_lab, alpha)
     if method == "ppi_logit_t":
-        # lo/hi default (0.0, 1.0) -- see _ppi_pairwise_dispatch's matching note.
-        return _ppi_single_logit_t(a, a_lab, alpha)
+        # lo/hi from the resolved score_range -- see _ppi_pairwise_dispatch's
+        # matching note for why the (0, 1) default is wrong here.
+        _lo, _hi = score_range if score_range is not None else (0.0, 1.0)
+        return _ppi_single_logit_t(a, a_lab, alpha, lo=_lo, hi=_hi)
     if method == "bootstrap":
         from evalstats.ppi import correct as _ppi_correct
         mask = ~np.isnan(a_lab)
@@ -1392,8 +1572,8 @@ def _run_alignment_ppi(
     For ``method="auto"`` the PPI-specific auto table
     (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
     for PPI use, which need not match the non-aligned auto default for the
-    same data (e.g. binary data defaults to ``bayes_binary``/``tango``
-    depending on N without alignment, but always ``tango`` once PPI
+    same data (e.g. binary data defaults to ``bayes_binary``/``mj_floor``
+    depending on N without alignment, but always ``mj_floor`` once PPI
     correction is in play, since ``bayes_binary`` has no PPI-corrected form).
     When the user passes an explicit ``method=``, that exact method's
     PPI-corrected counterpart is used, and a clear ``ValueError`` is raised if
@@ -1464,7 +1644,7 @@ def _run_alignment_ppi(
         raise ValueError(
             f"PPI alignment requires at least 15 human-labeled items; "
             f"got n_lab={n_lab}. Expand the alignment set and re-run "
-            "validate_alignment()."
+            "judge_alignment()."
         )
     if n_all < 50:
         raise ValueError(
@@ -1514,13 +1694,27 @@ def _run_alignment_ppi(
     from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
     from evalstats.config import resolve_ppi_auto_methods
 
-    if is_binary_scores(scores_2d):
-        data_kind = "binary"
-    elif is_bounded_01_scores(scores_2d):
-        data_kind = "bounded_01"
-    else:
-        data_kind = "unbounded"
+    # Reuse the ONE data-kind decision method="auto"'s router already made
+    # (recorded on the bundle) rather than re-deriving it here. The previous
+    # local re-derivation was a binary/bounded_01/unbounded test with no
+    # "likert" branch that consulted neither score_range nor eval_type, so
+    # Likert data on e.g. a 1-5 scale fell through to "unbounded" and
+    # silently took ppi_t_interval -- making PPI_AUTO_METHOD_TABLE's
+    # "likert" row (ppi_logit_t) unreachable in every case it exists for.
+    # The local test remains as the fallback for non-"auto" callers, where
+    # the router records no resolution.
+    data_kind = getattr(bundle, "resolved_data_kind", None)
+    if data_kind is None:
+        if is_binary_scores(scores_2d):
+            data_kind = "binary"
+        elif is_bounded_01_scores(scores_2d):
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
 
+    # Bounds for the scale-dependent dispatches (ppi_logit_t). Prefer the
+    # router's resolved range; fall back to (0, 1) only when it recorded none.
+    ppi_score_range = getattr(bundle, "resolved_score_range", None)
     if method == "auto":
         pairwise_method, robustness_method = resolve_ppi_auto_methods(data_kind)
     else:
@@ -1542,13 +1736,13 @@ def _run_alignment_ppi(
         arr = scores_2d[i, valid]
         lab_arr = lab_matrix[i, valid]
 
-        res = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, alpha, n_boot, rng)
+        res = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, alpha, n_boot, rng, ppi_score_range)
         final_means[i] = res.estimate
         final_ci_low[i] = res.ci_low
         final_ci_high[i] = res.ci_high
         entity_rectifier[e] = res.rectifier
         for a in GRADIENT_CI_ALPHAS:
-            g = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, a, n_boot, rng)
+            g = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, a, n_boot, rng, ppi_score_range)
             multi_ci_lo[a][i] = g.ci_low
             multi_ci_hi[a][i] = g.ci_high
 
@@ -1765,7 +1959,8 @@ def _run_alignment_ppi(
                 continue
 
             dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
-                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
+                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_,
+                ppi_score_range,
             )
         elif branch == "fallback":
             # Not enough items are labeled for *both* entities to run the
@@ -1881,9 +2076,14 @@ def _run_alignment_ppi(
     # bundle.rank_dist was built from the raw, uncorrected LLM scores and does
     # not reflect the correction above — without this, P(Best)/E[Rank] would
     # silently stay frozen at pre-correction values even as means/CIs shift.
-    from evalstats.core.ranking import ppi_bootstrap_ranks
-    bundle.rank_dist = ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, rng)
+    from evalstats.core.ranking import LazyRankDistribution, ppi_bootstrap_ranks
+    bundle.rank_dist = LazyRankDistribution(
+        labels, n_boot,
+        lambda _rng: ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, _rng),
+        rng=rng,
+    )
     bundle.ppi_applied = True
+    bundle.alignment_result = alignment_result
 
     # ── Override _analysis in-place ───────────────────────────────────────────
     bundle.robustness.mean     = final_means
@@ -2035,7 +2235,7 @@ def _run_judge_alignment_if_needed(
 def _run_pareto_if_needed(
     cr: "ComparisonResult",
     *,
-    secondary,
+    secondary_metric,
     df: pd.DataFrame,
     factor_col: str,
     item_col: str,
@@ -2044,36 +2244,36 @@ def _run_pareto_if_needed(
     rng,
 ) -> None:
     """Run uncertainty-aware Pareto-front analysis and store it on *cr*, if
-    ``secondary=`` was passed.
+    ``secondary_metric=`` was passed.
 
     Mirrors ``_run_judge_alignment_if_needed``'s validate-and-dispatch shape:
-    warns and no-ops on a malformed ``secondary=``, and is only supported for
+    warns and no-ops on a malformed ``secondary_metric=``, and is only supported for
     a single-factor result (a plain ``AnalysisBundle`` -- multi-model and
     factorial results are not yet supported, same restriction as
     ``alignment=``).
     """
-    if secondary is None:
+    if secondary_metric is None:
         return
-    if not isinstance(secondary, dict):
+    if not isinstance(secondary_metric, dict):
         warnings.warn(
-            "secondary= must be a dict mapping a metric column name to "
-            "'min' or 'max', e.g. secondary={'latency_ms': 'min'}. "
-            "secondary= will be ignored.",
+            "secondary_metric= must be a dict mapping a metric column name to "
+            "'min' or 'max', e.g. secondary_metric={'latency_ms': 'min'}. "
+            "secondary_metric= will be ignored.",
             UserWarning,
             stacklevel=4,
         )
         return
-    if len(secondary) != 1:
+    if len(secondary_metric) != 1:
         raise NotImplementedError(
-            f"secondary= currently supports exactly one secondary metric "
-            f"(bivariate Pareto fronts only); got {len(secondary)}: "
-            f"{list(secondary.keys())}. N-way Pareto fronts are not yet "
+            f"secondary_metric= currently supports exactly one secondary metric "
+            f"(bivariate Pareto fronts only); got {len(secondary_metric)}: "
+            f"{list(secondary_metric.keys())}. N-way Pareto fronts are not yet "
             "implemented."
         )
-    (secondary_col, direction), = secondary.items()
+    (secondary_col, direction), = secondary_metric.items()
     if direction not in ("min", "max"):
         raise ValueError(
-            f"secondary={{'{secondary_col}': {direction!r}}} -- direction "
+            f"secondary_metric={{'{secondary_col}': {direction!r}}} -- direction "
             "must be 'min' or 'max'."
         )
     if secondary_col not in df.columns:
@@ -2088,8 +2288,8 @@ def _run_pareto_if_needed(
         # would never actually catch the multi-model case. Must check
         # cr._analysis itself, same as _run_judge_alignment_if_needed does.
         warnings.warn(
-            "Pareto-front analysis (secondary=) is not yet supported for "
-            "multi-model or factorial analyses. secondary= will be ignored "
+            "Pareto-front analysis (secondary_metric=) is not yet supported for "
+            "multi-model or factorial analyses. secondary_metric= will be ignored "
             "for this comparison.",
             UserWarning,
             stacklevel=4,
@@ -2098,9 +2298,9 @@ def _run_pareto_if_needed(
     bundle = cr._primary_bundle()
     if bundle.benchmark.is_seeded:
         raise ValueError(
-            "Pareto-front analysis (secondary=) does not yet support seeded "
+            "Pareto-front analysis (secondary_metric=) does not yet support seeded "
             "benchmarks (R >= 3 repeated runs). Aggregate runs to a single "
-            "score per (template, input) cell before passing secondary=."
+            "score per (template, input) cell before passing secondary_metric=."
         )
 
     from evalstats.core.pareto import pareto_bootstrap, classify_pareto_status, orient_higher_is_better
@@ -2136,7 +2336,7 @@ def _run_pareto_if_needed(
     if np.any(np.isnan(scores_secondary)):
         n_missing = int(np.sum(np.isnan(scores_secondary)))
         raise ValueError(
-            f"secondary='{secondary_col}' has {n_missing} missing (entity, item) "
+            f"secondary_metric='{secondary_col}' has {n_missing} missing (entity, item) "
             f"cell(s) out of {n_entities * n_items} -- Pareto-front analysis "
             "currently requires a complete design (every entity scored on "
             "every item for the secondary metric too)."
@@ -2148,6 +2348,11 @@ def _run_pareto_if_needed(
     result = pareto_bootstrap(
         scores_primary, scores_secondary_oriented, labels,
         n_bootstrap=n_boot, rng=rng_gen,
+        # Retained for plot_pareto_tradeoff()'s bootstrap point cloud, so it
+        # draws from the exact same replicates the calibrated status/P(Pareto-
+        # optimal) numbers come from, rather than a second independent
+        # bootstrap. Cheap: O(N x n_bootstrap) floats, not O(N^2).
+        return_replicates=True,
     )
     statuses = classify_pareto_status(result, alpha=alpha)
 
@@ -2198,17 +2403,18 @@ def compare(
     baseline: Optional[str] = None,
     block: Union[str, list[str], Literal["auto"]] = "auto",
     slices=None,         # deferred
-    secondary: Optional[dict[str, Literal["min", "max"]]] = None,
+    secondary_metric: Optional[dict[str, Literal["min", "max"]]] = None,
     alignment=None,
     n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
     alpha: Optional[float] = None,
-    p_values: bool = False,
-    omnibus: bool = False,
+    p_values: Optional[bool] = None,
+    omnibus: Optional[bool] = None,
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     show_rank_probabilities: bool = False,
+    design: Literal["auto", "paired", "unpaired"] = "auto",
     **kwargs: Any,
-) -> ComparisonResult:
+) -> Union[ComparisonResult, GroupComparisonResult]:
     """Compare entities along one or more factor axes.
 
     Parameters
@@ -2232,22 +2438,27 @@ def compare(
     block : str, list[str], or "auto"
         Blocking variable(s) — typically ``"item"`` or ``"input"``.
         ``"auto"`` (default) uses the item column detected by ``load_from``.
-    secondary : dict[str, {"min", "max"}], optional
+    secondary_metric : dict[str, {"min", "max"}], optional
         Run an uncertainty-aware Pareto-front analysis against a second
-        metric, e.g. ``secondary={"latency_ms": "min"}`` to find the
+        metric, e.g. ``secondary_metric={"latency_ms": "min"}`` to find the
         accuracy/latency frontier (``"min"`` for a cost-like metric where
         lower is better, ``"max"`` for a benefit-like one). Currently
-        supports exactly one secondary metric, a complete design (every
-        entity scored on every item for it too), and a single-factor result
+        supports exactly one secondary metric and a single-factor result
         (not yet supported for multi-model/factorial comparisons or seeded
-        R>=3 benchmarks). Both metrics are resampled *jointly* (a shared
-        per-item bootstrap draw, not two independent marginal bootstraps)
-        so that correlation between them (e.g. harder items being both
-        slower and less accurate) is preserved rather than dropped, and a
-        marginally-better point estimate on both axes isn't reported as a
-        confident "dominates" call when the data can't actually support it.
-        See :attr:`ComparisonResult.pareto_status` /
-        :attr:`ComparisonResult.pareto_frontier_probability`.
+        R>=3 benchmarks). On the paired path (default), also requires a
+        complete design (every entity scored on every item for the
+        secondary metric too) and resamples both metrics *jointly* via a
+        shared per-item bootstrap draw (not two independent marginal
+        bootstraps) so correlation between them (e.g. harder items being
+        both slower and less accurate) is preserved rather than dropped —
+        a marginally-better point estimate on both axes isn't reported as
+        a confident "dominates" call when the data can't actually support
+        it. On the unpaired path (``design="unpaired"``), the same idea
+        applies at row granularity instead — see ``design=``'s docstring
+        for exactly how. See :attr:`ComparisonResult.pareto_status` /
+        :attr:`ComparisonResult.pareto_frontier_probability` (also exposed
+        identically on :class:`~evalstats.core.unpaired.GroupComparisonResult`
+        for the unpaired path).
     alpha : float, optional
         Significance level / CI width: ``alpha=0.05`` → 95 % CIs.
         When ``None`` (default), uses the global value set by
@@ -2284,6 +2495,60 @@ def compare(
         than opt-out. Ranking is still computed either way; this only
         controls whether it's surfaced. Can be overridden per-call via the
         same-named argument on ``.summary()``/``.to_dict()``/``.to_frame()``.
+    design : {"auto", "paired", "unpaired"}
+        Experimental design for single-factor comparisons (``factors`` names
+        one column, and no factorial/multi-model second axis applies).
+        ``"auto"`` (default) checks whether items are shared across the
+        compared groups: when they are (the normal within-subjects case —
+        every entity scored on the same items), analysis proceeds exactly
+        as before. When items are disjoint per group (a between-subjects
+        design — e.g. independent user cohorts, one per condition), a
+        ``ValueError`` is raised rather than silently forcing a paired
+        analysis onto unpaired data, since ``compare()``'s default engine
+        assumes paired items. Pass ``design="unpaired"`` to explicitly run
+        the between-subjects path instead: a per-group descriptive summary
+        plus all-pairs comparisons (Kruskal-Wallis omnibus / Mann-Whitney U
+        post-hoc for continuous, likert, and grade metrics; one-way ANOVA /
+        Welch's t-test for binary metrics), Bonferroni-corrected CIs and
+        Holm-corrected p-values, PPI-corrected when ``alignment=`` is
+        passed. Between-subjects data commonly has no natural item/reviewer
+        id at all (e.g. just group + rating) — ``load_from()`` still
+        requires *some* item column to build ``evaldata`` in the first
+        place, so add a throwaway one first if needed, e.g.
+        ``df["item"] = range(len(df))``, before calling ``load_from()``.
+        Returns a :class:`~evalstats.core.unpaired.GroupComparisonResult`
+        instead of :class:`ComparisonResult` — see its ``.summary()``,
+        ``.to_dict()``, ``.to_frame()``, ``.groups_to_frame()``. Pass
+        ``design="paired"`` to force the existing paired analysis even on
+        data that looks between-subjects (matches pre-``design=`` behavior).
+        Not supported for factorial (2+ factor) comparisons; for
+        ``method="lmm"``/``"factorial_lmm"``, which already tolerate
+        unbalanced/disjoint designs natively via random effects; for any
+        other explicit ``method=``/``backend=`` override (the between-
+        subjects engine's CI construction isn't a pluggable-method
+        surface); or together with multi-run (seeded) data.
+        ``secondary_metric=`` (Pareto-front analysis) IS supported here —
+        unlike the paired path's shared-item-index joint bootstrap (every
+        entity resampled at the same item positions), the between-subjects
+        version resamples each group's own rows independently (there's no
+        shared item pool across disjoint groups to preserve correlation
+        through), still preserving each row's own primary/secondary
+        pairing. Populates
+        :attr:`~evalstats.core.unpaired.GroupComparisonResult.pareto_status`/
+        ``pareto_frontier_probability`` exactly like the paired path's own
+        attributes. ``score_range=`` is honored (passed through to the
+        per-group marginal CI's auto-method resolution, same as the paired
+        path). ``n_mc=`` has no effect — the equivalent knob is
+        ``n_bootstrap=``. ``p_values=`` and ``omnibus=`` are honored, but
+        with unpaired-specific *defaults of True* (not ``compare()``'s own
+        ``False``) — leave them unset to get this path's normal, always-
+        shown report; pass ``p_values=False`` to hide the pairwise table's
+        p-value column (the underlying values stay in ``.to_dict()``/
+        ``.to_frame()``), or ``omnibus=False`` to skip running the omnibus
+        test entirely at 3+ groups. ``baseline=``, ``pairwise_test=``, and
+        ``show_rank_probabilities=`` still have no effect on this path —
+        it always reports all-pairs comparisons (no baseline-relative
+        view) and has no rank-probability view.
     **kwargs
         Two uses:
 
@@ -2429,6 +2694,26 @@ def compare(
                         not is_model_comparison and not is_prompt_comparison)
     is_factorial = len(factors_list) >= 2
 
+    # Reject NaN/missing values in factor column(s) early with a clear,
+    # correctly-attributed error -- otherwise a NaN factor value silently
+    # becomes its own group and only surfaces later as a confusing "scores
+    # contain N NaN cells" error that blames the metric column instead.
+    for _f in factors_list:
+        _resolved_factor_col = (
+            model_col if (_f == "model" and model_col and model_col in df.columns) else
+            prompt_col if (_f in {"prompt", "template"} and prompt_col and prompt_col in df.columns) else
+            _f if _f in df.columns else None
+        )
+        if _resolved_factor_col is not None:
+            _n_na_factor = int(df[_resolved_factor_col].isna().sum())
+            if _n_na_factor > 0:
+                raise ValueError(
+                    f"factor column {_resolved_factor_col!r} contains {_n_na_factor} "
+                    "missing (NaN) value(s). Every row must have a value for the "
+                    "factor being compared -- drop or fill these rows before "
+                    "calling compare()."
+                )
+
     # Also handle the case where factor is neither "model" nor "prompt" but names
     # a canonical-alias column directly (e.g. user mapped "llm" → "model", then
     # passes factors="model" which now IS model_col).
@@ -2436,6 +2721,95 @@ def compare(
         factor_col_name = factors_list[0]
         if factor_col_name in df.columns:
             is_canonical_col = True
+
+    # ── design detection / routing (paired vs. unpaired) ─────────────────────
+    # Scoped to "pure" single-factor cases only -- i.e. whichever of paths A/B/C
+    # would run below, and only when that path's own implicit multi-model second
+    # axis (block_col) is absent, since the multi-model/factorial machinery is
+    # out of scope here. Factorial calls and method="lmm"/"factorial_lmm" are
+    # exempt entirely: LMM already tolerates incomplete/disjoint designs via
+    # random effects, and no currently-passing non-LMM call can be affected by
+    # this new check, because the bootstrap path already hard-crashes on
+    # genuinely unpaired data (has_missing) -- so paired-path behavior for every
+    # existing call is unchanged.
+    _design_backend = engine_kwargs.get("method") or engine_kwargs.get("backend")
+    _design_exempt = is_factorial or _design_backend in {"lmm", "factorial_lmm"}
+
+    if _design_exempt:
+        if design == "unpaired":
+            raise ValueError(
+                'design="unpaired" is not supported for factorial (2+ factor) '
+                'comparisons or for method="lmm"/"factorial_lmm", which already '
+                "handle unbalanced/disjoint designs natively via random effects."
+            )
+    else:
+        if is_model_comparison:
+            _design_factor_col = model_col
+            _design_is_pure_single_factor = not (prompt_col and prompt_col in df.columns)
+        elif is_prompt_comparison:
+            _design_factor_col = prompt_col
+            _design_is_pure_single_factor = not (model_col and model_col in df.columns)
+        elif is_canonical_col or (not is_factorial and factors_list[0] in df.columns):
+            _design_factor_col = factors_list[0]
+            _design_is_pure_single_factor = True
+        else:
+            _design_factor_col = None
+            _design_is_pure_single_factor = False
+
+        if _design_is_pure_single_factor and _design_factor_col:
+            if design == "unpaired" and run_col and run_col in df.columns and df[run_col].nunique() > 1:
+                raise ValueError(
+                    f'design="unpaired" does not yet support multi-run (seeded) data '
+                    f"-- column {run_col!r} has more than one run per item. Treating "
+                    "each run as its own row would silently inflate the effective "
+                    "sample size and break the independence assumption the between-"
+                    "subjects tests rely on (same scoping precedent as PPI alignment's "
+                    "own seeded-benchmark refusal). Aggregate runs to a single score "
+                    f"per item first, e.g. df.groupby([{_design_factor_col!r}, "
+                    f"{item_col!r}])[{metric_col!r}].mean().reset_index()."
+                )
+            if design == "unpaired" and _design_backend not in (None, "auto"):
+                raise ValueError(
+                    f'method={_design_backend!r} is not supported together with '
+                    'design="unpaired" -- the between-subjects engine\'s CI '
+                    "construction (Bonferroni/Holm pairwise, Kruskal-Wallis/ANOVA "
+                    "omnibus) isn't a pluggable-method surface the way the paired "
+                    'path is. Drop method= for this comparison. score_range= is '
+                    "still honored."
+                )
+            if design == "unpaired":
+                # Unlike the paired path, this narrower report defaults both
+                # to True (an unpaired-specific default, not compare()'s own
+                # False) -- unset (None, meaning the caller didn't pass
+                # either) preserves the always-shown behavior this path was
+                # built and battle-tested with; an explicit True/False is
+                # honored as a real suppress/show toggle.
+                _up_p_values = True if engine_kwargs.get("p_values") is None else bool(engine_kwargs.get("p_values"))
+                _up_omnibus = True if engine_kwargs.get("omnibus") is None else bool(engine_kwargs.get("omnibus"))
+                return compare_unpaired(
+                    df, factor_col=_design_factor_col, metric_col=metric_col,
+                    item_col=item_col, alignment=alignment, alpha=alpha,
+                    n_boot=engine_kwargs.get("n_bootstrap", 2000),
+                    rng=engine_kwargs.get("rng"),
+                    score_range=engine_kwargs.get("score_range"),
+                    p_values=_up_p_values, omnibus=_up_omnibus,
+                    secondary_metric=secondary_metric,
+                )
+            if design == "auto" and not detect_paired(df, _design_factor_col, item_col):
+                raise ValueError(
+                    f"Data for factor {_design_factor_col!r} looks between-subjects "
+                    "(items are not shared across the compared groups), but "
+                    "compare()'s default analysis assumes within-subjects (paired) "
+                    'data. Pass design="unpaired" to run the between-subjects '
+                    'comparison instead, or design="paired" to force the existing '
+                    "paired analysis anyway."
+                )
+        elif design == "unpaired":
+            raise ValueError(
+                'design="unpaired" is not supported for this comparison (it '
+                "implies a multi-model/multi-template second axis, which is out "
+                "of scope for the between-subjects path)."
+            )
 
     # ── path A: model comparison ──────────────────────────────────────────────
     if is_model_comparison:
@@ -2491,7 +2865,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )
@@ -2545,7 +2919,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )
@@ -2582,7 +2956,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )

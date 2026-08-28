@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from scipy.special import expit as _sigmoid
+from scipy.stats import norm as _norm_dist
 from scipy.stats import t as _t_dist
 
 from .core.resampling import _LOGIT_T_BOUNDARY_EPS
@@ -22,9 +23,303 @@ PPI-alignment warning threshold in ``evalstats/api.py`` and
 ``evalstats/alignment.py``."""
 
 _POWER_TUNE_SHRINKAGE_C = 20.0
-"""Pseudo-count for shrinking :func:`correct`'s power-tuning weight lambda
-back toward 1 (vanilla PPI) as ``n_lab`` shrinks -- see the ``power_tune``
-parameter docstring."""
+"""Pseudo-count controlling how much :func:`correct`'s power-tuning weight
+lambda gets shrunk toward an ADAPTIVE target as ``n_lab`` shrinks -- used
+identically by the bootstrap path (below) and the analytic-mean backend
+(:func:`_analytic_mean_point_se`, via :func:`_adaptive_shrink_lambda`). The
+target itself is estimated from the data (confidently-informative judge ->
+target near 1, confidently-uninformative judge -> target near 0) rather
+than fixed at 1: a raw lambda* from only ``n_lab`` points is a noisy
+estimate of the true population lambda, but there's no reason a noisy
+estimate should be presumed close to 1 specifically -- see the
+``power_tune`` parameter docstring for the full rationale and
+simulations/out/results_why_ppi_shrink_1_over_0.md for the investigation
+that motivated moving off a fixed target."""
+
+
+def _adaptive_shrink_lambda(
+    lam_raw: float, lam_replicates: Optional[np.ndarray], n_lab: int,
+) -> float:
+    """Shrink a raw power-tuning weight toward an ADAPTIVE target instead
+    of a fixed target of 1 -- the one shared "final blend" step every
+    power_tune implementation in this codebase uses (see :func:`correct`'s
+    ``power_tune`` parameter docstring for the full rationale). Factored
+    out so the five places that need it (``correct()``'s bootstrap path,
+    :func:`_analytic_mean_point_se`, :func:`_analytic_walsh_theta_correct`,
+    ``evalstats.api._ppi_bootstrap_t_joint_stats``, ``evalstats.tests.
+    _ppi_paired_bayes_bootstrap``) share one implementation rather than
+    each reimplementing the same arithmetic.
+
+    ``lam_replicates`` is an array of independent raw-lambda estimates
+    from resampling -- however the caller constructed them (batching an
+    existing bootstrap draw via :func:`_bootstrap_batch_lambda_replicates`,
+    a cheap micro-bootstrap of just the labeled pair via
+    :func:`_analytic_mean_lambda_replicates`/:func:`_walsh_theta_lambda_replicates`,
+    or an equivalent). Pass ``None`` when a degenerate-labeled-sample guard
+    already fired upstream (a near-constant labeled sample can't reveal
+    covariance no matter how it's resampled, so a "confidently near 0"
+    reading there would be a resampling artifact, not evidence) -- this
+    shrinks toward a target of 1, matching every backend's original
+    degenerate fallback."""
+    target = 1.0 if lam_replicates is None else 1.0 - float(np.mean(lam_replicates < 0.5))
+    w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+    return w * lam_raw + (1.0 - w) * target
+
+
+def _lambda_var_inflation(r_term: float, lam_replicates: Optional[np.ndarray]) -> float:
+    """Delta-method variance-inflation term for a power-tuned PPI estimate
+    of the form ``f_lab + lambda_hat * r_term`` -- the missing piece of
+    Var(lambda_hat * r_term) for a product of two estimated quantities
+    (``r_term**2 * Var(lambda_hat)``), using ``lam_replicates`` as the
+    Var(lambda_hat) estimate. Returns 0.0 when ``lam_replicates`` is
+    ``None`` or too small to estimate a variance from (an already-fixed
+    lambda, or the degenerate-labeled-sample guard fired upstream -- no
+    lambda-estimation uncertainty to account for either way).
+
+    Every power_tune site's variance/CI construction otherwise plugs in
+    the adaptively-chosen lambda as if it were a known constant -- a
+    plug-in/post-selection variance gap, since lambda is estimated from
+    the same sample it's then used to correct, but the reported
+    uncertainty doesn't reflect that estimation step. Callers with an
+    explicit variance formula (:func:`_analytic_mean_point_se`,
+    :func:`_analytic_walsh_theta_correct`) add this directly to their
+    variance; callers building a percentile-bootstrap CI (``correct()``'s
+    bootstrap path, ``evalstats.tests._ppi_paired_bayes_bootstrap``)
+    convolve in independent noise of this variance instead, since lambda
+    is held fixed across every replicate there and the CI's spread would
+    otherwise reflect zero lambda uncertainty.
+
+    Unlike a target-pull-toward-1 (tried and rejected -- see
+    simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 16), this
+    only inflates uncertainty when lambda estimation is itself uncertain,
+    not whenever n_lab is small: a confidently-poor judge (tight lambda
+    replicates near 0) isn't penalized, only a genuinely ambiguous one.
+    See Addenda 17-19 for the derivation and per-site validation, and
+    Addendum 20/21 for ``evalstats.api._ppi_bootstrap_t_joint_stats``'s
+    Romano-Wolf step-down construction specifically: an initial attempt
+    there used each bootstrap replicate's own resampled r_term instead of
+    the fixed observed one, causing a real, high-rep-confirmed FWER
+    regression in one tested condition; holding r_term fixed (matching how
+    lambda itself is held fixed across replicates there) resolved it, per
+    a subsequent paired high-rep recheck."""
+    if lam_replicates is None or len(lam_replicates) <= 1:
+        return 0.0
+    var_lam_hat = float(np.var(lam_replicates, ddof=1))
+    return r_term * r_term * var_lam_hat
+
+
+def _shrunk_lambda_variance(lam_raw: float, var_lam_raw: float, w: float) -> float:
+    """Closed-form delta-method estimate of Var(shrunk lambda) --
+    Var(w*lam_raw + (1-w)*target) -- that accounts for the adaptive
+    shrinkage TARGET's own sampling uncertainty, without a nested
+    bootstrap. Used by :func:`evalstats.tests._ppi_friedman_f_stat`/
+    :func:`evalstats.tests._ppi_anova_repeated_f_stat` in place of the
+    naive ``Var(lam_raw)`` those sites' inflation term used to plug in
+    directly (an implicit, incorrect ``w=1`` assumption).
+
+    Derivation (see simulations/out/results_why_ppi_shrink_1_over_0.md's
+    friedman power_tune=True addendum for the full investigation this
+    resolved). :func:`_adaptive_shrink_lambda`'s ``target`` is
+    ``1 - mean(lam_replicates < 0.5)``, which approximates
+    ``P(lam_raw_boot >= 0.5)`` under the bootstrap distribution of
+    ``lam_raw`` -- i.e. approximately ``Phi((lam_raw - 0.5) / sigma)``,
+    where ``sigma = sqrt(Var(lam_raw))`` (already available as
+    ``var_lam_raw``) and ``Phi`` is the standard normal CDF. So ``target``
+    is (to this approximation) a smooth function of ``lam_raw`` alone:
+    ``target ~= h(lam_raw) = Phi((lam_raw - 0.5) / sigma)``. Treating
+    ``sigma`` as fixed for this one-variable delta method (its own
+    estimation noise is a smaller, second-order term), the SHRUNK lambda
+    is ``H(lam_raw) = w*lam_raw + (1-w)*h(lam_raw)``, with
+    ``H'(lam_raw) = w + (1-w)*phi(z)/sigma`` (``phi`` = standard normal
+    PDF, ``z = (lam_raw - 0.5)/sigma``), giving
+
+        Var(lam) ~= H'(lam_raw)^2 * Var(lam_raw) = [w*sigma + (1-w)*phi(z)]^2
+
+    -- a clean closed form (in fact a perfect square) computed entirely
+    from quantities the caller already has (``lam_raw``, ``var_lam_raw``,
+    ``w``), no extra resampling. This REPLACES (not adds to) a raw
+    ``Var(lam_raw)`` plug-in: at ``w=1`` (no shrinkage, e.g. n_lab very
+    large relative to :data:`_POWER_TUNE_SHRINKAGE_C`) it reduces to
+    ``sigma^2 = Var(lam_raw)`` exactly, matching the un-shrunk case;
+    below that it correctly reflects that a shrunk-toward-target lambda
+    has different (generally smaller, since ``w<1`` alone would suggest
+    ``w^2*Var(lam_raw)``, but not simply that -- the target itself
+    carries real, previously-unaccounted-for uncertainty via the second
+    term) sampling variance than the raw ratio would.
+
+    Validated via a ground-truth check (Monte Carlo variance of the
+    corrected point estimate across independent datasets, not just a
+    bootstrap self-consistency check) and a rejection-rate sweep across
+    friedman's full scenario grid: closes roughly 20-30% of the mean
+    Type-I gap above nominal alpha with no meaningful power cost -- a
+    real, principled, but partial improvement (does not fully eliminate
+    the residual inflation on every scenario)."""
+    if var_lam_raw <= 0.0:
+        return 0.0
+    sigma = float(np.sqrt(var_lam_raw))
+    z = (lam_raw - 0.5) / sigma
+    phi_z = float(_norm_dist.pdf(z))
+    return float((w * sigma + (1.0 - w) * phi_z) ** 2)
+
+
+def _bootstrap_batch_lambda_replicates(
+    b_lab: np.ndarray, b_hat_lab: np.ndarray, b_unlab: np.ndarray,
+) -> np.ndarray:
+    """Turn an existing ``(n_boot,)`` bootstrap draw (each element the
+    per-replicate estimator value, e.g. a bootstrap-resample MEAN -- not
+    the full resampled data) into an array of independent raw-lambda
+    replicates for :func:`_adaptive_shrink_lambda`, by splitting it into
+    batches and recomputing the covariance/variance ratio within each
+    batch. A single element of ``b_lab``/``b_hat_lab`` can't yield a
+    covariance on its own (it's already reduced to one number per
+    replicate), so this pools ``n_boot // n_batches`` of them per batch --
+    unlike :func:`_analytic_mean_lambda_replicates`/:func:`
+    _walsh_theta_lambda_replicates`, which resample the full labeled-pair
+    ARRAY per draw and so can compute one ratio straight from each draw
+    with no pooling needed. Used by ``correct()``'s bootstrap path and
+    ``evalstats.tests._ppi_paired_bayes_bootstrap`` (whose Dirichlet-
+    weighted ``b1_*`` draws have the identical shape/meaning for this
+    purpose, just resampled differently upstream)."""
+    n_boot = len(b_lab)
+    n_batches = max(5, min(30, n_boot // 50))
+    batch_size = n_boot // n_batches
+    lam_batches = np.empty(n_batches)
+    for k in range(n_batches):
+        sl = slice(k * batch_size, (k + 1) * batch_size)
+        d = float(np.var(b_unlab[sl] - b_hat_lab[sl], ddof=1))
+        if d > 1e-12:
+            lb = float(np.cov(b_lab[sl], b_hat_lab[sl], ddof=1)[0, 1] / d)
+            lam_batches[k] = min(max(lb, 0.0), 1.0)
+        else:
+            lam_batches[k] = 1.0
+    return lam_batches
+
+
+_LABEL_SHIFT_SHRINKAGE_K = 3.0
+"""Pseudo-count controlling how aggressively :func:`_analytic_mean_point_se`
+(when ``label_shift_robust=True``) blends its power-tuned lambda back
+toward 1.0 (full rectifier / no power tuning) in response to detected
+evidence of a labeled-vs-unlabeled JUDGE-SCORE distribution shift -- see
+that function's ``label_shift_robust`` parameter docstring for the full
+mechanism this addresses (label-selection MNAR's "restriction of range"
+attenuation of the power-tuning ratio) and
+simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 34 for the
+calibration sweep that picked this value: small enough that a strong,
+clearly-detected shift (label.mnar-strong) blends most of the way to
+lambda=1 (closing a bias-z of ~100-150 down to roughly 1-4), large enough
+that MCAR/weak-judge scenarios (where the shift statistic is pure null
+noise) are barely perturbed (coverage/width within a few percent of the
+un-blended baseline)."""
+
+
+_ANALYTIC_TARGET_SEED = 0
+"""Fixed internal seed for :func:`_analytic_mean_lambda_replicates`/
+:func:`_walsh_theta_lambda_replicates`'s micro-bootstrap -- purely an
+implementation detail for cheaply approximating a shrinkage target (see
+:func:`_adaptive_shrink_lambda`), not a source of reported Monte Carlo
+uncertainty a caller would need to control. Fixed (not threaded through
+from callers) so every caller -- there are several, across ``evalstats/``
+-- stays fully deterministic (same inputs -> same outputs) without a
+signature change."""
+
+
+def _analytic_mean_lambda_replicates(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
+    n_boot: int = 800,
+) -> np.ndarray:
+    """Raw-lambda replicates for :func:`_adaptive_shrink_lambda`, for a
+    MEAN-based rectifier (plain sample covariance/variance) -- used by
+    :func:`_analytic_mean_point_se` and (per-pair, in a loop)
+    ``evalstats.api._ppi_bootstrap_t_joint_stats``, since both use the
+    identical mean-based ratio.
+
+    Since ``var_unlab`` is already a closed form from the large unlabeled
+    sample (no resampling needed there), only the small (Y_lab, Y_hat_lab)
+    PAIRED sample needs to be resampled -- cheap regardless of n_lab.
+    Unlike :func:`_bootstrap_batch_lambda_replicates`'s ``b1`` arrays
+    (which store only a bootstrap MEAN per draw, so a group of them has to
+    be pooled before a single ratio can be computed at all), each resample
+    here is the FULL (Y_lab, Y_hat_lab) pair array, so the exact same
+    closed-form ratio the point estimate itself uses can be recomputed
+    directly per draw -- a standard bootstrap-the-statistic distribution,
+    no batching needed. n_boot=800 pairs are cheap regardless of n_lab, so
+    this stays fast even at the small n_lab (~15-30) these callers target."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    Yl_b = Y_lab[idx]
+    Yh_b = Y_hat_lab[idx]
+    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
+    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
+    denom_b = var_unlab + var_hat_lab_b
+    return np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
+
+
+def _label_shift_blend_weight(
+    f_hat_lab: float, f_unlab: float, var_hat_lab: float, var_unlab: float, k: float,
+) -> float:
+    """How much to trust the power-tuned lambda vs. fall back toward 1.0
+    (full rectifier), based on whether the labeled subsample's JUDGE score
+    distribution detectably differs from the unlabeled subsample's -- see
+    :func:`_analytic_mean_point_se`'s ``label_shift_robust`` docstring for
+    the full rationale. Returns ``w_rep`` such that the final lambda is
+    ``w_rep * lam_power_tuned + (1 - w_rep) * 1.0``: 1.0 means "no detected
+    shift, trust power-tuning fully" and 0.0 means "strongly detected
+    shift, fall back to the full-rectifier estimator entirely."
+
+    ``z_shift**2`` is approximately chi2(1)-distributed under a true null
+    of no labeled/unlabeled shift (mean 1 there), so ``excess = max(0,
+    z_shift**2 - 1)`` is an (upward-biased-by-clipping-at-0, but
+    null-centered) "excess evidence" statistic -- fed through the same
+    pseudo-count shrinkage-blend shape :func:`_adaptive_shrink_lambda`
+    already uses elsewhere (``w = excess / (excess + k)``). A raw linear
+    ramp starting at ``z_shift=0`` was tried first and rejected: it reacts
+    to ordinary null-distribution noise (``E|Z| ~= 0.8`` under a true null)
+    and measurably over-corrects (inflates CI width for) scenarios with no
+    real MNAR at all -- see Addendum 34's calibration sweep.
+    """
+    var_shift = var_hat_lab + var_unlab
+    if var_shift <= 1e-12:
+        return 1.0
+    z_shift = abs(f_hat_lab - f_unlab) / np.sqrt(var_shift)
+    excess = max(0.0, z_shift * z_shift - 1.0)
+    return 1.0 - excess / (excess + k)
+
+
+def _label_shift_blended_lambda_replicates(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, f_unlab: float, var_unlab: float,
+    n_lab: int, w_shrink: float, target: float, k: float, n_boot: int = 800,
+) -> np.ndarray:
+    """Bootstrap replicates of the FULL ``label_shift_robust`` lambda chain
+    (raw ratio -> adaptive shrink -> label-shift blend), for a variance
+    estimate that captures the shift-blend's own added sampling noise, not
+    just the raw ratio's -- a first-order approximation that instead held
+    the blend weight fixed at its observed value was found (empirically,
+    via the ground-truth Monte Carlo check in Addendum 34) to under-cover:
+    the blend weight is itself a noisy function of the same small labeled
+    sample and swings substantially replicate-to-replicate. ``f_unlab``
+    (the fixed unlabeled-pool mean) and the adaptive-shrink parameters
+    ``(w_shrink, target)`` are held FIXED at their already-computed values,
+    matching the codebase's established "hold other already-computed
+    pieces fixed across replicates" precedent (see
+    :func:`_lambda_var_inflation`'s docstring, Addendum 20/21) -- only the
+    (Y_lab, Y_hat_lab) pair is resampled, exactly as in
+    :func:`_analytic_mean_lambda_replicates`."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    Yl_b = Y_lab[idx]
+    Yh_b = Y_hat_lab[idx]
+    mean_hat_lab_b = Yh_b.mean(axis=1)
+    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
+    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
+    denom_b = var_unlab + var_hat_lab_b
+    lam_raw_b = np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
+    lam_power_tuned_b = w_shrink * lam_raw_b + (1.0 - w_shrink) * target
+
+    var_shift_b = var_unlab + var_hat_lab_b
+    z_shift_b = np.abs(mean_hat_lab_b - f_unlab) / np.sqrt(np.maximum(var_shift_b, 1e-300))
+    excess_b = np.maximum(0.0, z_shift_b * z_shift_b - 1.0)
+    w_rep_b = 1.0 - excess_b / (excess_b + k)
+    return w_rep_b * lam_power_tuned_b + (1.0 - w_rep_b) * 1.0
 
 
 @dataclass
@@ -275,6 +570,112 @@ def _walsh_theta_analytic_variance(d: np.ndarray) -> float:
     return 4.0 * float(np.var(h1, ddof=1)) / n
 
 
+def _walsh_theta_lambda_replicates(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
+    n_boot: int = 800,
+) -> np.ndarray:
+    """Raw-lambda replicates for :func:`_adaptive_shrink_lambda`, for the
+    Walsh-theta rectifier -- same idea as
+    :func:`_analytic_mean_lambda_replicates` (see that function's
+    docstring for the shared rationale), just re-evaluating the
+    Hajek-projection cov/var ratio (not the mean's plain sample cov/var)
+    per resample of the (Y_lab, Y_hat_lab) pair.
+
+    ``_walsh_theta_h1_components``'s O(n log n) sort+searchsorted isn't
+    vectorizable across a batch dimension (see :func:`_walsh_theta_batch`'s
+    docstring) -- stays a Python loop over ``n_boot`` draws, same tradeoff
+    that function already accepts. Fine here: n_lab is small (this
+    backend's whole point is being fast at the small n_lab where it's
+    preferred), so n_boot=800 tiny sorts is cheap in aggregate.
+
+    CALLER GUARD (referenced from every site that calls a
+    ``_..._lambda_replicates`` helper). Callers must skip this and pass
+    ``lam_replicates=None`` when the labeled pair is degenerate:
+    ``n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6``.
+    The ``var_hat_lab < 1e-12`` clause needs to be its OWN absolute check,
+    not merely the relative ``var_lab < var_hat_lab * 1e-6`` one: when
+    ``Y_hat_lab`` is EXACTLY tied (all Walsh comparisons agree -- plausible
+    at small n_lab on real, heavily-tied Likert-like data) the covariance is
+    identically 0 regardless of ``Y_lab``'s own spread, and the relative
+    test cannot fire because ``0 < 0`` is False. Letting a spuriously
+    "confident" lambda through there was confirmed (2026-08-15) to drive
+    real-data Type-I as high as 0.515 -- see
+    results_why_ppi_shrink_1_over_0.md's real-data wilcoxon addendum."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    lam_b = np.empty(n_boot)
+    for b in range(n_boot):
+        h1_lab_b = _walsh_theta_h1_components(Y_lab[idx[b]])
+        h1_hat_lab_b = _walsh_theta_h1_components(Y_hat_lab[idx[b]])
+        var_hat_lab_b = 4.0 * float(np.var(h1_hat_lab_b, ddof=1)) / n_lab
+        denom_b = var_unlab + var_hat_lab_b
+        if denom_b > 1e-12:
+            cov_b = 4.0 * float(np.cov(h1_lab_b, h1_hat_lab_b, ddof=1)[0, 1]) / n_lab
+            lam_b[b] = min(max(cov_b / denom_b, 0.0), 1.0)
+        else:
+            lam_b[b] = 1.0
+    return lam_b
+
+
+_WALSH_SIGNFLIP_B = 200
+"""Sign-flip draws used by :func:`_walsh_theta_signflip_null_var`. 200 is
+enough for a variance (not a tail quantile) and keeps the cost well below
+the two :func:`_walsh_theta_lambda_replicates` calls the cross-fitted
+construction it replaced already paid."""
+
+
+def _walsh_theta_signflip_null_var(Y_lab: np.ndarray, n_boot: int = _WALSH_SIGNFLIP_B) -> Optional[float]:
+    """Var(theta) under H0, obtained by SIGN-FLIP randomization -- the
+    score-test counterpart to :func:`_walsh_theta_analytic_variance`'s
+    Wald (evaluate-at-the-estimate) variance.
+
+    Under H0 the paired differences are symmetric about 0, so flipping the
+    sign of any subset of them leaves the null distribution unchanged. The
+    variance of ``paired_walsh_midrank_theta`` across sign flips is
+    therefore its null variance, computed CONDITIONAL on the observed
+    ``|Y_lab|`` -- which is exactly the classical randomization reference
+    for a signed-rank statistic, and is valid regardless of ties.
+
+    Why not the textbook closed form. Under H0 (and no ties) the Walsh
+    count IS the Wilcoxon signed-rank statistic, giving
+    ``Var(theta) = (2n+1) / (6n(n+1))`` exactly. That matches simulation on
+    continuous data (n=20: 0.016270 vs. 0.016105 measured) but is badly
+    wrong under the heavy ties real judge data carries -- on appstore's
+    88%-tied judge differences it reads 0.021528 against a true 0.006156,
+    3.5x too large. Sign-flipping handles ties and discreteness exactly, so
+    it is used instead.
+
+    Returns ``None`` when every labeled difference is exactly 0: sign
+    flipping cannot move a vector of zeros, so no null variance is
+    recoverable and the caller must fall back to the Wald estimate.
+
+    Deterministic (fixed :data:`_ANALYTIC_TARGET_SEED`), matching every
+    other source of internal randomness in this backend.
+    """
+    d = np.asarray(Y_lab, dtype=float)
+    n = len(d)
+    if n < 2 or not np.any(d != 0.0):
+        return None
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    flips = rng.choice(np.array([-1.0, 1.0]), size=(n_boot, n))
+    return float(np.var([paired_walsh_midrank_theta(d * flips[b]) for b in range(n_boot)], ddof=1))
+
+
+def _cross_fit_satterthwaite_df(vA: float, dfA: float, vB: float, dfB: float) -> float:
+    """Welch-Satterthwaite effective df for combining two fold-level
+    variance estimates from :func:`_analytic_walsh_theta_correct`'s
+    cross-fitting. Unlike a single-sample delta-method inflation term
+    (tried and empirically rejected for this problem -- see
+    ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s Wilcoxon
+    power-tuning addendum), ``vA``/``vB`` here really ARE independent:
+    each fold's point estimate uses the OTHER fold's lambda, so this
+    combination rests on a valid, not merely convenient, assumption."""
+    total = vA + vB
+    if total <= 0.0 or vA <= 0.0 or vB <= 0.0:
+        return max(dfA, dfB, 1.0)
+    return (total * total) / (vA * vA / dfA + vB * vB / dfB)
+
+
 def _analytic_walsh_theta_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,
@@ -292,23 +693,75 @@ def _analytic_walsh_theta_correct(
     Used at every ``n_lab`` under ``backend="auto"`` (see
     :data:`_ANALYTIC_ALWAYS_PREFERRED`), not just below the usual n_lab=30
     cutoff: it dominates the percentile bootstrap on power for this
-    estimand across the full n_lab range, with statistically
-    indistinguishable Type-I calibration, so there is no bootstrap regime
-    worth falling back to.
+    estimand across the full n_lab range.
+
+    ``power_tune=True`` uses a SCORE-TYPE variance for the human term.
+
+    THE DEFECT IT FIXES. ``theta`` is proportion-like on [-0.5, 0.5], so
+    (exactly as a binomial's ``p(1-p)``) its sampling variance is MAXIMAL at
+    theta=0 and collapses toward the boundaries -- measured 0.0166 at true
+    theta=0 vs. 8e-6 at true theta=0.499. The plug-in ("Wald") variance is
+    evaluated AT the observed estimate, so a large ``|estimate|``
+    mechanically arrives with a small ``se``
+    (``corr(sqrt(var), |theta_hat|) = -0.88 .. -0.95``) and a TWO-SIDED test
+    is inflated in both tails. This is a property of the ESTIMAND, not of
+    lambda: it is why fixed ``power_tune=False`` (lambda=1) was always well
+    calibrated, since adaptive lambda shrinks the correction toward
+    ``f_lab`` and concentrates the statistic on the small labeled sample
+    where the coupling bites. Adaptive tuning EXPOSED the coupling rather
+    than creating it.
+
+    THE FIX. Evaluate the human term's variance UNDER H0 instead of at the
+    estimate -- a score rather than a Wald construction, the same reason
+    this package prefers Wilson over Wald for binary proportions and Tango
+    for paired binary. Under H0 the Walsh count is the Wilcoxon signed-rank
+    statistic, whose null law is distribution-free;
+    :func:`_walsh_theta_signflip_null_var` obtains it by sign-flip
+    randomization (exact under ties, unlike the closed form). A null
+    variance is a CONSTANT with respect to ``theta_hat``, so it removes the
+    coupling without distorting anything at the boundary.
+
+    The substitution is made COHERENTLY -- the estimated correlation is kept
+    and only the human-side variance is rescaled -- because replacing
+    ``var_lab`` alone violates the quadratic form's Cauchy-Schwarz
+    consistency and drives ~9% of samples to a clamped, near-zero ``se``.
+    See the inline comment at the substitution for the algebra.
+
+    This REPLACED a cross-fitted construction (two folds, each fold's lambda
+    estimated from the other). That construction did control Type-I, but
+    measurement showed it worked by inflating the reported SE 5-17% rather
+    than by the mechanism its own docstring claimed: it barely moved the
+    tails (excess kurtosis 266 -> 227), and kurtosis does not drive Type-I
+    here at all (flooring the variance collapses kurtosis 153 -> 2.5 while
+    leaving the rejection rate identical at 0.0590). On ``ppi_real`` the
+    score construction beats it on every axis -- Type-I max 0.105 -> 0.090,
+    pooled 0.0522 -> 0.0449, CI coverage 0.941 -> 0.946, and CI width
+    0.2199 -> 0.1626 (26% narrower) at IDENTICAL power (1.000) -- narrower
+    intervals with better coverage being the direct evidence that the old
+    SE inflation was wasteful. Nine other approaches were tried and
+    rejected first, including a variance-stabilizing (arcsine) transform
+    that looked best of all synthetically and then collapsed real power to
+    0.462, because any such transform's derivative diverges exactly where
+    real effects live. See results_why_ppi_shrink_1_over_0.md's Addenda
+    28/33/35/41 for the full record.
+
+    ``power_tune=False`` is deliberately left on the plain Wald variance:
+    at fixed lambda=1 that path is long-validated (including under MNAR)
+    and serves as the harness's classical reference baseline, so it is not
+    disturbed by a change validated only for ``power_tune=True``.
 
     Degrees of freedom for the Student-t interval: ``n_lab - 1``, matching
-    :func:`_analytic_mean_correct`'s choice (the labeled term is the
-    variance bottleneck there too, since n_all is typically much larger
-    than n_lab)."""
+    :func:`_analytic_mean_correct`'s choice."""
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
     f_unlab = paired_walsh_midrank_theta(Y_hat_unlab)
+    var_unlab = _walsh_theta_analytic_variance(Y_hat_unlab) if n_all > 1 else 0.0
+
     f_lab = paired_walsh_midrank_theta(Y_lab)
     f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
     rectifier = f_lab - f_hat_lab
 
-    var_unlab = _walsh_theta_analytic_variance(Y_hat_unlab) if n_all > 1 else 0.0
     var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
     var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
 
@@ -320,16 +773,58 @@ def _analytic_walsh_theta_correct(
         cov_lab_hatlab = 0.0
 
     lam = 1.0
+    lam_replicates = None
     if power_tune:
         denom = var_unlab + var_hat_lab
         if denom > 1e-12:
-            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
-        # else: degenerate variance -- fall back to lam=1, matching
-        # _analytic_mean_correct and the bootstrap path.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        else:
+            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+
+        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _walsh_theta_lambda_replicates for this
+        # estimand's version of the replicate-generation step (including why
+        # var_hat_lab needs an absolute floor check of its own).
+        if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
-    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+
+    # SCORE-TYPE variance for the human term (power_tune only) -- see this
+    # function's docstring for the full rationale. var_lab is the Wald
+    # (evaluate-at-the-estimate) variance, and because Var(theta) DEPENDS on
+    # theta for this proportion-like estimand, using it couples se to
+    # |estimate| and inflates a two-sided test. Substituting the H0 variance
+    # breaks that coupling.
+    #
+    # The substitution must be COHERENT. var_lab + lam^2*D - 2*lam*cov is the
+    # variance of an actual linear combination, so it is non-negative only
+    # because cov^2 <= var_lab*var_hat_lab (Cauchy-Schwarz) holds for the
+    # Wald pair. Swapping var_lab alone breaks that: measured 9.0% of reps
+    # went negative, clamped to ~0 se, and produced spurious rejections
+    # (Type-I 0.122). So keep the ESTIMATED CORRELATION and rescale only the
+    # human side:
+    #     rho      = cov / sqrt(var_lab * var_hat_lab)
+    #     cov_used = rho * sqrt(var_null * var_hat_lab)
+    # The result is a quadratic in lam with discriminant
+    # 4*var_null*(rho^2*var_hat_lab - D) <= 0, since D = var_unlab +
+    # var_hat_lab >= var_hat_lab >= rho^2*var_hat_lab -- provably non-negative.
+    var_lab_used, cov_used = var_lab, cov_lab_hatlab
+    if power_tune:
+        var_null = _walsh_theta_signflip_null_var(Y_lab)
+        if var_null is not None and var_lab > 1e-15 and var_hat_lab > 1e-15:
+            rho = float(np.clip(cov_lab_hatlab / np.sqrt(var_lab * var_hat_lab), -1.0, 1.0))
+            var_lab_used = var_null
+            cov_used = rho * float(np.sqrt(var_null * var_hat_lab))
+
+    var_estimate = max(
+        var_lab_used + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_used, 0.0
+    )
+    if power_tune:
+        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
@@ -350,6 +845,7 @@ def _analytic_walsh_theta_correct(
 
 def _analytic_mean_point_se(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, power_tune: bool,
+    label_shift_robust: bool = False,
 ) -> tuple[float, float, float, float, float, Optional[float], int]:
     """Shared closed-form point-estimate/SE/df computation for a PPI mean
     correction -- factored out of :func:`_analytic_mean_correct` so
@@ -359,6 +855,48 @@ def _analytic_mean_point_se(
     delta-method logit-scale transform in ``_analytic_logit_t_correct``).
     See ``_analytic_mean_correct``'s docstring for the closed-form
     lambda*/variance derivation this implements.
+
+    ``label_shift_robust`` (default False, preserving every existing
+    caller's behavior unchanged) additionally blends the power-tuned
+    lambda back toward 1.0 (full rectifier) in proportion to detected
+    evidence of a labeled-vs-unlabeled JUDGE SCORE distribution shift --
+    see :func:`_label_shift_blend_weight`'s docstring for the mechanism.
+    Fixes a catastrophic bias/undercoverage failure specific to a SINGLE-
+    ARM mean estimand under label-selection MNAR (missingness correlated
+    with an item's own TRUE value, not just an observed covariate):
+    ``ppi_t_interval_single``/``ppi_logit_t_single`` saw bias-z up to ~100
+    and coverage as low as 0.00-0.03 on ``label.mnar-strong`` before this
+    fix (see simulations/out/typeI_check_all_tests/
+    pvalues_ppi_effect_reps200_20260814_231114_mnar_ppi_effect_summary.log's
+    "Flagged cells" section, and results_why_ppi_shrink_1_over_0.md's
+    Addendum 34 for the full diagnosis/validation).
+
+    Root cause: the labeled subsample's dynamic range on the (unobserved-
+    for-the-unlabeled-side) TRUTH variable gets restricted by MNAR
+    selection -- a classical "restriction of range" attenuation that pulls
+    the power-tuning ratio ``lam_raw = Cov(Y_lab, Y_hat_lab) / (Var(Y_unlab)
+    + Var(Y_hat_lab))`` (and the adaptive-shrinkage target, resampled from
+    the SAME restricted sample) toward 0 even when the judge is a
+    genuinely good predictor on the full population. For a TWO-GROUP
+    comparison (see ``_pooled_two_group_lambda``'s docstring) this same
+    per-item selection mechanism biases both groups' point estimates
+    roughly equally, so it mostly cancels in the difference; a single-arm
+    estimand has no second group to cancel against, so the point estimate
+    collapses toward the raw, badly-biased human-labels-only mean
+    (``f_lab``) as lambda shrinks -- an entirely different, more severe
+    failure mode than the two-group case's variance/CI-width issue, so
+    this fix is deliberately scoped to single-arm callers only
+    (``_ppi_single_t_interval``/``_ppi_single_logit_t``) rather than
+    applied to this function's paired-difference callers, where it isn't
+    needed and wasn't validated.
+
+    This does NOT achieve full nominal coverage under label-selection MNAR
+    -- Addendum 34's validation found a residual bias/undercoverage on the
+    same order of magnitude this codebase already tolerates for other
+    flagged MNAR cells (e.g. ``anova_ind``, ``bootstrap_t_single``), not
+    a complete fix. Non-ignorable (outcome-dependent) missingness is not,
+    in general, fully identifiable without further assumptions -- see that
+    addendum for the honest limitation.
 
     Returns (estimate, se, f_unlab, f_lab, rectifier, lam_or_None, df).
     """
@@ -386,27 +924,363 @@ def _analytic_mean_point_se(
     if power_tune:
         denom = var_unlab + var_hat_lab
         if denom > 1e-12:
-            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
-        # else: degenerate variance -- fall back to lam=1, matching the bootstrap path.
-        # Same n_lab-dependent shrinkage toward 1 as correct()'s bootstrap path
-        # (_POWER_TUNE_SHRINKAGE_C): a raw lambda* computed from only n_lab
-        # points is itself a noisy estimate of the true population lambda.
-        # Without this, a raw lambda*=0 (e.g. when Y_lab happens to have ~0
-        # sample variance at small n_lab) collapses the estimate to f_lab with
-        # se=0 exactly.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        else:
+            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+
+        # Adaptive shrinkage (see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _analytic_mean_lambda_replicates for
+        # this estimand's version of the replicate-generation step). Falls
+        # back to target=1 when Y_lab itself is near-degenerate: a
+        # near-constant labeled sample can't reveal covariance no matter
+        # how it's resampled, so a "confidently near 0" reading there is a
+        # resampling artifact, not evidence -- the same reasoning the
+        # degenerate `denom<=1e-12` fallback above already uses.
+        raw_var_lab = var_lab * n_lab
+        raw_var_hat_lab = var_hat_lab * n_lab
+        # raw_var_hat_lab < 1e-12 is its own trigger (not just relative to
+        # raw_var_lab) -- see _walsh_theta_lambda_replicates' CALLER GUARD note for why an
+        # exactly-degenerate Y_hat_lab needs the same fallback as an
+        # exactly-degenerate Y_lab: either side being ~0 makes cov_lab_hatlab
+        # trivially ~0 too, so a relative-only check can miss it.
+        if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        lam_power_tuned = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+
+        if label_shift_robust:
+            w_rep = _label_shift_blend_weight(f_hat_lab, f_unlab, var_hat_lab, var_unlab, _LABEL_SHIFT_SHRINKAGE_K)
+            lam = w_rep * lam_power_tuned + (1.0 - w_rep) * 1.0
+        else:
+            lam = lam_power_tuned
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    if power_tune and lam_replicates is not None and len(lam_replicates) > 1:
+        if label_shift_robust:
+            # Full-chain lambda-uncertainty inflation: bootstrap the ENTIRE
+            # raw-ratio -> adaptive-shrink -> label-shift-blend pipeline
+            # (not just the raw ratio), since a first-order "hold the
+            # blend weight fixed" approximation was found (empirically) to
+            # under-cover -- see _label_shift_blended_lambda_replicates's
+            # docstring.
+            w_shrink = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            target = 1.0 - float(np.mean(lam_replicates < 0.5))
+            lam_blend_replicates = _label_shift_blended_lambda_replicates(
+                Y_lab, Y_hat_lab, f_unlab, var_unlab, n_lab, w_shrink, target, _LABEL_SHIFT_SHRINKAGE_K,
+            )
+            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_blend_replicates)
+        else:
+            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
     return estimate, se, f_unlab, f_lab, rectifier, (lam if power_tune else None), df
 
 
+def _pooled_two_group_lambda(
+    Y_lab_a: np.ndarray, Y_hat_lab_a: np.ndarray, Y_hat_unlab_a: np.ndarray,
+    Y_lab_b: np.ndarray, Y_hat_lab_b: np.ndarray, Y_hat_unlab_b: np.ndarray,
+) -> tuple[float, float]:
+    """Single lambda estimated from the POOLED (both groups') labeled and
+    unlabeled data, instead of each group independently estimating its
+    own -- see :func:`evalstats.tests._ppi_two_sample_t_interval`'s
+    docstring for why this replaced per-group estimation there. Per-group
+    lambda is fine under MCAR, but under MNAR (label selection correlated
+    with an item's own value) it can distort the two groups' labeled
+    subsamples asymmetrically, and a per-group lambda has no data to
+    average that distortion out over. Pooling the labeled/unlabeled data
+    across both groups before estimating lambda restores that averaging
+    -- the same "single global rectifier" pattern :func:`_ppi_two_sample`
+    already uses via ``correct()``'s general bootstrap path, just
+    computed in closed form here. Empirically fixes both the MNAR
+    failure (worst binary cell: 0.260 -> 0.038 rejection rate under the
+    null) and, as a side effect, the original MCAR binary near-boundary
+    inflation this construction was built to fix in the first place
+    (same mechanism: pooling both groups' data roughly doubles the
+    effective sample the ratio lambda_raw = cov/denom is estimated from,
+    which directly reduces how often noise pushes it to the hard [0,1]
+    clamp). See ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s
+    ttest-binary addendum for the full investigation.
+
+    Returns ``(lam, var_lam)``. ``var_lam`` is ``Var(lam_raw)`` estimated
+    from the pooled bootstrap replicates -- the caller needs it to build
+    the JOINT lambda-uncertainty inflation term, since lambda is now
+    shared between the two groups' point estimates rather than
+    independent per group: its contribution to ``Var(est_a - est_b)``
+    uses the *difference* of each group's own rectifier term ``(r_a -
+    r_b)**2 * var_lam``, not each group's term squared independently as
+    :func:`_lambda_var_inflation` computes for a single estimator (lambda
+    noise is perfectly correlated between the two groups here, so it
+    partially cancels in the difference rather than adding in
+    quadrature).
+    """
+    # Each group is centred on its OWN mean before pooling, so lambda is
+    # estimated from WITHIN-group moments -- which is what lambda* is defined
+    # by. Pooling the raw values instead lets the between-group separation
+    # enter both cov_lab_hatlab and the variances below; they do not grow in
+    # the proportion that preserves the ratio, so lam_raw gets dragged toward
+    # n_all/(n_all + n_lab) and away from the optimum as the groups separate.
+    # Measured on unbounded Gaussians with judge quality pinned, uncentred:
+    # lambda 0.609 -> 0.789 over d = 0 -> 3 and the label-efficiency
+    # multiplier 2.36 -> 2.02, while the human-only arm's variance is
+    # bit-for-bit constant. Centred, both are exactly flat (lambda 0.5748,
+    # multiplier 2.3499 at every d) and land on the oracle (2.3553).
+    #
+    # This does NOT weaken the MNAR protection pooling was adopted for. That
+    # works because lambda DROPS under MNAR, discounting a rectifier whose
+    # covariance signal is untrustworthy, and centring leaves that intact:
+    # binary/mnar_strong 0.2205 -> 0.2256, binary/mnar_mild 0.5540 -> 0.5669.
+    # The two mechanisms do not overlap -- under MNAR the covariance signal is
+    # already crushed, so there is no between-group inflation to remove.
+    # Validated over binary+continuous x mcar/mnar_mild/mnar_strong x
+    # d in {0,0.5,1,2,3}, 2000 reps: worst coverage loss -0.0035, worst Type-I
+    # increase +0.0025, and bias IMPROVED in all but one cell (continuous/mcar
+    # +0.043 -> +0.011 SE at d=1). See the same treatment's rationale in
+    # cases/pvalues.py's _method_rho2, which already centres per group before
+    # pooling for the correlation, for the same reason.
+    #
+    # _pooled_k_group_lambda below had the identical defect; it was fixed the
+    # same way on 2026-08-22 after the Type-I/coverage validation this NOTE
+    # used to ask for -- see that function's own comment for the numbers.
+    def _c(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return x - x.mean() if x.size else x
+
+    Y_lab = np.concatenate([_c(Y_lab_a), _c(Y_lab_b)])
+    Y_hat_lab = np.concatenate([_c(Y_hat_lab_a), _c(Y_hat_lab_b)])
+    Y_hat_unlab = np.concatenate([_c(Y_hat_unlab_a), _c(Y_hat_unlab_b)])
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    denom = var_unlab + var_hat_lab
+    lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0) if denom > 1e-12 else 1.0
+
+    raw_var_lab = var_lab * n_lab
+    raw_var_hat_lab = var_hat_lab * n_lab
+    # See _walsh_theta_lambda_replicates' CALLER GUARD note for why
+    # raw_var_hat_lab itself needs an absolute floor check too.
+    if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
+        lam_replicates = None
+    else:
+        lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+    lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+    var_lam = (
+        float(np.var(lam_replicates, ddof=1))
+        if lam_replicates is not None and len(lam_replicates) > 1
+        else 0.0
+    )
+    return lam, var_lam
+
+
+def _pooled_k_group_lambda(
+    Y_lab_groups: list[np.ndarray], Y_hat_lab_groups: list[np.ndarray], Y_hat_unlab_groups: list[np.ndarray],
+) -> tuple[float, float]:
+    """Same idea as :func:`_pooled_two_group_lambda` (single lambda from
+    ALL groups' pooled labeled/unlabeled data, instead of each group
+    independently estimating its own), generalized from 2 to arbitrary k
+    groups -- kept as a separate function rather than widening
+    :func:`_pooled_two_group_lambda`'s signature, since that function has
+    exactly one existing caller (ttest's paired/independent construction)
+    already validated at k=2 and there's no need to disturb it.
+
+    Motivated by :func:`evalstats.tests._ppi_anova_independent_f_stat`'s
+    real-data Type-I inflation under ``power_tune=True`` (see
+    ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s real-data
+    ANOVA addendum): each group there independently estimated its own
+    lambda via :func:`_analytic_mean_point_se`, and since lambda is chosen
+    specifically to MINIMIZE that group's own reported variance using
+    that SAME finite labeled sample's noisy moments, the reported
+    variance is a systematically optimistic (too small) estimate of the
+    variance at the population-optimal lambda -- a textbook
+    "argmin-then-evaluate-at-the-argmin-with-the-same-noisy-inputs"
+    downward bias, distinct from lambda's own sampling-uncertainty (which
+    :func:`_lambda_var_inflation` already corrects for). Ground-truth
+    checked directly on real data: with k independent per-group lambdas,
+    ``mean(ss_between)/(k-1)`` exceeded ``mean(denom)`` by ~14% under the
+    null (should be ~1.0); pooling brought that ratio to ~0.98, matching
+    the classical (``power_tune=False``) construction's own ~0.97. The
+    fix works because pooling increases the EFFECTIVE sample size lambda
+    is estimated from (all groups' labeled data combined, not just one
+    group's), which shrinks the optimism gap -- unlike
+    :func:`_pooled_two_group_lambda`'s original MNAR motivation (an
+    asymmetric-distortion-cancellation argument that doesn't apply to
+    ANOVA's grand-mean-centered estimand -- see
+    results_why_ppi_shrink_1_over_0.md's Addendum 37 for why a k-group
+    pooled lambda was tried and rejected THERE, evaluated only against a
+    different bias mechanism under synthetic MNAR), this is a genuinely
+    different mechanism (an MCAR-relevant variance-optimism bias, not an
+    MNAR-relevant point-estimate bias) that pooling fixes for a different
+    reason: more data to estimate lambda from, full stop.
+
+    Validated via a broad ground-truth Monte Carlo sweep (18 real-data
+    MCAR null cells across 5 datasets, 7 synthetic null scenarios
+    including 2 MNAR, 3 synthetic + 6 real power scenarios): rejection
+    rate at or below the per-group construction on every single cell
+    tested (never worse), landing at or near nominal alpha on real data
+    cells that were 1.3-1.5x nominal before, with no power cost (power
+    unchanged or mildly IMPROVED on every power scenario tested).
+
+    Returns ``(lam, var_lam)`` -- same shape as
+    :func:`_pooled_two_group_lambda`, consumed the same way by
+    :func:`_analytic_mean_point_se_given_lambda` per group plus a joint
+    lambda-uncertainty term built from each group's own ``r_term``."""
+    # Centre each group before pooling, for the same reason
+    # _pooled_two_group_lambda does (see its own comment). Concatenating
+    # UNCENTERED puts the between-group spread into every pooled moment, and
+    # because that component is near-perfectly correlated between Y_lab and
+    # Y_hat_lab (both carry the same group means) it inflates cov_lab_hatlab
+    # proportionally MORE than denom -- so lam_raw = cov/denom drifts upward
+    # with the effect size, away from the variance-minimising value power
+    # tuning exists to find. Measured, k=3 n=300 n_lab=60 judge rho=0.80,
+    # 300 reps, mean lambda by true effect:
+    #
+    #     effect   0.00    0.15    0.35    0.60    1.00    2.00
+    #     uncentred  .5218   .5269   .5472   .5845   .6388   .7257
+    #     centred    .5213   .5213   .5213   .5213   .5213   .5213
+    #
+    # i.e. a 39% drift, removed exactly. Note the drift is nearly absent at
+    # effect=0, which is why this survived a null-only validation: the
+    # original ground-truth sweep for this function was Type-I/coverage under
+    # the null, where centring is very nearly a no-op.
+    #
+    # Re-validated before changing: Type-I unmoved (largest delta +0.0125 at
+    # 1.1 MC SE, 400 reps, k in {3,4,5}), and power higher with centring in
+    # 10 of 12 cells and lower in none -- though by little (+0.005 median),
+    # since where the drift is largest the test is already saturated.
+    #
+    # PROVENANCE FOR EXISTING RESULTS. Measured in the harness's own effect
+    # units (scenarios.synthetic, continuous, k=3), the drift this removes is:
+    #
+    #     frac    0.00    0.15    0.30    0.50    0.80    1.20
+    #     drift  -.0076  +.0007  +.0098  +.0218  +.0365  +.0480
+    #
+    # so every NULL-anchored sweep (all Type-I work, frac=0.0) and the
+    # label-efficiency / n-formula grids (frac <= 0.35) are unaffected within
+    # Monte-Carlo noise. PPI_FACTORIAL_EFFECT_FRACS ("moderate" 0.5, "large"
+    # 0.8) and PPI_POWER_EFFECT_FRACS (up to 1.2) DO reach the affected range,
+    # so anova_ind power numbers generated there before 2026-08-22 used a
+    # lambda 2-5% above the variance-minimising value. That is SUBOPTIMAL, not
+    # invalid: PPI is unbiased for any fixed lambda in [0,1] and power tuning
+    # only picks the variance-minimising one, so those results are mildly
+    # CONSERVATIVE on power and unchanged on Type-I/coverage. Results already
+    # published against them stand; re-running would move anova_ind power
+    # slightly UP. anova_ind is the only consumer -- anova_rep, friedman,
+    # kruskal and every two-group test are untouched.
+    #
+    # ALL THREE EVAL TYPES CHECKED (the table above is continuous):
+    #
+    #     frac        0.00     0.30     0.80     1.20
+    #     continuous -.0073   +.0103   +.0371   +.0487
+    #     likert     -.0088   +.0070   +.0360   +.0583
+    #     binary     -.0386   -.0124   +.0378   +.0729
+    #
+    # Two things this adds. Centring makes lambda effect-INVARIANT only for
+    # continuous (flat at 0.8212); likert still drifts 0.823 -> 0.807 across
+    # the effect range and binary 0.822 -> 0.779. For binary that is almost
+    # certainly CORRECT rather than residual defect: Var(Y) = p(1-p) genuinely
+    # depends on the base rate, so as the effect pushes group means toward a
+    # boundary the variance-minimising lambda really does move, and forcing it
+    # constant would be wrong.
+    #
+    # And binary's NULL-case difference is -0.0386, five times continuous's
+    # -0.0073, so the "null-anchored sweeps are unaffected" argument could not
+    # be inherited from the continuous measurement and was re-checked
+    # directly. Binary ANOVA Type-I is unmoved: largest change +0.0033 against
+    # an MC SE of 0.0089 over 12 cells (base rate 0.30-0.90, flip 0.05-0.15,
+    # k=3/5, n=200/400, n_lab=60/80), 9 of them identical. See
+    # simulations/investigate_pooled_k_group_lambda_{all_eval_types,binary_typeI}.py
+    def _c(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return x - x.mean() if x.size else x
+
+    Y_lab = np.concatenate([_c(g) for g in Y_lab_groups])
+    Y_hat_lab = np.concatenate([_c(g) for g in Y_hat_lab_groups])
+    Y_hat_unlab = np.concatenate([_c(g) for g in Y_hat_unlab_groups])
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    denom = var_unlab + var_hat_lab
+    lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0) if denom > 1e-12 else 1.0
+
+    raw_var_lab = var_lab * n_lab
+    raw_var_hat_lab = var_hat_lab * n_lab
+    # See _walsh_theta_lambda_replicates' CALLER GUARD note for why
+    # raw_var_hat_lab itself needs an absolute floor check too.
+    if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
+        lam_replicates = None
+    else:
+        lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+    lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+    var_lam = (
+        float(np.var(lam_replicates, ddof=1))
+        if lam_replicates is not None and len(lam_replicates) > 1
+        else 0.0
+    )
+    return lam, var_lam
+
+
+def _analytic_mean_point_se_given_lambda(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, lam: float,
+) -> tuple[float, float, float, float, float, float, int]:
+    """Same point-estimate/variance construction as
+    :func:`_analytic_mean_point_se`, but takes ``lam`` as GIVEN (already
+    estimated elsewhere -- e.g. pooled across two groups by
+    :func:`_pooled_two_group_lambda`) instead of estimating its own from
+    this group's data alone.
+
+    Deliberately does NOT add lambda's own estimation-uncertainty
+    inflation (:func:`_lambda_var_inflation`'s term): a caller sharing
+    one lambda across multiple groups needs to add that jointly, using
+    all the groups' rectifier terms together, not once per group -- see
+    :func:`_pooled_two_group_lambda`'s docstring.
+
+    Returns ``(estimate, var_estimate, f_unlab, f_lab, rectifier, r_term, df)``
+    -- ``r_term = f_unlab - f_hat_lab`` (the lambda-uncertainty caller
+    needs this per group to build the joint inflation term).
+    """
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+    if n_all == 0:
+        raise ValueError(
+            "PPI correction requires at least one unlabeled item, got n_all=0 "
+            "(every item in this comparison is human-labeled, leaving no "
+            "unlabeled residual for the LLM-only term). If every item is "
+            "labeled, use the human labels directly instead of PPI correction."
+        )
+
+    f_unlab = float(np.mean(Y_hat_unlab))
+    f_lab = float(np.mean(Y_lab))
+    f_hat_lab = float(np.mean(Y_hat_lab))
+    rectifier = f_lab - f_hat_lab
+    r_term = f_unlab - f_hat_lab
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    estimate = f_lab + lam * r_term
+    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    df = max(n_lab - 1, 1)
+
+    return estimate, var_estimate, f_unlab, f_lab, rectifier, r_term, df
+
+
 def _analytic_mean_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
-    alpha: float, power_tune: bool,
+    alpha: float, power_tune: bool, label_shift_robust: bool = False,
 ) -> "PPIResult":
     """Closed-form (delta-method) PPI correction for
     ``estimator_func=np.mean`` -- no bootstrap resampling at all. See
@@ -447,9 +1321,12 @@ def _analytic_mean_correct(
     ``_POWER_TUNE_SHRINKAGE_C``) -- that shrinkage exists specifically to
     compensate for the bootstrap's own small-sample weakness, which this
     path doesn't have.
+
+    ``label_shift_robust`` (default False) is passed straight through to
+    :func:`_analytic_mean_point_se` -- see its docstring.
     """
     estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
-        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune, label_shift_robust=label_shift_robust,
     )
 
     if se <= 0.0:
@@ -470,6 +1347,7 @@ def _analytic_mean_correct(
 def _analytic_logit_t_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool, lo: float = 0.0, hi: float = 1.0,
+    label_shift_robust: bool = False,
 ) -> "PPIResult":
     """Closed-form PPI correction for a [lo, hi]-bounded mean estimand, CI
     constructed on the logit scale -- the PPI analogue of
@@ -517,9 +1395,12 @@ def _analytic_logit_t_correct(
     ``method="logit_t"`` branch, which also returns the plain paired-t-test
     p-value regardless of the logit CI construction -- only the CI's shape
     differs, never the significance test itself.
+
+    ``label_shift_robust`` (default False) is passed straight through to
+    :func:`_analytic_mean_point_se` -- see its docstring.
     """
     estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
-        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune, label_shift_robust=label_shift_robust,
     )
 
     if se <= 0.0 or not np.isfinite(se):
@@ -613,7 +1494,7 @@ def resolve_arrays(
     group_col : str
         Column of group labels (factor / condition).
     alignment_result : AlignmentResult
-        From :func:`~evalstats.alignment.validate_alignment`.
+        From :func:`~evalstats.alignment.judge_alignment`.
         Its ``human_col`` attribute identifies the sparse human-label column.
 
     Returns
@@ -784,28 +1665,52 @@ def correct(
         measurably undercovers, since λ̂ ends up partly optimized against
         noise specific to that one draw ("double dipping"); the split
         removes that circularity at the cost of one extra bootstrap pass.
-        λ̂ is clipped to ``[0, 1]``, then shrunk back toward 1 by an
-        n_lab-dependent amount (see ``_POWER_TUNE_SHRINKAGE_C``) -- a
-        small n_lab makes the raw λ̂ estimate itself unreliable and exposes
-        a separate, pre-existing small-sample weakness of the percentile
-        bootstrap that this shrinkage compensates for; it is an empirical
-        patch, not part of the published PPI++ derivation. Un-shrunk λ̂=0
-        falls back to the classical labels-only estimate
-        (``human_estimate``) when the LLM adds no value; λ=1 reproduces
-        ``power_tune=False``'s estimate when the LLM is fully informative
-        or n_lab is small. Falls back to λ=1 (unchanged behavior) if the
-        bootstrap variance in the denominator is degenerate (≈0).
-        ``PPIResult.lam`` reports the (shrunk) value actually used.
+        λ̂ is clipped to ``[0, 1]``, then shrunk by an n_lab-dependent
+        amount (see ``_POWER_TUNE_SHRINKAGE_C``) toward an ADAPTIVE target
+        estimated from the same bootstrap draw, rather than a fixed target:
+        a small n_lab makes the raw λ̂ estimate itself unreliable, but
+        there's no reason an unreliable estimate should be presumed close
+        to 1 specifically -- a fixed shrink-to-1 target costs real power
+        against a genuinely uninformative judge (confirmed via simulation),
+        without a matching Type-I benefit in that regime. The target is
+        ``1 - P(λ̂ < 0.5)``, estimated cheaply from the same replicates
+        already drawn for λ̂ itself: confidently-informative data pulls the
+        target toward 1 (the original fixed behavior); confidently-
+        uninformative data pulls it toward 0 (recovering the classical
+        labels-only estimate, ``human_estimate``); ambiguous data lands
+        near 0.5. This is an empirical patch, not part of the published
+        PPI++ derivation -- see ``simulations/out/
+        results_why_ppi_shrink_1_over_0.md`` for the investigation behind
+        it. Falls back to a target of 1 (the original behavior) when
+        ``Y_lab`` itself is near-degenerate (its own bootstrap variance
+        ≈0), since a near-constant labeled sample can't reveal covariance
+        no matter how it's resampled -- a "confidently near 0" reading
+        there is a resampling artifact, not evidence. Also falls back to
+        λ=1 (unchanged) if the bootstrap variance in λ̂'s own denominator is
+        degenerate (≈0). ``PPIResult.lam`` reports the (shrunk) value
+        actually used.
 
-        ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``tango_score``/
-        ``lmm*`` and the MNAR-experimental rectifiers do not go through
-        this function (bespoke bootstrap/closed-form code of their own)
-        and are unaffected by ``power_tune``. For kruskal/anova/friedman
-        this is deliberate: power-tuning does not transfer to their
-        variance-like, quadratic-form estimand, whose λ=0 endpoint is the
-        raw, judge-biased estimate rather than a safe classical fallback
-        the way a scalar mean's is -- see ``simulations/harness/README.md``'s
-        "PPI++ power-tuning" section.
+        The reported CI/SE also account for λ̂ being estimated (not fixed):
+        see :func:`_lambda_var_inflation` -- treating a data-driven λ̂ as a
+        known constant is a plug-in/post-selection variance gap, worst at
+        small n_lab, which this closes without reintroducing the poor-judge
+        power cost a fixed shrink-to-1 target has (see ``simulations/out/
+        results_why_ppi_shrink_1_over_0.md`` Addenda 17-19).
+
+        ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``lmm*`` and the
+        MNAR-experimental rectifiers do not go through this function
+        (bespoke bootstrap/closed-form code of their own) and are
+        unaffected by ``power_tune``. For kruskal/anova/friedman this is
+        deliberate: power-tuning does not transfer to their variance-like,
+        quadratic-form estimand, whose λ=0 endpoint is the raw,
+        judge-biased estimate rather than a safe classical fallback the
+        way a scalar mean's is -- see ``simulations/harness/README.md``'s
+        "PPI++ power-tuning" section. ``mj_floor`` does NOT belong on
+        this list (a previous version of this docstring incorrectly
+        included it): ``evalstats.tests._ppi_paired_mj_floor`` delegates its
+        point estimate, variance, AND λ directly to
+        :func:`_analytic_mean_point_se`, so it already gets the same
+        adaptive-target shrinkage as every other caller of that function.
     backend : {"auto", "bootstrap", "analytic"}
         How to build the CI/p-value. "bootstrap" is the percentile-
         resampling method described above, unconditionally. "analytic" is
@@ -1022,16 +1927,27 @@ def correct(
     fast_est = _fast_batch.get(id(estimator_func)) if X_unlab is None else None
     fast_rect = _fast_batch.get(id(_rect_fn)) if X_lab is None else None
 
-    # Smoothed-bootstrap jitter (see _tie_jitter_scale) -- only when the
-    # estimator/rectifier is np.median specifically (mean's bootstrap
-    # distribution doesn't degenerate under ties; jittering it would just
-    # add pointless noise). 0.0 disables jitter (np.random.normal(0, 0, ...)
-    # is exactly a no-op, so this is safe to add unconditionally below).
-    _jitter_unlab = _tie_jitter_scale(Y_hat_unlab) if fast_est is not None and estimator_func is np.median else 0.0
-    _jitter_labpair = (
-        _tie_jitter_scale(np.concatenate([Y_lab, Y_hat_lab]))
-        if fast_rect is not None and _rect_fn is np.median else 0.0
-    )
+    # Smoothed-bootstrap jitter (see _tie_jitter_scale). Applied
+    # unconditionally, not just for np.median: _tie_jitter_scale is
+    # self-scaling from the DATA alone (min gap between distinct values /
+    # 20), so it's already a near-zero no-op on high-resolution continuous
+    # data and only becomes meaningfully sized on coarse/discrete data
+    # (e.g. binary {0,1} scores) -- no need to special-case which
+    # estimator_func is in use. Originally gated to np.median only
+    # (bootstrapping a median under ties is a classically degenerate
+    # combination -- most resamples land on the identical repeated value),
+    # but a mean-type estimator on a near-boundary binary proportion has an
+    # analogous (if less severe) failure mode: a percentile bootstrap of a
+    # discrete, boundary-adjacent proportion is skewed/undercovers. Confirmed
+    # via simulation this helps ttest's covariate-based construction
+    # (_ppi_two_sample, which never reaches the analytic backend and so
+    # never got jitter before this) on binary scenarios where differential
+    # judge bias pushes one group's score distribution toward 0 or 1 -- see
+    # simulations/out/results_why_ppi_shrink_1_over_0.md's ttest-binary
+    # addendum. 0.0 disables jitter (np.random.normal(0, 0, ...) is exactly
+    # a no-op, so this is safe to add unconditionally below).
+    _jitter_unlab = _tie_jitter_scale(Y_hat_unlab)
+    _jitter_labpair = _tie_jitter_scale(np.concatenate([Y_lab, Y_hat_lab]))
 
     def _draw_replicates() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         b_unlab_arr = np.empty(n_boot)
@@ -1094,34 +2010,70 @@ def correct(
     # pass (still cheap via the fast-batch path above). power_tune=False
     # needs only one draw.
     #
-    # lambda is then shrunk back toward 1 by an n_lab-dependent amount
-    # (lam_reg = 1 - (1-lam)*n_lab/(n_lab+_POWER_TUNE_SHRINKAGE_C)) before
-    # being applied. Without this, power_tune=True's Type-I error runs
-    # measurably worse than power_tune=False's baseline at small n_lab: the
-    # percentile bootstrap CI of a small sample is itself mildly
-    # anti-conservative, and vanilla PPI's fixed λ=1 masks that by always
-    # blending in the large, well-behaved unlabeled-sample bootstrap.
-    # Power-tuning, by correctly identifying an uninformative judge and
-    # shrinking λ toward 0, leans more on that same small-sample
-    # bootstrap -- which unmasks its pre-existing weakness rather than
-    # introducing a new one. Shrinking lambda itself back toward 1 as
-    # n_lab shrinks defers to vanilla PPI's already-tolerable baseline in
-    # that regime. This is not part of the published PPI++ derivation --
-    # it's an empirical patch for a bootstrap-construction limitation this
-    # codebase already had, layered on top.
+    # lambda is then shrunk by an n_lab-dependent amount toward an ADAPTIVE
+    # target (see _POWER_TUNE_SHRINKAGE_C) rather than a fixed target of 1.
+    # Some shrinkage is needed regardless of target: without it,
+    # power_tune=True's Type-I error runs measurably worse than
+    # power_tune=False's baseline at small n_lab, since the percentile
+    # bootstrap CI of a small sample is itself mildly anti-conservative,
+    # and vanilla PPI's fixed λ=1 masks that by always blending in the
+    # large, well-behaved unlabeled-sample bootstrap -- power-tuning, by
+    # correctly identifying an uninformative judge and shrinking λ toward
+    # 0, leans more on that same small-sample bootstrap, unmasking its
+    # pre-existing weakness. But shrinking specifically TOWARD 1
+    # conflates "λ̂ is imprecise because n_lab is small" with "the true λ
+    # is probably close to 1" -- there's no reason the second should
+    # follow from the first, and a fixed shrink-to-1 target costs real
+    # power against a genuinely uninformative judge (confirmed via
+    # simulation) with no matching Type-I benefit in that regime. This is
+    # not part of the published PPI++ derivation -- it's an empirical
+    # patch for a bootstrap-construction limitation this codebase already
+    # had, layered on top; see simulations/out/
+    # results_why_ppi_shrink_1_over_0.md for the investigation behind the
+    # adaptive-target version below.
     lam: Optional[float] = None
     if power_tune:
         b1_unlab, b1_lab, b1_hat_lab = _draw_replicates()
         denom = float(np.var(b1_unlab - b1_hat_lab, ddof=1))
         if denom > 1e-12:
-            lam = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
-            lam = min(max(lam, 0.0), 1.0)
+            lam_raw = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
+            lam_raw = min(max(lam_raw, 0.0), 1.0)
         else:
-            lam = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
+
+        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _bootstrap_batch_lambda_replicates for
+        # how the SAME b1 draw already computed above gets turned into
+        # replicate lambda estimates (no extra bootstrap draws). Falls
+        # back to target=1 when Y_lab itself is near-degenerate (a
+        # near-constant labeled sample can never reveal covariance no
+        # matter how it's resampled, so a "confidently near 0" signal
+        # there is an artifact, not evidence) -- the analytic backends'
+        # degenerate guards mirror this same logic.
+        var_lab = float(np.var(Y_lab, ddof=1)) if n_lab > 1 else 0.0
+        var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) if n_lab > 1 else 0.0
+        # var_hat_lab < 1e-12 is its own trigger too -- see
+        # _walsh_theta_lambda_replicates' CALLER GUARD note for why an
+        # exactly-degenerate Y_hat_lab needs the same fallback as an
+        # exactly-degenerate Y_lab (either side being ~0 makes the raw
+        # covariance ratio trivially ~0, not genuinely informative).
+        if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _bootstrap_batch_lambda_replicates(b1_lab, b1_hat_lab, b1_unlab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
         b2_unlab, b2_lab, b2_hat_lab = _draw_replicates()
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)
+        # See _lambda_var_inflation's docstring: `lam` is a single point
+        # value (estimated once from b1) applied uniformly across every b2
+        # replicate, so `boots`' spread reflects zero uncertainty from
+        # lambda's own estimation -- convolve it back in as independent
+        # noise, rather than re-deriving lambda per b2 replicate (a full
+        # nested bootstrap).
+        extra_var = _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+        if extra_var > 0.0:
+            boots = boots + rng.normal(0.0, np.sqrt(extra_var), size=boots.shape)
     else:
         b_unlab_arr, b_lab_arr, b_hat_lab_arr = _draw_replicates()
         estimate = f_unlab + (f_lab - f_hat_lab)

@@ -4,6 +4,11 @@ Routing rules under test
 ------------------------
 * Binary (0/1) data, single-run     → resolved_ci_method == "wilson"
 * Binary (0/1) data, multi-run      → resolved_ci_method == "wilson" ("Wilson flat")
+* Binary (0/1) data, but an explicit
+  score_range wider than [0,1]      → resolved_ci_method == "logit_t", with a
+                                       UserWarning -- the declaration beats the
+                                       inference, since a sample of only 0s and
+                                       1s doesn't prove the metric is Bernoulli
 * Numeric data already in [0,1]     → resolved_ci_method == "logit_t"
                                        (exact bounds, but still warns since
                                        it's an inference, not a declaration)
@@ -264,12 +269,17 @@ class TestScoreRange:
         return es.analyze(result, n_bootstrap=n_bootstrap, rng=np.random.default_rng(0), **kwargs)
 
     def test_likert_scale_with_score_range_no_warning(self):
+        # Integer 1-5 data triggers evalstats' quantization auto-detection
+        # (detect_quantization_step) when eval_type isn't given -- that's
+        # intentional (see config.AUTO_ANALYZE_METHOD_TABLE's "likert" row),
+        # and it emits a UserWarning explaining the switch. Passing
+        # eval_type="likert" explicitly is the documented way to silence it.
         rng = np.random.default_rng(40)
         scores = rng.integers(1, 6, size=(2, 40)).astype(float)  # 1-5 Likert
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            bundle = self._bundle(scores, score_range=(1, 5))
-        assert bundle.resolved_ci_method == "logit_t"
+            bundle = self._bundle(scores, score_range=(1, 5), eval_type="likert")
+        assert bundle.resolved_ci_method == "logit_t"  # robustness/marginal CI, unaffected by likert routing
         assert bundle.resolved_score_range == (1.0, 5.0)
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
@@ -286,11 +296,25 @@ class TestScoreRange:
         _ci_brackets_mean(bundle)
 
     def test_pairwise_ci_uses_logit_t_with_score_range(self):
+        # Genuinely continuous (non-quantized) data within score_range --
+        # a 1-5 integer draw here would trigger the likert quantization
+        # auto-detection and route pairwise to NIG instead (see
+        # test_pairwise_ci_uses_nig_for_auto_detected_likert below).
         rng = np.random.default_rng(42)
-        scores = rng.integers(1, 6, size=(2, 40)).astype(float)
+        scores = rng.uniform(1, 5, size=(2, 40))
         bundle = self._bundle(scores, score_range=(1, 5))
         pair = bundle.pairwise.get("T0", "T1")
         assert "logit-t" in pair.test_method.lower()
+        assert pair.ci_low <= pair.point_diff <= pair.ci_high
+
+    def test_pairwise_ci_uses_nig_for_auto_detected_likert(self):
+        rng = np.random.default_rng(42)
+        scores = rng.integers(1, 6, size=(2, 40)).astype(float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            bundle = self._bundle(scores, score_range=(1, 5))
+        pair = bundle.pairwise.get("T0", "T1")
+        assert "nig" in pair.test_method.lower()
         assert pair.ci_low <= pair.point_diff <= pair.ci_high
 
     def test_score_range_violated_by_data_raises(self):
@@ -305,13 +329,47 @@ class TestScoreRange:
         with pytest.raises(ValueError, match="lo < hi"):
             self._bundle(scores, score_range=(5, 1))
 
-    def test_binary_data_ignores_score_range(self):
-        # score_range is irrelevant for binary data -- it's routed to
-        # Wilson/Tango/Bayesian-paired before score_range is ever consulted.
+    def test_explicit_wider_score_range_overrides_binary_detection(self):
+        # A sample containing only 0s and 1s does not establish that the
+        # metric is Bernoulli when the caller has declared it ranges wider
+        # (here a 0-100 grade that happened to score only 0 or 1). The
+        # explicit declaration wins over the inference from observed values,
+        # and says so. See resampling.binary_routing_applies.
+        rng = np.random.default_rng(45)
+        scores = rng.choice([0, 1], size=(2, 40)).astype(float)
+        with pytest.warns(UserWarning, match="would normally auto-detect as binary"):
+            bundle = self._bundle(scores, score_range=(0, 100))
+        assert bundle.resolved_ci_method == "logit_t"
+        assert bundle.resolved_score_range == (0.0, 100.0)
+        _ci_valid(bundle)
+        _ci_brackets_mean(bundle)
+
+    def test_binary_data_without_score_range_still_routes_to_wilson(self):
+        # The common case is untouched: say nothing, and auto-detection stays
+        # fully in charge.
         rng = np.random.default_rng(45)
         scores = rng.choice([0, 1], size=(2, 40)).astype(float)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            bundle = self._bundle(scores, score_range=(1, 5))
+            bundle = self._bundle(scores)
         assert bundle.resolved_ci_method == "wilson"
         assert bundle.resolved_score_range is None
+
+    def test_binary_data_with_explicit_01_range_agrees_and_stays_binary(self):
+        # score_range=(0, 1) agrees with the detection, so there is nothing to
+        # override and nothing to warn about.
+        rng = np.random.default_rng(45)
+        scores = rng.choice([0, 1], size=(2, 40)).astype(float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            bundle = self._bundle(scores, score_range=(0, 1))
+        assert bundle.resolved_ci_method == "wilson"
+
+    def test_binary_data_outside_declared_range_raises(self):
+        # 0 is not a valid response on a 1-5 scale. This used to be swallowed
+        # silently by the binary path; now the contradiction surfaces.
+        rng = np.random.default_rng(45)
+        scores = rng.choice([0, 1], size=(2, 40)).astype(float)
+        with pytest.warns(UserWarning, match="would normally auto-detect as binary"):
+            with pytest.raises(ValueError, match="falls outside it"):
+                self._bundle(scores, score_range=(1, 5))

@@ -12,7 +12,9 @@ from typing import Literal, Optional
 _alpha: float = 0.05
 
 # Alpha levels used to build the gradient CI bands in terminal plots.
-# Ordered narrowest→widest: 90%, 95%, 99%, 99.9% CI.
+# Ordered widest→narrowest by CI: alpha 0.32, 0.10, 0.05, 0.01 give the
+# 68%, 90%, 95%, and 99% intervals. The terminal legend prints them as
+# [99%/95%/90%/68%]; keep this list and that legend in step.
 GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
 
@@ -49,7 +51,7 @@ def supports_ansi_color() -> bool:
 # the input data shape (see BenchmarkResult.is_seeded in core/types.py)
 # rather than a method-selection choice.
 
-DataKind = Literal["binary", "bounded_01", "unbounded"]
+DataKind = Literal["binary", "bounded_01", "likert", "unbounded"]
 
 # --- Bootstrap resampling variant (resolve_resampling_method) --------------
 # Plain (non-binary) bootstrap CIs: sample_size >= this -> "bootstrap"
@@ -95,11 +97,12 @@ class AutoAnalyzeRule:
 # on marginal_method, so plain "wilson" / "logit_t" applied to that
 # already-collapsed array *is* the flat/run-means variant. Same story for
 # "Logit-t on run mean differences" in all_pairwise()'s "logit_t" path. And
-# "ER-Tango" is not a separate method name either -- pairwise_method="tango"
-# internally detects R >= 3 seeded runs and switches to the effective-N
-# multirun variant (tango_paired_ci_multirun_effective), which *is* ER-Tango.
-# (tango_paired_ci_multirun_moments is a related but distinct variant --
-# still available in core/resampling.py, but not what "tango" routes to.)
+# the binary pairwise multirun variant is not a separate user-facing method
+# name -- pairwise_method="bonett_price" internally detects R >= 3 seeded runs
+# and switches to the clustered multirun variant
+# (bonett_price_paired_ci_multirun_cluster). mj_floor and its own multirun
+# variants remain available in core/resampling.py and callable by name, but
+# are no longer what "auto" routes to for binary data.
 #
 # "bounded_01" (the data_kind label) no longer means the data is literally
 # valued in [0, 1] -- it means router.py._analyze_single could establish a
@@ -119,29 +122,24 @@ class AutoAnalyzeRule:
 # recurring source of confusion between the package and the harness.
 AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
-        data_kind="binary", max_n=50,
-        pairwise_method="bayes_binary",
-        robustness_method_single_run="wilson",
-        robustness_method_seeded="wilson",
-        reason=(
-            "Real-data simulations show Tango under-covers in "
-            "dominated/jointly-sparse pairs at small N, regardless of run "
-            "count, so small-N binary data uses the Bayesian paired model "
-            "(citet{dontusetheclt}) instead. Cutoff N=50, per "
-            "fig:ci-decision-tree. Marginal CIs use plain Wilson regardless "
-            "of seeding ('Wilson flat' in the figure) -- NIG-nested was "
-            "tried and dropped in favor of this simpler, better-calibrated "
-            "choice."
-        ),
-    ),
-    AutoAnalyzeRule(
         data_kind="binary", max_n=None,
-        pairwise_method="tango",
+        pairwise_method="bonett_price",
         robustness_method_single_run="wilson",
         robustness_method_seeded="wilson",
         reason=(
-            "N >= 50 binary data: Tango pairwise (ER-Tango via the "
-            "effective-N multirun variant when seeded), Wilson-flat marginal."
+            "Binary data at every N: Bonett & Price (2012) adjusted-Wald "
+            "pairwise, Wilson-flat marginal. This is a SINGLE row where there "
+            "used to be two (Bayesian paired below N=50, mj_floor above) -- "
+            "bonett_price is best-calibrated across the whole range, so the "
+            "decision tree loses the split rather than just swapping a name. "
+            "Its Laplace adjustment (two pseudo-items) keeps the interval "
+            "well-behaved in the dominated/jointly-sparse pairs where the "
+            "score-interval form under-covers, which is what motivated the "
+            "old small-N branch in the first place. Seeded (R >= 3) data "
+            "dispatches to the clustered multirun variant automatically -- "
+            "see core/paired.py's bonett_price branch. Marginal CIs use plain "
+            "Wilson regardless of seeding ('Wilson flat' in "
+            "fig:ci-decision-tree)."
         ),
     ),
     AutoAnalyzeRule(
@@ -150,14 +148,82 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         robustness_method_single_run="logit_t",
         robustness_method_seeded="logit_t",
         reason=(
-            "Numeric data with a reliable [lo, hi] range (e.g. normalised "
-            "accuracy, ROUGE, or any scale declared via an explicit "
-            "score_range -- a Likert scale, a percentage grade): Logit-t "
-            "pairwise and marginal CIs, per fig:ci-decision-tree. The range "
-            "is either the caller's explicit score_range or an exact [0, 1] "
-            "match -- see resolve_score_bounds() in core/resampling.py. "
-            "Supersedes the earlier t_interval (pairwise) / nig, nig_nested "
-            "(marginal) defaults for data in this range."
+            "Numeric data with a reliable [lo, hi] range and no detected "
+            "quantization grid (e.g. normalised accuracy, ROUGE, or any "
+            "genuinely continuous metric declared via an explicit "
+            "score_range): Logit-t pairwise and marginal CIs, per "
+            "fig:ci-decision-tree. The range is either the caller's "
+            "explicit score_range or an exact [0, 1] match -- see "
+            "resolve_score_bounds() in core/resampling.py. Supersedes the "
+            "earlier t_interval (pairwise) / nig, nig_nested (marginal) "
+            "defaults for data in this range -- except discrete/ordinal "
+            "data (Likert scales, integer percentage grades), which is now "
+            "routed to the separate 'likert' row below instead."
+        ),
+    ),
+    AutoAnalyzeRule(
+        data_kind="likert", max_n=None,
+        pairwise_method="nig",
+        robustness_method_single_run="logit_t",
+        robustness_method_seeded="logit_t",
+        reason=(
+            "Discrete/ordinal bounded data (a Likert scale, an integer "
+            "percentage grade, or anything else with a real quantization "
+            "grid within its known [lo, hi] range) -- detected either from "
+            "an explicit eval_type='likert', or auto-detected via "
+            "detect_quantization_step() (core/resampling.py) when no "
+            "eval_type is given, with a UserWarning explaining the switch. "
+            "Uses NIG rather than logit-t for the PAIRWISE case -- both "
+            "single-run AND seeded/multi-run (unlike every other row here, "
+            "this one does not vary pairwise_method by seeded=): a paired "
+            "diff of two highly correlated Likert arms can lose real "
+            "variance to rounding cancellation (most items round "
+            "identically in both arms, only boundary-adjacent items "
+            "differ), which at small N can leave the *sample's* diffs "
+            "literally constant even though the true population diff "
+            "variance is nonzero -- collapsing a variance-based CI like "
+            "logit-t's (measured: family-wise coverage down to 14.5% at "
+            "n=10, k=10 comparisons, nominal 95%; reproduced again in a "
+            "full compare_e2e overnight sweep after NIG had been scoped "
+            "down to single-run-only -- fam.cov 10-26% at n=15, k=10, "
+            "confirming the k>=3 simultaneous-CI router's own logit-t "
+            "fallback carries the exact same failure mode regardless of "
+            "run count, since NIG's paired-diff computation is identical "
+            "for single- and multi-run data -- see the simulation harness's "
+            "simulations/harness/cases/ci_paired.py:_run_nested_pairwise_cell: "
+            "both reduce to the same cell-mean diffs before any CI is "
+            "built, R=5 just averages them first). "
+            "NIG's shrinkage prior protects against this without needing "
+            "dithering/reconstruction. This was in fact the original "
+            "default here (superseded by logit_t in 85df093, 'Refining the "
+            "sims for simultaneous cis and pvalue FWER correction') -- "
+            "that decision predates a fix to a real prior-scale bug "
+            "(nig_ci_1d's default b0 is calibrated for a single-sample "
+            "rescale, silently 4x too wide when reused unchanged on a "
+            "paired diff's rescale span, which is twice as wide -- see "
+            "core.paired._NIG_PAIRED_DIFF_B0), so the historical comparison "
+            "that dropped NIG likely made it look needlessly conservative "
+            "compared to logit-t. Validated post-fix, single-run "
+            "(reps=300, n=10-500, icc=0.01-0.95): NIG beats logit-t on "
+            "likert score at every N up to 500 (17% better at n=10, "
+            "converging to a tie by n=500); nested/multi-run (R=5, "
+            "reps=300): coverage nearly ties logit-t (both well-calibrated "
+            "by R=5, since averaging over runs smooths out the same "
+            "rounding-cancellation quantization that hurts logit-t at "
+            "single-run), but NIG still wins meaningfully on width/score "
+            "(~5-8% better interval score); the k>=3 simultaneous/family-"
+            "wise construction (core.paired._simultaneous_cis_router) now "
+            "also widens NIG instead of logit-t for likert data -- see "
+            "that function's docstring for the same fix.\n\n"
+            "Still NOT extended to marginal/robustness CIs (the "
+            "'nig'/'nig_nested' single-sample case in core/variance.py's "
+            "robustness_metrics()) -- never directly tested; a check of a "
+            "*different*, harness-only reimplementation "
+            "(simulations/harness/cases/ci_single.py) isn't a substitute "
+            "for testing this actual production code path. logit-t remains "
+            "the default there, and for genuinely continuous 'bounded_01' "
+            "data everywhere, where NIG's extra conservatism buys no "
+            "corresponding robustness in the first place."
         ),
     ),
     AutoAnalyzeRule(
@@ -207,7 +273,8 @@ def resolve_auto_analyze_methods(
         if rule.max_n is not None and n >= rule.max_n:
             continue
         robustness = rule.robustness_method_seeded if seeded else rule.robustness_method_single_run
-        return rule.pairwise_method, robustness
+        pairwise = rule.pairwise_method
+        return pairwise, robustness
     raise AssertionError(
         f"no AUTO_ANALYZE_METHOD_TABLE rule matched data_kind={data_kind!r}, n={n}"
     )
@@ -236,12 +303,22 @@ class PPIAutoMethodRule:
 PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
     PPIAutoMethodRule(
         data_kind="binary",
-        pairwise_method="tango",
+        pairwise_method="bonett_price",
         robustness_method="wilson",
         reason=(
-            "Binary data: Tango (pairwise) and Wilson (marginal) both have "
-            "closed-form PPI-corrected forms via an effective-n substitution "
-            "(see evalstats.tests._ppi_paired_tango / _ppi_single_wilson)."
+            "Binary data: bonett_price (pairwise) and Wilson (marginal) both "
+            "have closed-form PPI-corrected forms via an effective-n "
+            "substitution (see evalstats.tests._ppi_paired_bonett_price / "
+            "_ppi_single_wilson). Bonett-Price's Laplace adjustment keeps the "
+            "interval well-behaved when the labeled subset carries little "
+            "discordance information, where the score-interval form collapses "
+            "toward zero width. "
+            "Wilson matches the non-aligned default's own marginal choice "
+            "(AUTO_ANALYZE_METHOD_TABLE's marginal is 'wilson' at every N). "
+            "Pairwise is bonett_price even below the non-aligned default's "
+            "N<50 cutoff for bayes_binary -- a forced deviation, not a choice: "
+            "bayes_binary has no PPI-corrected form, so bonett_price is used "
+            "at every N under PPI alignment rather than raising below N=50."
         ),
     ),
     PPIAutoMethodRule(
@@ -256,6 +333,18 @@ PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
             "data_kind (see AUTO_ANALYZE_METHOD_TABLE). RESOLVED 2026-08-05: this "
             "row previously routed to bootstrap_t as a TEMPORARY stand-in, since no "
             "PPI-corrected logit_t existed -- that gap is now closed."
+        ),
+    ),
+    PPIAutoMethodRule(
+        data_kind="likert",
+        pairwise_method="ppi_logit_t",
+        robustness_method="ppi_logit_t",
+        reason=(
+            "Discrete/ordinal bounded data: there is no PPI-corrected NIG "
+            "implementation (NIG's win over logit-t for likert is specific "
+            "to the non-aligned/no-labels path -- see AUTO_ANALYZE_METHOD_"
+            "TABLE's 'likert' row), so this falls back to the same "
+            "ppi_logit_t used for 'bounded_01' rather than raising."
         ),
     ),
     PPIAutoMethodRule(
@@ -327,32 +416,45 @@ class AutoSimultaneousCIRule:
 
 AUTO_SIMULTANEOUS_CI_METHOD_TABLE: tuple[AutoSimultaneousCIRule, ...] = (
     AutoSimultaneousCIRule(
-        data_kind="binary", max_n=50,
-        method="sidak",
-        reason=(
-            "Binary data, N < 50: Sidak's closed-form, independence-based "
-            "adjustment stays well-calibrated and avoids the joint "
-            "bootstrap's small-N instability."
-        ),
-    ),
-    AutoSimultaneousCIRule(
         data_kind="binary", max_n=None,
-        method="boot",
-        reason=(
-            "Binary data, N >= 50: joint bootstrap with an effective alpha "
-            "(_joint_bootstrap_scaled_simultaneous_cis) accounts for "
-            "correlation between comparisons that Sidak cannot."
-        ),
-    ),
-    AutoSimultaneousCIRule(
-        data_kind="numeric", max_n=30,
         method="sidak",
-        reason="Numeric data, N < 30: Sidak.",
+        reason=(
+            "Binary data, every N: Sidak. See the numeric rule below -- the "
+            "reasoning is not data-kind specific, and binary is where the "
+            "joint bootstrap failed hardest (worst-case family coverage 0.50 "
+            "at n=15 and 0.74 at n=30 on the expanded scenario suite, against "
+            "Sidak's 0.94)."
+        ),
     ),
     AutoSimultaneousCIRule(
         data_kind="numeric", max_n=None,
-        method="boot",
-        reason="Numeric data, N >= 30: joint bootstrap with effective alpha.",
+        method="sidak",
+        reason=(
+            "Numeric data, every N: Sidak, and it is now the only rule -- the "
+            "small-N/large-N split this table used to encode is gone.\n\n"
+            "Sidak was the only construction whose WORST-CASE family coverage "
+            "held across the expanded scenario suite (min 0.913-0.943 for "
+            "every eval type and N). The joint bootstrap ('boot') is better "
+            "centred on average and 3-5%% narrower, but its worst case "
+            "collapses: 0.50 on sparse/lopsided binary at n=15, and it "
+            "under-covers Likert at every N (0.943 pooled, degrading with k) "
+            "because its alpha_eff step converts a bootstrap critical value "
+            "through the NORMAL cdf while the Likert pairwise formula (NIG) "
+            "is a t interval at df=2*a_n.\n\n"
+            "The width Sidak gives up is small and bounded. Tukey's "
+            "studentized range is the optimal equal-width procedure for "
+            "all-pairwise comparisons, and it beats Sidak by only 1.8-3.0%% "
+            "-- a bound that holds here because the shared-arm contrast "
+            "correlation really is 0.5 (measured 0.498-0.500 across the real "
+            "eval corpora), which is the structure that bound assumes. Tukey "
+            "itself needs normality/homoscedasticity (and sphericity in the "
+            "repeated-measures form that applies to paired evals), which "
+            "binary and Likert data violate. So Sidak sits within ~3%% of the "
+            "achievable optimum while making no distributional assumption at "
+            "all.\n\n"
+            "'boot'/'boot_cal'/'max_t'/'bonferroni' all remain reachable via "
+            "an explicit prefer= argument for anyone who wants them."
+        ),
     ),
 )
 
@@ -437,6 +539,121 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
             continue
         return rule.method
     raise AssertionError(f"no AUTO_PVALUE_CORRECTION_METHOD_TABLE rule matched n={n}")
+
+
+# ---------------------------------------------------------------------------
+# Between-subjects (unpaired) design routing -- compare(design="unpaired")
+# ---------------------------------------------------------------------------
+# Separate from AUTO_ANALYZE_METHOD_TABLE above (which is paired-only): that
+# table's data_kind taxonomy ("binary"/"bounded_01"/"likert"/"unbounded") is
+# also different from the one used here ("binary"/"continuous"/"likert"/
+# "grade", matching evalstats.loader._detect_score_type -- kept local rather
+# than imported to avoid coupling this low-level module to the loader, same
+# reasoning as DataKind above being declared locally rather than imported).
+#
+# Deliberately just two rows, decided after extensive discussion, not derived
+# mechanically from AUTO_ANALYZE_METHOD_TABLE's finer-grained routing:
+#
+#   binary -> anova_oneway (omnibus) + ttest (pairwise, Welch's). The
+#   textbook-correct test for comparing proportions is chi-square/Fisher's
+#   exact, but neither has PPI correction machinery in this codebase, and
+#   deriving one would be new, unvalidated statistical work. Treating a 0/1
+#   outcome as a numeric mean and reusing the already-validated ttest/
+#   anova_oneway PPI paths (the "linear probability model" approach) gives
+#   Δp (proportion difference) with a CI -- the effect size a reader expects
+#   for a binary outcome -- using entirely existing, validated machinery.
+#   Known, accepted limitation: t-intervals on binary/bounded data can
+#   produce out-of-[0,1]/[-1,1] CIs at extreme proportions or small N (why
+#   the *paired* path uses mj_floor instead of a generic t-interval for binary
+#   data -- there is no between-subjects Tango equivalent today). A
+#   deliberate patch, not a clean solution.
+#
+#   continuous / likert / grade -> kruskalwallis (omnibus + θ_ab pairwise
+#   post-hoc) + mannwhitney (the k=2 special case -- Kruskal-Wallis reduces
+#   to Mann-Whitney at k=2). Reports a stochastic-dominance probability
+#   θ=P(a>b), not a mean difference -- less immediately interpretable for
+#   continuous data than Δmean would be, but this is the only validated
+#   multi-group (k>=3) pairwise mechanism in the codebase for any score
+#   type; a Tukey-HSD-style joint mean-difference post-hoc for continuous
+#   data does not exist and would itself be new, unvalidated work.
+#   "grade" is treated as "continuous" here (closest existing behavior) --
+#   flagged as an assumption needing real-data validation, not a settled
+#   choice (see PLAN §5).
+UnpairedScoreType = Literal["binary", "continuous", "likert", "grade"]
+UnpairedFamily = Literal["binary_proportion", "rank_based"]
+
+
+@dataclass(frozen=True)
+class AutoUnpairedRule:
+    """One row of the ``compare(design="unpaired")`` routing table."""
+    score_type: UnpairedScoreType
+    family: UnpairedFamily
+    omnibus_method: str    # "anova_oneway" or "kruskalwallis"
+    pairwise_method: str   # "ttest" or "mannwhitney"
+    reason: str
+
+
+AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
+    AutoUnpairedRule(
+        score_type="binary", family="binary_proportion",
+        omnibus_method="anova_oneway", pairwise_method="ttest",
+        reason=(
+            "No PPI-corrected chi-square/Fisher's-exact exists in this "
+            "codebase; treating the 0/1 outcome as a numeric mean and "
+            "reusing the validated anova_oneway/ttest PPI paths reports "
+            "the proportion difference a reader expects for a binary "
+            "outcome, using entirely existing machinery. Known limitation: "
+            "t-intervals on proportions can misbehave at extreme values or "
+            "small N."
+        ),
+    ),
+    AutoUnpairedRule(
+        score_type="continuous", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason=(
+            "Kruskal-Wallis's θ_ab pairwise post-hoc is the only validated "
+            "k>=3 pairwise mechanism in this codebase for any score type; "
+            "a PPI-corrected Tukey-HSD-style mean-difference post-hoc does "
+            "not exist and would be new, unvalidated statistical work."
+        ),
+    ),
+    AutoUnpairedRule(
+        score_type="likert", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason="Ordinal data -- rank-based tests are the standard HCI convention.",
+    ),
+    AutoUnpairedRule(
+        score_type="grade", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason=(
+            "Treated as continuous for this table (closest existing "
+            "behavior) -- unvalidated assumption, see PLAN §5."
+        ),
+    ),
+)
+
+
+def resolve_auto_unpaired_methods(score_type: str) -> tuple[UnpairedFamily, str, str]:
+    """Resolve ``compare(design="unpaired")``'s routing to
+    ``(family, omnibus_method, pairwise_method)`` -- see
+    :data:`AUTO_UNPAIRED_METHOD_TABLE`.
+
+    ``family`` is returned directly (not re-derived from ``pairwise_method``
+    by the caller) so the table stays the actual source of truth for which
+    engine runs -- editing a row here changes behavior, rather than editing
+    ``omnibus_method``/``pairwise_method`` silently doing nothing because
+    some other call site re-derives family from a hardcoded string check.
+
+    The *k=2* special case (``mannwhitney``/``ttest`` used directly, no
+    omnibus test needed since there's only one comparison) is handled by
+    the caller (``evalstats.core.unpaired``), not this table.
+    """
+    for rule in AUTO_UNPAIRED_METHOD_TABLE:
+        if rule.score_type == score_type:
+            return rule.family, rule.omnibus_method, rule.pairwise_method
+    raise AssertionError(
+        f"no AUTO_UNPAIRED_METHOD_TABLE rule matched score_type={score_type!r}"
+    )
 
 
 def set_alpha_ci(alpha: float) -> None:

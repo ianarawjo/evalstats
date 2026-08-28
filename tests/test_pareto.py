@@ -1,4 +1,4 @@
-"""Tests for evalstats.core.pareto and compare(secondary=...) propagation."""
+"""Tests for evalstats.core.pareto and compare(secondary_metric=...) propagation."""
 
 from __future__ import annotations
 
@@ -215,7 +215,7 @@ def test_frontier_when_point_estimate_not_dominated():
 
 
 # ---------------------------------------------------------------------------
-# compare(secondary=...) integration
+# compare(secondary_metric=...) integration
 # ---------------------------------------------------------------------------
 
 def _make_evaldata(models, acc, lat, n_items=150, seed=0, missing_cell=None):
@@ -245,7 +245,7 @@ def test_compare_secondary_end_to_end():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=10)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(11),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(11),
     )
     statuses = result.pareto_status
     assert statuses["gpt-4o"].status == "frontier"
@@ -270,7 +270,7 @@ def test_compare_secondary_bad_direction_raises():
     with pytest.raises(ValueError):
         es.compare(
             evaldata, factors="model", metric="score",
-            secondary={"latency_ms": "lower"}, rng=_rng(15),
+            secondary_metric={"latency_ms": "lower"}, rng=_rng(15),
         )
 
 
@@ -279,7 +279,7 @@ def test_compare_secondary_n_way_not_implemented():
     with pytest.raises(NotImplementedError):
         es.compare(
             evaldata, factors="model", metric="score",
-            secondary={"latency_ms": "min", "score": "max"}, rng=_rng(17),
+            secondary_metric={"latency_ms": "min", "score": "max"}, rng=_rng(17),
         )
 
 
@@ -289,9 +289,9 @@ def test_compare_secondary_non_dict_warns_and_ignores():
         warnings.simplefilter("always")
         result = es.compare(
             evaldata, factors="model", metric="score",
-            secondary="latency_ms", rng=_rng(19),
+            secondary_metric="latency_ms", rng=_rng(19),
         )
-        assert any("secondary=" in str(x.message) for x in w)
+        assert any("secondary_metric=" in str(x.message) for x in w)
     assert result.pareto_status is None
 
 
@@ -300,7 +300,7 @@ def test_compare_secondary_missing_column_raises():
     with pytest.raises(es.EvalLoadError):
         es.compare(
             evaldata, factors="model", metric="score",
-            secondary={"nonexistent_col": "min"}, rng=_rng(21),
+            secondary_metric={"nonexistent_col": "min"}, rng=_rng(21),
         )
 
 
@@ -311,7 +311,7 @@ def test_compare_secondary_incomplete_design_raises():
     with pytest.raises(ValueError, match="missing"):
         es.compare(
             evaldata, factors="model", metric="score",
-            secondary={"latency_ms": "min"}, rng=_rng(23),
+            secondary_metric={"latency_ms": "min"}, rng=_rng(23),
         )
 
 
@@ -332,7 +332,7 @@ def test_compare_secondary_warns_for_multi_model():
         warnings.simplefilter("always")
         result = es.compare(
             evaldata, factors="model", metric="score",
-            secondary={"latency_ms": "min"}, rng=_rng(25),
+            secondary_metric={"latency_ms": "min"}, rng=_rng(25),
         )
         assert any("multi-model" in str(x.message) for x in w)
     assert result.pareto_status is None
@@ -342,7 +342,7 @@ def test_to_dict_includes_pareto():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=26)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(27), show_rank_probabilities=True,
+        secondary_metric={"latency_ms": "min"}, rng=_rng(27), show_rank_probabilities=True,
     )
     d = result.to_dict()
     assert d["pareto"]["secondary_metric"] == "latency_ms"
@@ -355,7 +355,7 @@ def test_to_dict_omits_p_pareto_optimal_by_default():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=28)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(29),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(29),
     )
     d = result.to_dict()
     assert "p_pareto_optimal" not in d["pareto"]["entities"]["gpt-4o"]
@@ -365,7 +365,7 @@ def test_to_frame_includes_pareto():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=30)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(31),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(31),
     )
     frames = result.to_frame()
     assert "pareto" in frames
@@ -379,7 +379,7 @@ def test_summary_prints_pareto_section():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=32)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(33),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(33),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -397,7 +397,7 @@ def test_summary_pareto_shows_probability_only_when_requested():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=34)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(35),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(35),
     )
 
     buf1 = io.StringIO()
@@ -443,7 +443,7 @@ def test_pareto_front_precedes_executive_summary():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=36)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(37),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(37),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -461,7 +461,7 @@ def test_pareto_table_shows_secondary_metric_statistics():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=38)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(39),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(39),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -483,7 +483,7 @@ def test_executive_summary_has_pareto_column():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=40)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(41),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(41),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -514,15 +514,15 @@ def test_executive_summary_no_pareto_column_without_secondary():
 def test_executive_summary_verdict_header_scoped_to_metric_when_pareto_shown():
     """"Verdict" alone would read as the final word once a second axis
     (Trade-off) exists in the same row -- it should be relabeled to make
-    clear it's scoped to the primary metric only. Without secondary=, the
-    plain "Verdict" header is unambiguous and should stay as-is."""
+    clear it's scoped to the primary metric only. Without secondary_metric=,
+    the plain "Verdict" header is unambiguous and should stay as-is."""
     import io
     from contextlib import redirect_stdout
 
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=60)
     with_secondary = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(61),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(61),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -553,7 +553,7 @@ def test_executive_summary_tradeoff_header_names_secondary_metric():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=64)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(65),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(65),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -575,7 +575,7 @@ def test_executive_summary_tradeoff_header_names_secondary_metric():
     evaldata2 = es.load_from(pd.DataFrame(rows), col_map={"model": "model", "item": "item"})
     result2 = es.compare(
         evaldata2, factors="model", metric="score",
-        secondary={long_col: "min"}, rng=_rng(67),
+        secondary_metric={long_col: "min"}, rng=_rng(67),
     )
     buf2 = io.StringIO()
     with redirect_stdout(buf2):
@@ -607,7 +607,7 @@ def test_pareto_table_has_single_merged_status_column():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=44)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(45),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(45),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -625,7 +625,7 @@ def test_pareto_callout_names_frontier_alternatives():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=46)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(47),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(47),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -691,7 +691,7 @@ def test_pareto_table_entity_column_capped_for_long_names():
     evaldata = _make_evaldata(models, acc, lat, seed=54)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(55),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(55),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -733,7 +733,7 @@ def test_pareto_scatter_flags_near_degenerate_axis():
     evaldata = es.load_from(pd.DataFrame(rows), col_map={"model": "model", "item": "item"})
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(59),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(59),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -751,7 +751,7 @@ def test_pareto_section_has_definition_line_and_scatterplot():
     evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=50)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(51),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(51),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -776,7 +776,7 @@ def test_pareto_scatter_handles_two_entities():
     evaldata = _make_evaldata(models, {k: _ACC[k] for k in models}, {k: _LAT[k] for k in models}, seed=52)
     result = es.compare(
         evaldata, factors="model", metric="score",
-        secondary={"latency_ms": "min"}, rng=_rng(53),
+        secondary_metric={"latency_ms": "min"}, rng=_rng(53),
     )
     buf = io.StringIO()
     with redirect_stdout(buf):

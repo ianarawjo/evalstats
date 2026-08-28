@@ -136,6 +136,126 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def binary_routing_applies(
+    scores: np.ndarray,
+    score_range: Optional[tuple[float, float]] = None,
+    *,
+    stacklevel: int = 3,
+) -> bool:
+    """Whether all-{0, 1} *scores* should route to the binary CI methods.
+
+    :func:`is_binary_scores` answers a question about the *sample*: are these
+    values all 0 or 1? Routing needs the question about the *population*: is
+    this metric Bernoulli? Those come apart whenever the caller has declared a
+    ``score_range`` wider than [0, 1] -- a 1-5 Likert scale where every
+    response landed on the floor, or a 0-100 grade where this particular
+    sample happens to contain only 0s and 1s. Treating those as Bernoulli
+    repeats the mistake :func:`degenerate_sample_ci` exists to avoid: reading
+    the sample's observed support as the population's support, when the
+    caller has explicitly said the metric ranges wider. The consequences are
+    concrete -- an all-floor 1-5 Likert sample used to get Wilson's
+    ``[0.886, 1.0]``, whose lower bound sits *below* the scale's minimum and
+    which opens downward from data that can only go up.
+
+    So an explicitly passed ``score_range`` wins: it is a direct statement
+    about the metric, while binary detection is an inference from the values
+    that happened to be sampled. A ``score_range`` of exactly (0, 1) agrees
+    with the detection and changes nothing, and passing nothing at all leaves
+    auto-detection fully in charge -- the overwhelmingly common case, which
+    behaves exactly as before.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array.
+    score_range : (float, float), optional
+        The metric's declared bounds, or None if the caller didn't say.
+    stacklevel : int
+        Passed through to ``warnings.warn`` so the override is reported at
+        the user's own call site.
+
+    Returns
+    -------
+    bool
+        True to use the binary methods (Wilson/Newcombe/mj_floor), False to fall
+        through to the bounds-aware continuous/Likert routing.
+    """
+    if not is_binary_scores(scores):
+        return False
+    if score_range is None:
+        return True
+    lo, hi = float(score_range[0]), float(score_range[1])
+    if lo == 0.0 and hi == 1.0:
+        return True
+    warnings.warn(
+        f"All scores are 0 or 1, which would normally auto-detect as binary "
+        f"data, but score_range={score_range} was given explicitly -- so this "
+        "is being treated as bounded numeric data on that scale, not as a "
+        "Bernoulli metric. The explicit range wins because a sample "
+        "containing only 0s and 1s doesn't establish that the metric can't "
+        "take other values (e.g. every response landing on a Likert scale's "
+        "floor, or a 0-100 grade where this sample happened to score only 0 "
+        "or 1); the binary methods would treat that unseen headroom as "
+        "impossible. Drop score_range (or pass score_range=(0, 1)) if the "
+        "metric really is binary.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+    return False
+
+
+def detect_quantization_step(scores: np.ndarray) -> Optional[float]:
+    """Detect whether *scores* sit on a consistent quantization grid (e.g.
+    integer-valued Likert responses, or a percentage grade rounded to whole
+    points), returning the grid step -- or ``None`` if no consistent grid is
+    found (the data looks genuinely continuous).
+
+    Used to auto-detect discrete/ordinal bounded data so :func:`analyze` can
+    route to NIG (calibrated for this case) instead of logit-t. Takes the
+    SMALLEST observed gap between distinct values as a candidate step, then
+    verifies every other gap is (within tolerance) an integer multiple of
+    it -- a GCD-style check, not a "does the most common gap recur >= N
+    times" frequency threshold, which is blind exactly where this matters
+    most: a small, peaked/boundary-heavy sample can collapse to just 2-3
+    distinct values, too few for any gap to recur several times even when
+    the grid (e.g. step=1) is completely unambiguous.
+
+    False-positive risk on genuinely continuous data is close to zero:
+    demanding EVERY gap (not just the most common one) independently land
+    within tolerance of an integer multiple of the candidate step has
+    vanishing probability by chance (verified empirically down to n=6
+    pooled values, 0% false-positive rate up to n=1000). Ported from
+    simulations/harness/cases/ci_paired.py's ``_detect_dither_halfwidth``,
+    which found the same regression this guards against: a frequency-based
+    predecessor of this check went blind on small, peaked Likert samples.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array (raw values, not yet rescaled).
+
+    Returns
+    -------
+    float or None
+        The detected step, or ``None`` if the data doesn't look quantized.
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    uniq = np.unique(finite)
+    if uniq.size < 2:
+        return None
+    gaps = np.diff(uniq)
+    gaps = gaps[gaps > 1e-9]
+    if gaps.size == 0:
+        return None
+    step = float(np.min(gaps))
+    ratios = gaps / step
+    residuals = np.abs(ratios - np.round(ratios))
+    if np.max(residuals) > 0.05:
+        return None
+    return step
+
+
 def is_lopsided_binary(scores: np.ndarray, threshold: int = 5) -> bool:
     """Return True if any compared group has fewer than *threshold* observed
     instances of its rarer binary outcome (e.g. only 2 ones out of 40).
@@ -373,12 +493,12 @@ def clopper_pearson_ci(successes: int, n: int, alpha: float) -> tuple[float, flo
     return (lo, hi)
 
 
-def tango_paired_ci_flat(
+def mj_floor_paired_ci_flat(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Tango score CI treating multi-run data as a single-run flat baseline.
+    """Score CI treating multi-run data as a single-run flat baseline.
 
     When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
     only the **first run** (column 0) is used.  This is the honest
@@ -388,7 +508,7 @@ def tango_paired_ci_flat(
     this function avoids that by keeping the input as the unit of analysis.
 
     If 1-D arrays are passed the call is forwarded directly to
-    :func:`tango_paired_ci` unchanged.
+    :func:`mj_floor_paired_ci` unchanged.
 
     Parameters
     ----------
@@ -407,27 +527,40 @@ def tango_paired_ci_flat(
         a = a[:, 0]
     if b.ndim == 2:
         b = b[:, 0]
-    return tango_paired_ci(a, b, alpha)
+    return mj_floor_paired_ci(a, b, alpha)
 
 
-def tango_paired_ci_mean(
+def mj_floor_paired_ci_mean(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Heuristic Tango CI using per-item run means for multi-run inputs.
+    """DO NOT USE for multi-run coverage. Kept for reference only.
+
+    Thresholding the run mean at 0.5 changes the estimand: it targets
+    E[1{mean_a >= 0.5}] - E[1{mean_b >= 0.5}], a majority-vote difference,
+    not the run-and-item-averaged difference E[a] - E[b] the other paired
+    methods estimate. Measured consequence on multi-run data: mean coverage
+    .843, MinCov 0.000, 1550 of 4536 cells below .90, and it gets WORSE with
+    more runs (.877 at R=2 down to .803 at R=20). The same pathology holds
+    for the Newcombe and Bonett-Price analogues, so it is the reduction that
+    is broken, not the interval. Use
+    :func:`bonett_price_paired_ci_multirun_cluster` for multi-run data.
+
+    Original description follows.
+Heuristic score CI using per-item run means for multi-run inputs.
 
     When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
     each item is first reduced to its run mean (shape ``(N,)``), then
-    :func:`tango_paired_ci` is applied.
+    :func:`mj_floor_paired_ci` is applied.
 
-    This is intentionally a pragmatic variant, not a strict Tango score
-    interval derivation: :func:`tango_paired_ci` was derived for paired
+    This is intentionally a pragmatic variant, not a strict score
+    interval derivation: :func:`mj_floor_paired_ci` was derived for paired
     Bernoulli observations, while run means live in ``[0, 1]`` and are
-    thresholded at 0.5 inside :func:`tango_paired_ci`.
+    thresholded at 0.5 inside :func:`mj_floor_paired_ci`.
 
     If 1-D arrays are passed the call is forwarded directly to
-    :func:`tango_paired_ci` unchanged.
+    :func:`mj_floor_paired_ci` unchanged.
 
     Parameters
     ----------
@@ -446,7 +579,73 @@ def tango_paired_ci_mean(
         a = np.mean(a, axis=1)
     if b.ndim == 2:
         b = np.mean(b, axis=1)
-    return tango_paired_ci(a, b, alpha)
+    return mj_floor_paired_ci(a, b, alpha)
+
+
+def bonett_price_paired_ci_flat(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Bonett-Price CI treating multi-run data as a single-run flat baseline.
+
+    The Bonett-Price counterpart of :func:`mj_floor_paired_ci_flat`, and the
+    honest single-run reference the multi-run variants have to beat: when
+    ``values_a`` / ``values_b`` are 2-D ``(N, R)`` arrays only the **first
+    run** (column 0) is used, i.e. exactly the data you would have had if
+    each input were run once. Flattening all ``N*R`` observations into one
+    long vector of "independent" pairs instead would inflate ``n`` to ``N*R``
+    while the real information stays at the item scale, and under-cover badly.
+
+    If 1-D arrays are passed the call is forwarded to
+    :func:`bonett_price_paired_ci` unchanged.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = a[:, 0]
+    if b.ndim == 2:
+        b = b[:, 0]
+    return bonett_price_paired_ci(a, b, alpha)
+
+
+def bonett_price_paired_ci_mean(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Heuristic Bonett-Price CI using per-item run means for multi-run inputs.
+
+    The Bonett-Price counterpart of :func:`mj_floor_paired_ci_mean`: each item
+    is reduced to its run mean (shape ``(N,)``) and then thresholded at 0.5
+    inside :func:`bonett_price_paired_ci`, i.e. every item is scored by
+    majority vote across its runs.
+
+    Deliberately a pragmatic baseline, not a derivation. Two things are wrong
+    with it and both are worth stating, because they are the reason the
+    ``multirun`` variants below exist:
+
+    1. It changes the ESTIMAND. Thresholding the run means estimates
+       ``p(majority-vote A = 1) - p(majority-vote B = 1)``, not the
+       run-and-item-averaged ``p(A=1) - p(B=1)`` that the multi-run variants
+       (and the harness's ``true_diff``) target. Majority voting is a
+       different, less noisy system than the one being evaluated, so the two
+       estimands only coincide when the per-item run distributions are
+       symmetric about the threshold.
+    2. It discards the within-item run spread entirely, so a knife-edge item
+       (half its runs 1, half 0) is recorded with the same confidence as a
+       deterministic one.
+
+    If 1-D arrays are passed the call is forwarded to
+    :func:`bonett_price_paired_ci` unchanged.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = np.mean(a, axis=1)
+    if b.ndim == 2:
+        b = np.mean(b, axis=1)
+    return bonett_price_paired_ci(a, b, alpha)
 
 
 def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -573,6 +772,11 @@ def beta_ci_1d(
     vals = np.asarray(values, dtype=float)
     x_bar = float(np.mean(vals))
     s2 = float(np.var(vals, ddof=1))
+    if n > 1 and float(np.ptp(vals)) == 0.0:
+        # Constant sample: the MOM fit is undefined and the t-interval this
+        # used to fall back to is itself zero-width here. Same binomial
+        # worst-case bound logit_t_ci_1d uses -- see degenerate_sample_ci.
+        return degenerate_sample_ci(float(vals[0]), n, alpha)
     if s2 <= 0.0 or not np.isfinite(s2) or x_bar <= 0.0 or x_bar >= 1.0:
         return t_interval_ci_1d(vals, alpha)
     # Method-of-moments: concentration κ = a+b from mean and variance
@@ -594,6 +798,76 @@ _LOGIT_T_BOUNDARY_EPS = 1e-9
 """Tolerance for treating an out-of-[0,1] value as floating-point rounding
 noise (e.g. 1.0000000000000004 from an upstream `score * scale` rescale)
 rather than genuinely bad data -- see logit_t_ci_1d's docstring."""
+
+
+def degenerate_sample_ci(
+    value: float, n: int, alpha: float, lo: float = 0.0, hi: float = 1.0,
+) -> tuple[float, float]:
+    """Conservative CI for E[X] when all *n* observed values are identical.
+
+    A zero-variance sample carries no information about spread, so every
+    variance-driven interval (the delta method, the t-interval, any
+    resampling scheme) degenerates to zero width and covers the truth with
+    probability 0 whenever the population isn't genuinely a point mass. That
+    isn't a rounding artifact -- it's the honest answer to the wrong
+    question. The right question is what the sample *does* pin down.
+
+    Treat "X == value" as a Bernoulli success. Observing n successes out of n
+    gives the exact (Clopper-Pearson) lower confidence bound
+
+        p = P(X = value) >= (alpha/2) ** (1/n)
+
+    and the remaining 1-p of the mass is unconstrained within the metric's
+    known bounds [lo, hi]. So
+
+        E[X]  in  [p*value + (1-p)*lo,  p*value + (1-p)*hi]
+
+    covers E[X] for *any* configuration of that unseen mass whenever the
+    bound on p holds: the interval's endpoints are attained exactly at the
+    worst cases (all remaining mass at lo, or all at hi), and both endpoints
+    move monotonically in p (the gap between the truth and the endpoint is
+    (p - p_lo)*(value - lo) >= 0 at the bottom and (p - p_lo)*(value - hi)
+    <= 0 at the top). And when the bound fails -- true p < p_lo -- a
+    degenerate sample only arises with probability p**n < alpha/2 in the
+    first place, so the branch contributes at most alpha/2 to the overall
+    miss rate.
+
+    For all-successes binary data (value == hi == 1, lo == 0) this reduces to
+    exactly the two-sided Clopper-Pearson interval [(alpha/2)**(1/n), 1],
+    which is the answer the binary methods already give -- so the bounded
+    continuous path and the binary path agree at the boundary instead of
+    disagreeing by the full width of the interval.
+
+    The price is conservatism: width is (1-p)*(hi-lo), roughly
+    ln(2/alpha)*(hi-lo)/n -- about 0.15 at n=25 on a [0,1] metric, shrinking
+    like 1/n. That is the correct price for a sample that shows no spread at
+    all, and it is only ever paid on samples that would otherwise have been
+    reported with false certainty.
+
+    Parameters
+    ----------
+    value : float
+        The single value every observation took, assumed within [lo, hi].
+    n : int
+        Number of observations (>= 1).
+    alpha : float
+        Significance level (1 - confidence level).
+    lo, hi : float
+        The metric's known bounds. Callers working on a rescaled [0, 1] axis
+        (see ``stats_utils.rescaled_ci``) should leave these at the default
+        and let the wrapper map the result back.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [lo, hi].
+    """
+    if n < 1:
+        return (lo, hi)
+    p = float(alpha / 2.0) ** (1.0 / n)
+    ci_low = p * value + (1.0 - p) * lo
+    ci_high = p * value + (1.0 - p) * hi
+    return (max(lo, ci_low), min(hi, ci_high))
 
 
 def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[float, float]:
@@ -673,6 +947,22 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
     in either -- the noisy third-moment estimate at small n cancels out any
     theoretical gain -- so it isn't offered as an option.
 
+    A **zero-variance sample** (every value identical, which includes the
+    all-0s and all-1s boundary cases) is handed to
+    :func:`degenerate_sample_ci` rather than being reported as the zero-width
+    interval the delta method implies. This matters on saturated metrics: on
+    a one-inflated DGP at 95% inflation, 36% of n=20 samples come out
+    constant, and before this fallback existed those reps dragged marginal
+    coverage from a nominal 95% down to 60% -- while coverage *conditional*
+    on a non-degenerate sample stayed at 94.6%. The transform was never the
+    problem; the zero-width branch was, and it is shared with
+    ``t_interval``/``beta``/the bootstrap methods rather than being specific
+    to logit-t. See ``simulations/harness/scenarios/synthetic.py``'s
+    ``cont-{zero,one}-inflated-extreme`` shapes, added so the suite actually
+    reaches the regime where this fires (the pre-existing 70%-inflation
+    shapes produce a constant sample <3% of the time even at n=10, which is
+    why routine sweeps gave a clean bill of health here).
+
     Parameters
     ----------
     values : np.ndarray
@@ -707,7 +997,15 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
         vals = np.clip(vals, 0.0, 1.0)
     x_bar = float(np.mean(vals))
     se = float(np.std(vals, ddof=1)) / np.sqrt(n)
+    if float(np.ptp(vals)) == 0.0:
+        # Zero-variance sample (all values identical -- including the all-0s
+        # and all-1s boundary cases). The delta method has nothing to
+        # propagate here and would report a zero-width interval; hand off to
+        # the binomial worst-case bound instead. See degenerate_sample_ci.
+        return degenerate_sample_ci(float(vals[0]), n, alpha)
     if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
+        # Only reachable now for non-finite input (NaN/inf), since within
+        # [0, 1] both x_bar == 0 and x_bar == 1 imply a constant sample.
         return (x_bar, x_bar)
     # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
     logit_mean = float(np.log(x_bar / (1.0 - x_bar)))
@@ -1539,79 +1837,393 @@ def wilson_nested_bb(
     return _wilson_neff(p_hat, n_eff, alpha)
 
 
-def newcombe_paired_ci(
-    values_a: np.ndarray,
-    values_b: np.ndarray,
-    alpha: float,
-) -> tuple[float, float]:
-    """Newcombe score CI for the paired binary difference p(A=1) − p(B=1).
+def _paired_binary_cells(values_a, values_b, fname: str) -> tuple[int, int, int, int]:
+    """Return the 2x2 paired-binary cell counts (n11, n10, n01, n00).
 
-    Uses the discordant-pairs formulation (Newcombe 1998, *Stat Med*).
-    Let n10 = number of inputs where A=1, B=0, and n01 = A=0, B=1.
-    A Wilson score interval is computed for theta = n10 / (n10 + n01)
-    (proportion of discordant pairs where A wins), then transformed to
-    the difference scale::
-
-        d_low  = (m / n) * (2 * theta_low  − 1)
-        d_high = (m / n) * (2 * theta_high − 1)
-
-    where m = n10 + n01 is the number of discordant pairs and n is the
-    total number of paired inputs.
-
-    Returns (0.0, 0.0) when m == 0 (no discordant pairs, perfect agreement).
-
-    Parameters
-    ----------
-    values_a, values_b : np.ndarray
-        1-D arrays of equal length.  Values are thresholded at 0.5 to
-        determine binary membership (accommodates float representations).
-    alpha : float
-        Significance level (1 − confidence level).
-
-    Returns
-    -------
-    (ci_low, ci_high) : tuple[float, float]
-        CI on p(A=1) − p(B=1).
-
-    Raises
-    ------
-    ValueError
-        If inputs are not 1-D arrays of equal length.
+    Shared input handling for the paired binary interval methods. Values are
+    thresholded at 0.5 (accommodates float representations).
     """
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
     if values_a.ndim != 1 or values_b.ndim != 1:
-        raise ValueError("newcombe_paired_ci expects 1-D input arrays.")
+        raise ValueError(f"{fname} expects 1-D input arrays.")
     if values_a.shape != values_b.shape:
-        raise ValueError("newcombe_paired_ci expects arrays with equal shape.")
-
-    n = len(values_a)
-    if n <= 0:
-        return (0.0, 0.0)
+        raise ValueError(f"{fname} expects arrays with equal shape.")
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-    if m == 0:
-        return (0.0, 0.0)
-    theta_low, theta_high = wilson_ci(n10, m, alpha)
-    scale = m / n
     return (
-        float(scale * (2.0 * theta_low - 1.0)),
-        float(scale * (2.0 * theta_high - 1.0)),
+        int(np.sum((a_bin == 1) & (b_bin == 1))),
+        int(np.sum((a_bin == 1) & (b_bin == 0))),
+        int(np.sum((a_bin == 0) & (b_bin == 1))),
+        int(np.sum((a_bin == 0) & (b_bin == 0))),
     )
 
 
-def tango_paired_ci(
+def bonett_price_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Bonett-Price Laplace-adjusted Wald CI for the paired binary difference.
+
+    Fagerland, Lydersen & Laake (2014) eq. (16) -- their *prime* recommendation
+    for a CI on the difference between paired proportions, on the grounds that
+    it is conservative, performs very well, and is trivial to compute.
+
+    Applies a Laplace (add-one) adjustment to the discordant cells before
+    forming a Wald interval::
+
+        p12 = (n10 + 1) / (n + 2),  p21 = (n01 + 1) / (n + 2)
+        (p12 - p21) +/- z * sqrt[ (p12 + p21 - (p12 - p21)^2) / (n + 2) ]
+
+    Unlike the plain Wald interval it never produces a zero-width interval,
+    since the add-one adjustment keeps the variance term strictly positive.
+    Limits are truncated to [-1, 1].
+
+    Reproduces Fagerland et al.'s Table V to the three decimals published.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1).
+    """
+    _, n10, n01, _ = _paired_binary_cells(values_a, values_b, "bonett_price_paired_ci")
+    n = len(np.asarray(values_a))
+    if n <= 0:
+        return (0.0, 0.0)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    p12 = (n10 + 1.0) / (n + 2.0)
+    p21 = (n01 + 1.0) / (n + 2.0)
+    diff = p12 - p21
+    se = float(np.sqrt(max(p12 + p21 - diff * diff, 0.0) / (n + 2.0)))
+    return (
+        float(np.clip(diff - z * se, -1.0, 1.0)),
+        float(np.clip(diff + z * se, -1.0, 1.0)),
+    )
+
+
+
+def newcombe_mover_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Newcombe square-and-add (MOVER Wilson score) CI for the paired difference.
+
+    Newcombe (1998) method 10, as presented in Fagerland, Lydersen & Laake
+    (2014) eqs. (19)-(22) -- one of their three recommended intervals.
+
+    This is the "square-and-add"/MOVER construction: separate Wilson score
+    intervals are computed for the two *marginal* proportions p(A=1) and
+    p(B=1), then combined with a correlation correction::
+
+        L = d - sqrt[ (pA - l1)^2 + (u2 - pB)^2 - 2*phi*(pA - l1)*(u2 - pB) ]
+        U = d + sqrt[ (pB - l2)^2 + (u1 - pA)^2 - 2*phi*(pB - l2)*(u1 - pA) ]
+
+    where phi is estimated from A = n11*n00 - n10*n01 as (A - n/2)/sqrt(...)
+    if A > n/2, 0 if 0 <= A <= n/2, and A/sqrt(...) if A < 0; phi is set to 0
+    when any marginal sum is zero.
+
+    This is the only Newcombe interval in evalstats. An earlier
+    discordant-pairs formulation (a Wilson interval on n10/(n10+n01)
+    rescaled to the difference scale) was removed on 2026-08-24: it is a
+    different, poorly-covering method that is NOT the one Fagerland et al.
+    recommend under the name "Newcombe".
+
+    Reproduces Fagerland et al.'s Table V to the three decimals published.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1).
+    """
+    n11, n10, n01, n00 = _paired_binary_cells(
+        values_a, values_b, "newcombe_mover_paired_ci"
+    )
+    n = n11 + n10 + n01 + n00
+    if n <= 0:
+        return (0.0, 0.0)
+    n_a = n11 + n10          # successes for A (row margin)
+    n_b = n11 + n01          # successes for B (column margin)
+    l1, u1 = wilson_ci(n_a, n, alpha)
+    l2, u2 = wilson_ci(n_b, n, alpha)
+    p_a = n_a / n
+    p_b = n_b / n
+
+    margins = (n_a, n - n_a, n_b, n - n_b)
+    if any(mg == 0 for mg in margins):
+        phi = 0.0
+    else:
+        det = n11 * n00 - n10 * n01
+        denom = float(np.sqrt(float(n_a) * (n - n_a) * n_b * (n - n_b)))
+        if det > n / 2.0:
+            phi = (det - n / 2.0) / denom
+        elif det < 0.0:
+            phi = det / denom
+        else:
+            phi = 0.0
+
+    d = p_a - p_b
+    lo_term = (p_a - l1) ** 2 + (u2 - p_b) ** 2 - 2.0 * phi * (p_a - l1) * (u2 - p_b)
+    hi_term = (p_b - l2) ** 2 + (u1 - p_a) ** 2 - 2.0 * phi * (p_b - l2) * (u1 - p_a)
+    return (
+        float(np.clip(d - np.sqrt(max(lo_term, 0.0)), -1.0, 1.0)),
+        float(np.clip(d + np.sqrt(max(hi_term, 0.0)), -1.0, 1.0)),
+    )
+
+
+def _clustered_paired_cells(values_a, values_b, fname):
+    """Per-item 2x2 cell counts (a_k, b_k, c_k, d_k) for (n_items, n_runs) data.
+
+    Maps the clustered matched-pair layout of Yang, Sun & Hardin (2012) onto an
+    eval sweep: the ITEM is the cluster and each RUN is a unit within it, so
+    cluster sizes are equal (n_k = R for every k). That equality matters --
+    Eliasziw & Donner's n_c and Yang's differ for unequal clusters but both
+    collapse to exactly R here, so the estimator is unambiguous for our design.
+    """
+    va = np.asarray(values_a)
+    vb = np.asarray(values_b)
+    if va.shape != vb.shape:
+        raise ValueError(f"{fname} expects arrays with equal shape (n_items, n_runs).")
+    if va.ndim != 2:
+        raise ValueError(f"{fname} expects 2-D arrays (n_items, n_runs).")
+    a_bin = (va >= 0.5).astype(int)
+    b_bin = (vb >= 0.5).astype(int)
+    a_k = np.sum((a_bin == 1) & (b_bin == 1), axis=1).astype(float)
+    b_k = np.sum((a_bin == 1) & (b_bin == 0), axis=1).astype(float)
+    c_k = np.sum((a_bin == 0) & (b_bin == 1), axis=1).astype(float)
+    d_k = np.sum((a_bin == 0) & (b_bin == 0), axis=1).astype(float)
+    return a_k, b_k, c_k, d_k
+
+
+def _eliasziw_inflation_factor(a_k, b_k, c_k, d_k):
+    """Variance inflation factor 1 + (n_c - 1) * rho_hat.
+
+    Eliasziw & Donner (1991), as presented in Yang, Sun & Hardin (2012) sec 2.1:
+    rho_tilde comes from an ANOVA decomposition into between- and within-cluster
+    mean squares, then rho_hat rescales it using the discordant probabilities.
+    With equal cluster sizes n_c = R exactly.
+
+    Returns 1.0 (no inflation) for most degenerate cases, following the paper's
+    Remark 1: if rho falls outside [-1, 1] or cannot be computed because only
+    one type of discordant pair is present, the factor is set to 1.
+
+    ONE DELIBERATE DEVIATION from Remark 1. When the ANOVA denominator is
+    exactly 0 -- both mean squares vanish, so rho is literally 0/0 and the data
+    carry NO information about within-cluster correlation -- this returns
+    ``n_c`` (equivalently rho_hat = 1, full clustering) rather than 1.
+
+    Remark 1's fallback of 1 asserts INDEPENDENCE of all ``N = K * n_c``
+    units, which manufactures precision from absent data. That is harmless at
+    the cluster sizes Yang et al. study (their example averages 2.4 units per
+    cluster) but severe at the cluster sizes multi-run evals produce: on an
+    all-concordant table with K = 15 items and n_c = 20 runs, the fallback of 1
+    gives a 95% interval of width 0.025 -- claiming +/-1.3% precision from data
+    containing no disagreements at all -- and the width shrinks further as runs
+    are added. Returning ``n_c`` instead makes the interval reduce to the
+    single-run score on ``K`` items, which is the correct answer when nothing
+    discordant was observed, and makes its width invariant to the number of
+    runs (verified: 0.40777 at n_c = 1, 3 and 20).
+
+    This fires ONLY on the exact 0/0 branch; wherever rho is estimable the
+    factor is bit-identical to Remark 1's. Measured effect on a 54-cell sweep:
+    MinCov .6976 -> .9160 and cells below .93 coverage 6 -> 1, with cells where
+    rho is estimable unchanged to the digit.
+    """
+    n_k = a_k + b_k + c_k + d_k
+    K = len(n_k)
+    N = float(n_k.sum())
+    if K < 2 or N <= 0:
+        return 1.0
+    n_bar = N / K
+    n_c = float((n_k ** 2).sum() / N)
+    p = np.array([a_k.sum(), b_k.sum(), c_k.sum(), d_k.sum()], dtype=float) / N
+    cells = np.stack([a_k, b_k, c_k, d_k], axis=1)
+    expect = np.outer(n_k, p)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bms = float((((cells - expect) ** 2).sum(axis=1) / n_k).sum() / K)
+        wms_num = (cells * (n_k[:, None] - cells)).sum(axis=1) / n_k
+    if n_bar <= 1.0:
+        return 1.0
+    wms = float(wms_num.sum() / (K * (n_bar - 1.0)))
+    n_0 = n_bar - float(((n_k - n_bar) ** 2).sum()) / (K * (K - 1) * n_bar)
+    denom = bms + (n_0 - 1.0) * wms
+    if not np.isfinite(denom) or denom == 0.0:
+        # rho is 0/0 -- no information about clustering. Assume full
+        # clustering rather than independence; see the docstring's deviation
+        # note. rho_hat = 1 gives factor = 1 + (n_c - 1) * 1 = n_c.
+        return float(n_c) if np.isfinite(n_c) and n_c > 0 else 1.0
+    rho_tilde = (bms - wms) / denom
+    if not np.isfinite(rho_tilde) or rho_tilde <= 0.0:
+        return 1.0
+    q = (1.0 - rho_tilde) / rho_tilde
+    rho_hat = 1.0 / (1.0 + p[1] * q + p[2] * q)
+    if not np.isfinite(rho_hat) or not (-1.0 <= rho_hat <= 1.0):
+        return 1.0
+    factor = 1.0 + (n_c - 1.0) * rho_hat
+    return float(factor) if np.isfinite(factor) and factor > 0 else 1.0
+
+
+def clustered_score_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Yang, Sun & Hardin (2012) score CI for clustered matched-pair binary data.
+
+    Their X^2_Score: Tango's score statistic with the variance multiplied by the
+    Eliasziw-Donner inflation factor, inverted by solving the same quartic used
+    for the unclustered case. Concretely it is :func:`tango_scc_paired_ci` with
+    ``z^2`` replaced by ``z^2 * (1 + (n_c - 1) * rho_hat)``, which is why no new
+    solver is needed.
+
+    Validated against Yang et al.'s published worked example (their Table II,
+    PET/SPECT data): reproduces the reported CI (-0.03829, 0.29140) exactly, and
+    reduces exactly to ``tango_scc_paired_ci(..., c=0)`` when the inflation
+    factor is 1.
+
+    Unlike our earlier effective-runs correction, the design effect here
+    multiplies a variance built from POOLED run-level counts, which genuinely
+    understates uncertainty under clustering -- the level at which the
+    correction is meant to act.
+    """
+    a_k, b_k, c_k, d_k = _clustered_paired_cells(
+        values_a, values_b, "clustered_score_paired_ci"
+    )
+    n_total = float((a_k + b_k + c_k + d_k).sum())
+    if n_total <= 0:
+        return (0.0, 0.0)
+    z2 = float(stats.norm.ppf(1.0 - alpha / 2.0)) ** 2
+    z2_eff = z2 * _eliasziw_inflation_factor(a_k, b_k, c_k, d_k)
+    b_tot, c_tot = float(b_k.sum()), float(c_k.sum())
+    upper = _tango_scc_real_roots_in_range(
+        _tango_scc_quartic_coeffs(b_tot, c_tot, n_total, z2_eff, 0.0)
+    )
+    d_hat = (b_tot - c_tot) / n_total
+    hi = float(upper[-1]) if len(upper) else d_hat
+    lo = float(upper[0]) if len(upper) else d_hat
+    lo, hi = (max(-1.0, min(lo, hi)), min(1.0, max(lo, hi)))
+    if c_tot == 0.0 and b_tot == n_total:
+        hi = 1.0
+    elif b_tot == 0.0 and c_tot == n_total:
+        lo = -1.0
+    return (lo, hi)
+
+
+def modified_obuchowski_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Yang et al. (2010) modified-Obuchowski CI for clustered matched-pair data.
+
+    As given in Yang, Sun & Hardin (2012) sec 2.4::
+
+        (1/N) sum(b_k - c_k)  +/-  z * (1/N) * sqrt(
+            K / (2 (K-1)) * sum[ ((b_k-c_k) - mean_k(b-c))^2
+                               + ((b_k-c_k) - (n_k/N) sum(b-c))^2 ] )
+
+    Cluster-level and assumption-free about the within-cluster correlation
+    structure: no ICC is estimated at all. Yang et al. (2012) recommend this
+    over Obuchowski's and Durkalski's variants on power grounds for larger
+    numbers of clusters. The underlying X^2_MO statistic in this module's
+    tests reproduces the reference R implementation (clust.bin.pair) exactly.
+    """
+    a_k, b_k, c_k, d_k = _clustered_paired_cells(
+        values_a, values_b, "modified_obuchowski_paired_ci"
+    )
+    n_k = a_k + b_k + c_k + d_k
+    K = len(n_k)
+    N = float(n_k.sum())
+    if N <= 0:
+        return (0.0, 0.0)
+    s_k = b_k - c_k
+    s_tot = float(s_k.sum())
+    d_hat = s_tot / N
+    if K < 2:
+        return (max(-1.0, d_hat), min(1.0, d_hat))
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    term = ((s_k - s_tot / K) ** 2 + (s_k - (n_k / N) * s_tot) ** 2).sum()
+    var = (K / (2.0 * (K - 1.0))) * float(term)
+    radius = z * np.sqrt(max(var, 0.0)) / N
+    return (max(-1.0, d_hat - radius), min(1.0, d_hat + radius))
+
+
+def _mj_discordance_floor(discordance_rate: float, floor: float = 0.25) -> float:
+    """Floored discordance term for the May & Johnson score interval.
+
+    The closed-form solution of the score inversion carries an additive
+    ``z^2 * S_hat`` inside the discriminant, where ``S_hat`` is the observed
+    discordance rate (n10+n01)/n. Left unfloored that term vanishes when no
+    pairs disagree, collapsing the interval to zero width -- the degeneracy
+    Tango's 2000 letter to the editor (Statist. Med. 19(1):133-139)
+    criticised in the Quesenberry-Hurst / May & Johnson construction, along
+    with its anticonservatism at low discordance.
+
+    Flooring ``S_hat`` at 1/4 removes that failure while never SHRINKING the
+    score interval's variance term, so the result is never narrower than the
+    published interval. Measured effect (see
+    simulations/papers/pairwise_binary_rerun_plan.md): at n=15 with 10%
+    discordance, unfloored May & Johnson covers 0.719 at its worst over the
+    true difference against a nominal 0.95 (0.787 at delta=0.04), while the
+    floored interval stays at or above 0.987. NOTE the coverage gap is
+    invisible exactly at delta=0, where the degenerate zero-width interval
+    still "contains" a true difference of zero.
+    On real eval corpora the floor lifts worst-case coverage
+    from 0.721 to 0.789 at n=10 (single-run) and 0.902 to 0.925 at n=50
+    (multi-run), while leaving low-asymmetry corpora untouched.
+    """
+    return max(float(discordance_rate), floor)
+
+
+def mj_floor_paired_ci(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
+    floor: float = 0.25,
 ) -> tuple[float, float]:
-    """Tango score CI for the paired binary difference p(A=1) - p(B=1).
+    """Closed-form paired-binary CI for p(A=1) - p(B=1).
 
-    Implements the large-sample score interval proposed by Tango (1998) for
-    matched-pairs binary data. Let:
+    This is NOT Tango (1998)'s own interval, despite the name it carries
+    throughout the codebase and paper. Tango's interval inverts a score test
+    through the constrained MLE and is solved iteratively (secant method),
+    which is why it is not used as a fast default here.
+
+    What this actually computes is a Wilson-regularized Quesenberry-Hurst-style
+    interval. With m = n10 + n01 and d = n10 - n01::
+
+        d / (n + z^2)  +/-  z/(n + z^2) * sqrt( m - d^2/n + z^2/4 )
+
+    That is the centre of May & Johnson (1997), "Confidence intervals for
+    differences in correlated binary proportions" (Statistics in Medicine
+    16(18):2127-2136), equation 11 -- their adaptation of Quesenberry-Hurst --
+    with their variance term ``z^2 * m / n`` replaced by the constant
+    ``z^2 / 4`` from Wilson's one-sample score interval. Writing S_hat = m/n
+    for the observed discordance rate, their additive term is ``z^2 * S_hat``
+    and ours is ``z^2 / 4``, so they coincide exactly at S_hat = 1/4. Below
+    that this interval is the WIDER of the two (conservative), above it the
+    narrower. Paired eval comparisons sit well below 1/4 -- competing models
+    agree on most items -- so the substitution is conservative in the regime
+    it is used in.
+
+    Note ``1/4`` is not a max-variance bound here: Var(A_i - B_i) at delta=0
+    is S in [0, 1], so its maximum is 1, not 1/4. The constant amounts to
+    imputing a fixed 25% discordance rate in a term of order z^2, which only
+    matters when m is small.
+
+    That substitution is deliberate: the published Quesenberry-Hurst form
+    collapses to a ZERO-WIDTH interval when no pairs disagree (m = 0). Tango's
+    2000 letter to the editor (Statist. Med. 19(1):133-139) criticised exactly
+    that degeneracy, and the anticonservatism, of Quesenberry-Hurst. Sparse
+    discordance is common in small eval sets, so the constant is what makes
+    this usable here.
+
+    Note also that inverting the score test for this variance function returns
+    May & Johnson's interval exactly -- so this is NOT a score interval; it
+    freezes the variance at the observed d_hat rather than solving at the
+    hypothesised delta.
+
+    Consequence worth knowing: like the other closed-form members of this
+    family, this runs somewhat NARROWER than Tango's exact score interval --
+    by ~0.005-0.018 in absolute width at n=100-200, and it stays finite at
+    zero discordance where May-Johnson gives width 0. If you want the exact
+    interval in closed form, call :func:`tango_scc_paired_ci` with ``c=0.0``;
+    that implements Chang et al. (2024)'s quartic solution and agrees with a
+    direct numerical inversion of the score equation to ~5e-4.
+
+    Let:
 
     * ``n10`` be the count of pairs with ``A=1, B=0``
     * ``n01`` be the count of pairs with ``A=0, B=1``
@@ -1628,9 +2240,8 @@ def tango_paired_ci(
             + z^2 / (4 n^2)
         )
 
-    This is a score-type interval for the paired risk difference; unlike
-    :func:`newcombe_paired_ci`, it remains non-degenerate even when there are
-    no discordant pairs.
+    This is a score-type interval for the paired risk difference; it
+    remains non-degenerate even when there are no discordant pairs.
 
     Parameters
     ----------
@@ -1652,19 +2263,161 @@ def tango_paired_ci(
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
     if values_a.ndim != 1 or values_b.ndim != 1:
-        raise ValueError("tango_paired_ci expects 1-D input arrays.")
+        raise ValueError("mj_floor_paired_ci expects 1-D input arrays.")
     if values_a.shape != values_b.shape:
-        raise ValueError("tango_paired_ci expects arrays with equal shape.")
+        raise ValueError("mj_floor_paired_ci expects arrays with equal shape.")
 
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
-    return tango_paired_ci_from_diffs(a_bin - b_bin, alpha)
+    return mj_floor_paired_ci_from_diffs(a_bin - b_bin, alpha, floor)
 
 
-def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Tango score CI for the paired binary difference, from a-minus-b diffs.
+def bonett_price_paired_ci_from_diffs(diffs: np.ndarray, alpha: float = 0.05) -> tuple[float, float]:
+    """:func:`bonett_price_paired_ci` from a-minus-b diffs.
 
-    Same closed-form score interval as :func:`tango_paired_ci`, but takes
+    The Bonett-Price interval depends on the raw pairs only through the two
+    discordant counts and n (see that function: p12/p21 are built from n10,
+    n01 and n), and ``diffs`` in ``{-1, 0, 1}`` determines all three -- so
+    rebuilding a representative pair of binary arrays and delegating gives
+    bit-identical output while keeping ONE copy of the formula.
+
+    Exists so simultaneous-CI constructions (Sidak, joint-bootstrap scaling)
+    can widen the SAME interval the non-simultaneous pairwise path reports
+    for binary data, reusing each comparison's stored ``per_input_diffs``.
+    Before this, the simultaneous path had no diffs-based Bonett-Price to
+    call and widened ``mj_floor`` instead, so the simultaneous and pairwise
+    CIs for binary data were built from two different formulas.
+    """
+    d = np.asarray(diffs).ravel()
+    values_a = (d == 1).astype(float)
+    values_b = (d == -1).astype(float)
+    return bonett_price_paired_ci(values_a, values_b, alpha)
+
+
+def _bonett_price_centre_scale_batch(diffs_2d: np.ndarray, alpha: float = 0.05):
+    """Vectorized (centre, scale) for :func:`bonett_price_paired_ci_from_diffs`
+    over a WHOLE matrix of resampled difference vectors at once.
+
+    ``diffs_2d`` is ``(B, M)`` -- B resamples of the same pair's per-item
+    differences. Returns ``(centre, scale)``, each shape ``(B,)``, such that
+    the interval at level *a* is ``centre +/- z_{a/2} * scale`` (before the
+    formula's clip to [-1, 1]).
+
+    Exists for :func:`~evalstats.core.paired._calibrated_joint_critical_value`,
+    whose calibration needs the construction's own centre and scale on every
+    resample. Calling the scalar formula B times per pair is ~485x slower and,
+    worse, recovers the scale as ``(hi - lo) / (2 z)`` -- which is WRONG
+    whenever the interval clipped at +/-1, precisely the sparse small-n case
+    the calibration is for. This computes both analytically from the counts,
+    so it is exact and never sees the clip.
+
+    Bonett-Price depends on the data only through ``(n10, n01, n)``, so the
+    whole batch reduces to two count reductions along the item axis. The
+    ``alpha`` argument is accepted (and ignored) because centre and scale are
+    alpha-free for this Wald-form interval -- the signature matches the
+    protocol so other formulas can supply an alpha-dependent version.
+    """
+    d = np.asarray(diffs_2d)
+    n = d.shape[1]
+    if n == 0:
+        z = np.zeros(d.shape[0])
+        return z, z
+    n10 = (d == 1).sum(axis=1)
+    n01 = (d == -1).sum(axis=1)
+    p12 = (n10 + 1.0) / (n + 2.0)
+    p21 = (n01 + 1.0) / (n + 2.0)
+    centre = p12 - p21
+    scale = np.sqrt(np.maximum(p12 + p21 - centre * centre, 0.0) / (n + 2.0))
+    return centre, scale
+
+
+def _alpha_crit_symmetric(target, centre, scale, sf):
+    """Level at which a symmetric interval ``centre +/- q(alpha/2)*scale`` just
+    covers *target*, given the reference distribution's survival function *sf*.
+
+    Covering means ``|target-centre| <= q(alpha/2)*scale``; since ``q`` falls as
+    alpha rises, the crossing level is ``2*sf(|target-centre|/scale)``.
+    """
+    centre = np.asarray(centre, dtype=float)
+    scale = np.asarray(scale, dtype=float)
+    out = np.ones(centre.shape, dtype=float)
+    ok = np.isfinite(centre) & np.isfinite(scale) & (scale > 1e-12)
+    if np.any(ok):
+        z = np.abs(target - centre[ok]) / scale[ok]
+        out[ok] = np.clip(2.0 * sf(z), 1e-12, 1.0)
+    return out
+
+
+def _bonett_price_alpha_crit_batch(diffs_2d, target):
+    """alpha_crit for Bonett-Price -- symmetric on the difference scale, normal
+    reference (see :func:`bonett_price_paired_ci_from_diffs`)."""
+    centre, scale = _bonett_price_centre_scale_batch(diffs_2d)
+    return _alpha_crit_symmetric(target, centre, scale, stats.norm.sf)
+
+
+def _logit_t_alpha_crit_batch(values_2d, target, lo=0.0, hi=1.0):
+    """alpha_crit for :func:`logit_t_ci_1d` (optionally through
+    :func:`~evalstats.core.stats_utils.rescaled_ci` bounds *lo*/*hi*).
+
+    logit-t is symmetric on the LOGIT scale with a t reference, not on the
+    value scale -- so the crossing level is computed there and the target is
+    mapped through the same transform. Degenerate rows (zero-variance
+    resamples, which the scalar path hands to ``degenerate_sample_ci``) return
+    1.0, i.e. they never bind the joint minimum, matching that path's skip.
+    """
+    span = float(hi - lo)
+    v = (np.asarray(values_2d, dtype=float) - lo) / span
+    y = (float(target) - lo) / span
+    n = v.shape[1]
+    out = np.ones(v.shape[0], dtype=float)
+    if n <= 1:
+        return out
+    x_bar = v.mean(axis=1)
+    se = v.std(axis=1, ddof=1) / np.sqrt(n)
+    ok = (np.ptp(v, axis=1) > 0.0) & (se > 0.0) & np.isfinite(se) & (x_bar > 0.0) & (x_bar < 1.0)
+    ok &= (y > 0.0) & (y < 1.0)
+    if not np.any(ok):
+        return out
+    g = np.log(x_bar[ok] / (1.0 - x_bar[ok]))
+    se_g = se[ok] / (x_bar[ok] * (1.0 - x_bar[ok]))
+    z = np.abs(np.log(y / (1.0 - y)) - g) / se_g
+    out[ok] = np.clip(2.0 * stats.t.sf(z, df=n - 1), 1e-12, 1.0)
+    return out
+
+
+def _nig_alpha_crit_batch(values_2d, target, b0=0.0625, m0=0.5, k0=1.0, a0=2.0, lo=0.0, hi=1.0):
+    """alpha_crit for :func:`nig_ci_1d` -- symmetric on the (rescaled) value
+    scale with a t reference at ``df = 2*a_n``. Mirrors that function's
+    posterior update exactly; see it for the parameterization."""
+    span = float(hi - lo)
+    v = (np.asarray(values_2d, dtype=float) - lo) / span
+    y = (float(target) - lo) / span
+    n = v.shape[1]
+    out = np.ones(v.shape[0], dtype=float)
+    if n <= 0:
+        return out
+    xbar = v.mean(axis=1)
+    ss = ((v - xbar[:, None]) ** 2).sum(axis=1)
+    kn = k0 + n
+    mn = (k0 * m0 + n * xbar) / kn
+    an = a0 + n / 2.0
+    bn = b0 + 0.5 * ss + (k0 * n * (xbar - m0) ** 2) / (2.0 * kn)
+    scale = np.sqrt(np.maximum(bn / (an * kn), 0.0))
+    return _alpha_crit_symmetric(y, mn, scale, lambda z: stats.t.sf(z, df=2.0 * an))
+
+
+#: Optional fast path consumed by
+#: evalstats.core.paired._calibrated_joint_critical_value. Formulas without
+#: one fall back to per-resample scalar calls there.
+bonett_price_paired_ci_from_diffs.centre_scale_batch = _bonett_price_centre_scale_batch
+bonett_price_paired_ci_from_diffs.alpha_crit_batch = _bonett_price_alpha_crit_batch
+
+
+def mj_floor_paired_ci_from_diffs(diffs: np.ndarray, alpha: float, floor: float = 0.25) -> tuple[float, float]:
+    """Floored May & Johnson score CI for the paired binary difference,
+    from a-minus-b diffs.
+
+    Same closed-form score interval as :func:`mj_floor_paired_ci`, but takes
     the already-computed per-pair difference ``a_bin - b_bin`` (values in
     ``{-1, 0, 1}``) directly instead of the two raw ``values_a``/``values_b``
     arrays. Concordant pairs (``diff == 0``, whether both 1 or both 0) don't
@@ -1699,10 +2452,11 @@ def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, 
     z2 = z * z
     denom = 1.0 + z2 / n
 
+    s_hat = _mj_discordance_floor((n10 + n01) / n, floor)
     radicand = (
         (n10 + n01) / (n * n)
         - ((n10 - n01) ** 2) / (n**3)
-        + z2 / (4.0 * n * n)
+        + z2 * s_hat / (n * n)
     )
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -1738,6 +2492,23 @@ def _tango_scc_real_roots_in_range(coeffs: list[float]) -> np.ndarray:
     return np.sort(roots[(roots >= -1.0 - 1e-9) & (roots <= 1.0 + 1e-9)])
 
 
+def mj_unfloored_paired_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """May & Johnson (1997) eq. 11 as published, with NO discordance floor.
+
+    Provided as the comparison baseline that shows why the floor exists: this
+    is the literal published interval, which degenerates to zero width when
+    no pairs disagree and under-covers badly at low discordance (worst-case
+    0.719 against a nominal 0.95 at n=15, S=0.10, over the true difference).
+    Use :func:`mj_floor_paired_ci` in
+    practice.
+    """
+    return mj_floor_paired_ci(values_a, values_b, alpha, floor=0.0)
+
+
 def tango_scc_paired_ci(
     values_a: np.ndarray,
     values_b: np.ndarray,
@@ -1770,7 +2541,7 @@ def tango_scc_paired_ci(
     ``c=0.125`` is the paper's recommended "SCC-S" (small-correction)
     variant -- found in their simulations to best balance coverage and width
     against the plain (uncorrected) Tango score interval
-    (:func:`tango_paired_ci`, a separate, simpler large-sample approximation
+    (:func:`mj_floor_paired_ci`, a separate, simpler large-sample approximation
     that does not use this quartic's constrained-MLE derivation).
     ``c=0.25`` and ``c=0.5`` are their "SCC-M"/"SCC-L" variants.
 
@@ -1819,15 +2590,36 @@ def tango_scc_paired_ci(
     ci_high = float(upper_roots[-1]) if len(upper_roots) else d_hat
     ci_low = float(lower_roots[0]) if len(lower_roots) else d_hat
 
-    return (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
+    ci_low, ci_high = (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
+
+    # Yang, Sun & Hardin (2012) Remark 1. When every pair is discordant in
+    # the same direction the score statistic is 0/0 at delta = +/-1, so the
+    # quartic loses the corresponding root and the interval comes back
+    # EXCLUDING the point estimate d_hat = +/-1. Tango's interval is defined
+    # to take the boundary there. Without this the interval is also
+    # asymmetric under swapping a and b, since the root is recovered in one
+    # orientation but not the other. Matches Fagerland et al.'s reference
+    # implementation (R package contingencytables).
+    if n21 == 0.0 and n12 == N:
+        ci_high = 1.0
+    elif n12 == 0.0 and n21 == N:
+        ci_low = -1.0
+
+    return (ci_low, ci_high)
 
 
-def tango_paired_ci_multirun_cluster(
+def mj_floor_paired_ci_multirun_cluster(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
     """Cluster-robust Tango CI for paired binary difference.
+
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
 
     Treats each item as the unit of analysis. Uses the variance of
     per-item paired differences directly, avoiding fragile within/between
@@ -1836,7 +2628,7 @@ def tango_paired_ci_multirun_cluster(
     This is the most robust multirun extension: runs are treated as
     internal noise already reflected in delta_i.
 
-    Reduces exactly to tango_paired_ci when n_runs == 1.
+    Reduces exactly to mj_floor_paired_ci when n_runs == 1.
     """
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
@@ -1851,7 +2643,7 @@ def tango_paired_ci_multirun_cluster(
         return (0.0, 0.0)
 
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     # --- binarize ---
     a_bin = (values_a >= 0.5).astype(int)
@@ -1878,7 +2670,8 @@ def tango_paired_ci_multirun_cluster(
     denom = 1.0 + z2 / n_items
 
     # --- variance (cluster-robust) ---
-    radicand = var_delta / n_items + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(d10_i + d01_i)))
+    radicand = var_delta / n_items + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -1889,15 +2682,21 @@ def tango_paired_ci_multirun_cluster(
     return (lo, hi)
 
 
-def tango_paired_ci_multirun_effective(
+def mj_floor_paired_ci_multirun_effective(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Correlation-aware multirun Tango CI using effective sample size.
+    """Correlation-aware multi-run score CI using effective sample size.
 
-    This is "ER-Tango" in the paper's CI decision-tree figure and appendix:
-    the multi-run pairwise-binary method for N >= 50 (``method='tango'``
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
+
+    This is ``mj_floor_er`` in the paper's CI decision-tree figure and appendix (called "ER-Tango" before the 2026-08-24 rename):
+    the multi-run pairwise-binary method for N >= 50 (``method='mj_floor'``
     dispatches here automatically when R >= 3 seeded runs are present -- see
     :func:`pairwise_differences`).
 
@@ -1919,7 +2718,7 @@ def tango_paired_ci_multirun_effective(
         return (0.0, 0.0)
 
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     # --- binarize ---
     a_bin = (values_a >= 0.5).astype(int)
@@ -1963,7 +2762,8 @@ def tango_paired_ci_multirun_effective(
     z2 = z * z
     denom = 1.0 + z2 / n_items
 
-    radicand = between + within + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(u_i)))
+    radicand = between + within + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -1974,15 +2774,21 @@ def tango_paired_ci_multirun_effective(
     return (lo, hi)
 
 
-def tango_paired_ci_multirun_moments(
+def mj_floor_paired_ci_multirun_moments(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
     """Multi-run Tango-style CI using a cluster moments decomposition.
 
-    Not the method ``pairwise_differences(method='tango')`` dispatches to
-    for multi-run data -- that's :func:`tango_paired_ci_multirun_effective`
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
+
+    Not the method ``pairwise_differences(method='mj_floor')`` dispatches to
+    for multi-run data -- that's :func:`mj_floor_paired_ci_multirun_effective`
     ("ER-Tango" in the paper). This variant remains available as an
     alternative/comparison point (see ``simulations/harness``), not as a
     routed default.
@@ -1995,7 +2801,7 @@ def tango_paired_ci_multirun_moments(
 
     where ``delta_i`` is the per-item mean paired difference across runs and
     ``u_i`` is the per-item discordance mass. It remains score-shrunk using
-    Tango's denominator and reverts exactly to :func:`tango_paired_ci` when
+    the same denominator and reverts exactly to :func:`mj_floor_paired_ci` when
     ``n_runs == 1``.
 
     Parameters
@@ -2025,7 +2831,7 @@ def tango_paired_ci_multirun_moments(
 
     # Exact reduction to the original paired Tango interval for single-run data.
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
@@ -2056,7 +2862,8 @@ def tango_paired_ci_multirun_moments(
     z2 = z * z
     denom = 1.0 + z2 / n_items
 
-    radicand = between + within + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(u_i)))
+    radicand = between + within + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -2064,6 +2871,288 @@ def tango_paired_ci_multirun_moments(
     lo = max(-1.0, float(center - radius))
     hi = min(1.0, float(center + radius))
     return (lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# Multi-run Bonett-Price
+#
+# THE DERIVATION, once, so the three variants below can just cite it.
+#
+# Write D_i = A_i - B_i in {-1, 0, +1} for the single-run per-item difference.
+# Then sum_i D_i = n10 - n01 and sum_i D_i^2 = n10 + n01 (squaring a value in
+# {-1,0,1} is the same as taking its absolute value), so the published
+# Bonett & Price (2012) limits
+#
+#     p12 = (n10 + 1)/(n + 2),  p21 = (n01 + 1)/(n + 2)
+#     (p12 - p21) +/- z * sqrt[ (p12 + p21 - (p12 - p21)^2) / (n + 2) ]
+#
+# can be rewritten with no reference to the 2x2 table at all:
+#
+#     p12 - p21           = (sum_i D_i) / (n + 2)
+#     p12 + p21           = (sum_i D_i^2 + 2) / (n + 2)
+#     variance term       = mean(D^2) - mean(D)^2, both means over n + 2
+#
+# i.e. BONETT-PRICE IS THE PLAIN WALD INTERVAL ON THE MEAN OF D, COMPUTED ON
+# THE SAMPLE AUGMENTED BY TWO PSEUDO-ITEMS, ONE WITH D = +1 AND ONE WITH
+# D = -1 -- with the ddof=0 plug-in variance and the divisor n + 2 used
+# consistently for the mean, the variance and the standard error. (Verified
+# numerically against :func:`bonett_price_paired_ci` to 2e-16 over a grid of
+# n and alpha; see tests/test_bonett_price_multirun.py.) The Laplace
+# adjustment is the two pseudo-items: they cancel in the numerator of the
+# point estimate, shrinking it toward 0 by n/(n+2), and they contribute 2 to
+# the second moment, which is what keeps the variance term strictly positive
+# when no pairs disagree.
+#
+# That reading is what makes the multi-run generalisation obvious, and it
+# settles the question the "+1/+2" naturally raises -- whether the
+# pseudo-counts should be scaled by the number of runs R. They should NOT.
+# The pseudo-observations are ITEMS, not runs: two extra items, each of which
+# happens to be perfectly concordant across all R of its own runs (delta = +1
+# and -1, so within-item variance 0). Scaling them to R pseudo-runs
+# (equivalently, using pseudo-items with delta = +-1/R) makes the whole
+# regularisation vanish as R grows, so at zero observed discordance the
+# interval would collapse toward zero width -- exactly the degeneracy the
+# Laplace adjustment exists to prevent. Item-level heterogeneity is bounded
+# by N, not by N*R: more runs per item tell you nothing about items you never
+# sampled. That variant was implemented and measured, and it does fail this
+# way; the numbers are in tests/test_bonett_price_multirun.py
+# (``test_per_run_laplace_scaling_degenerates``), kept as a regression guard
+# so nobody re-derives it.
+#
+# So, for (N, R) data, work at the item scale throughout:
+#
+#     delta_i = mean_r (A_ir - B_ir)   in [-1, 1]   per-item mean difference
+#     u_i     = mean_r |A_ir - B_ir|   in [0, 1]    per-item discordance mass
+#     w_i     = u_i - delta_i^2        >= 0         per-item within-run variance
+#
+# augment with delta = +1 and delta = -1 (both with u = 1, hence w = 0), and
+# the three augmented moments are
+#
+#     delta~ = (sum_i delta_i) / (N + 2)
+#     m2~    = (sum_i delta_i^2 + 2) / (N + 2)
+#     V~     = m2~ - delta~^2          item-level total variance
+#     w~     = (sum_i w_i) / (N + 2)   mean within-item variance
+#
+# with the interval delta~ +/- z * sqrt(V~ / (N + 2)). At R = 1 every
+# delta_i is in {-1,0,1} so delta_i^2 = u_i, giving m2~ = p12 + p21 and
+# w_i = 0 -- every variant below reduces to :func:`bonett_price_paired_ci`
+# EXACTLY, not just asymptotically, and no special-casing of R == 1 is
+# needed anywhere.
+#
+# WHY NO EXPLICIT BETWEEN-RUN CORRELATION TERM. V~ is already the right
+# quantity. Items are the sampling unit and are iid; whatever correlation
+# the R runs of item i have with each other only affects Var(delta_i), and
+# Var(delta_i) is exactly what the item-level spread measures. Concretely,
+# under the usual one-way random-effects decomposition
+#
+#     Var(delta_i) = sigma_B^2 + sigma_W^2/R * (1 + (R-1)*rho)
+#
+# the design-effect factor is *inside* the quantity being estimated, so
+# estimating Var(delta_i) directly needs no rho at all. This is not a hand
+# wave: applying Kish's R_eff = R/(1 + (R-1)*rho) the way it is meant to be
+# applied -- pool all N*R runs for a run-level variance B~ = u~ - delta~^2,
+# estimate the run-level ICC rho = 1 - sigma_W^2/B~ with the UNBIASED within
+# estimate sigma_W^2 = R/(R-1) * w~, then inflate by the design effect --
+# gives B~ * (1 + (R-1)*rho) / R == V~ IDENTICALLY, to machine precision and
+# for every input, not merely in expectation. The design-effect correction
+# and the item-level variance are the same estimator written two ways. (Also
+# verified in tests/test_bonett_price_multirun.py.)
+#
+# So the three variants below differ ONLY in a floor applied to V~, mirroring
+# what mj_floor's three multi-run variants turn out to differ by (their
+# ``max(var - w/R', 0) + w/R'`` construction is algebraically
+# ``max(var, w/R')``):
+#
+#     cluster    V~                      no floor -- the derivation as-is
+#     moments    max(V~, w~/R)           floor at the within-item term alone
+#     effective  max(V~, w~/R_eff)       same, with Kish's R_eff <= R
+#
+# ---------------------------------------------------------------------------
+
+
+def _bp_item_moments(
+    values_a: np.ndarray, values_b: np.ndarray, fname: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-item ``(delta_i, u_i)`` from ``(n_items, n_runs)`` binary matrices.
+
+    ``delta_i`` is the per-item mean of ``A_ir - B_ir`` and ``u_i`` the
+    per-item mean of ``|A_ir - B_ir|`` (the discordance mass). Values are
+    thresholded at 0.5. See the derivation block above.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.shape != b.shape:
+        raise ValueError(f"{fname} expects arrays with equal shape (n_items, n_runs).")
+    if a.ndim != 2:
+        raise ValueError(f"{fname} expects 2-D arrays (n_items, n_runs).")
+    if a.shape[1] < 1:
+        # Caught explicitly: the per-item means below would be all-NaN and the
+        # w~/R floors would divide by zero, so an item with no runs at all
+        # would surface as a ZeroDivisionError from deep inside the variance
+        # rather than as the input error it is.
+        raise ValueError(f"{fname} expects at least one run per item.")
+    d = (a >= 0.5).astype(np.int8) - (b >= 0.5).astype(np.int8)
+    return np.mean(d, axis=1, dtype=float), np.mean(np.abs(d), axis=1, dtype=float)
+
+
+def _bonett_price_augmented_interval(
+    delta_i: np.ndarray, alpha: float, var_floor: float = 0.0,
+    pseudo_m2: float = 1.0,
+) -> tuple[float, float]:
+    """Wald interval on ``mean(delta_i)`` over the ``+/-1``-augmented item sample.
+
+    The shared core of every Bonett-Price variant in this module, single-run
+    included: see the derivation block above for why the two pseudo-items are
+    the Laplace adjustment. ``var_floor`` is a lower bound on the augmented
+    item-level variance ``V~``, used by the ``moments`` and ``effective``
+    variants; leave it at 0 for the plain (``cluster``) interval.
+    """
+    n = int(np.asarray(delta_i).shape[0])
+    if n <= 0:
+        return (0.0, 0.0)
+    delta_i = np.asarray(delta_i, dtype=float)
+    n_aug = n + 2.0
+    delta_t = float(np.sum(delta_i)) / n_aug        # pseudo-items cancel: +1 - 1 = 0
+    m2_t = (float(np.sum(delta_i * delta_i)) + 2.0 * pseudo_m2) / n_aug  # pseudo-items add m2 each
+    var_t = max(m2_t - delta_t * delta_t, float(var_floor), 0.0)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    se = float(np.sqrt(var_t / n_aug))
+    return (
+        float(np.clip(delta_t - z * se, -1.0, 1.0)),
+        float(np.clip(delta_t + z * se, -1.0, 1.0)),
+    )
+
+
+def bonett_price_paired_ci_multirun_cluster(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price CI, item-clustered -- the derivation with no floor.
+
+    The Bonett-Price counterpart of
+    :func:`mj_floor_paired_ci_multirun_cluster`, and the most defensible of
+    the three: it is the single-run interval's own construction carried over
+    unchanged, with the item as the unit of analysis and no extra modelling.
+
+        delta~ = (sum_i delta_i) / (N + 2)
+        V~     = (sum_i delta_i^2 + 2) / (N + 2) - delta~^2
+        CI     = delta~ +/- z * sqrt( V~ / (N + 2) )
+
+    where ``delta_i = mean_r (A_ir - B_ir)``. See the derivation block above
+    the private helpers in this module for the full argument, in particular
+    for why the ``+1/+2`` pseudo-counts stay on the ITEM scale and why no
+    between-run correlation term is needed (``V~`` already contains it, and
+    a correctly-specified Kish design effect provably reduces to ``V~``).
+
+    Reduces to :func:`bonett_price_paired_ci` EXACTLY at ``n_runs == 1``, by
+    construction rather than by a special case: at R = 1 each ``delta_i`` is
+    in ``{-1, 0, 1}``, so ``sum_i delta_i = n10 - n01`` and
+    ``sum_i delta_i^2 = n10 + n01``.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Arrays of shape ``(n_items, n_runs)``, thresholded at 0.5. Runs are
+        assumed paired across A and B.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    delta_i, _ = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_cluster"
+    )
+    return _bonett_price_augmented_interval(delta_i, alpha)
+
+
+def bonett_price_paired_ci_multirun_shrunk(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price with the pseudo-item MAGNITUDE Laplace-shrunk.
+
+    :func:`bonett_price_paired_ci_multirun_cluster` pins its two pseudo-items at
+    ``delta = +/-1``, the largest possible item-level discordance. At ``R = 1``
+    that is exactly right -- every discordant item has ``delta_i^2 = 1``, so a
+    pseudo-item IS one more typical discordant item, which is what a Laplace
+    pseudo-count means. At ``R > 1`` it stops being right: a discordant item's
+    ``delta_i^2`` shrinks toward its squared per-item rate, while the pseudo-mass
+    stays at 2, so the pseudo-items become several times heavier than any real
+    item and the floor progressively swallows the variance.
+
+    The fix applies Bonett-Price's own device a second time -- once to the
+    discordance RATE (which the ``n + 2`` denominator already does) and once to
+    the discordance MAGNITUDE, shrinking it toward the ``R = 1`` reference of 1
+    with the same weight of two pseudo-items::
+
+        m2 = (sum_i delta_i^2 + 2) / (sum_i u_i + 2),   u_i = mean_r |A_ir - B_ir|
+
+    and each pseudo-item then carries ``delta^2 = m2`` (still ``+/-sqrt(m2)``, so
+    they cancel in the mean and the centre is unchanged).
+
+    ``sum_i u_i`` is the EFFECTIVE number of fully-discordant items: an item
+    discordant on 1 of 20 runs contributes 0.05, not 1. Using a plain count of
+    discordant items instead fails badly when items flip sign across runs --
+    many items are then discordant on a few runs each, the count is large while
+    the mass is small, and ``m2`` collapses to ~0.2, removing the very
+    correction it exists to supply (measured MinCov .8268 vs .9296 on a
+    300-cell sweep).
+
+    Two properties make the construction easy to state. First, since
+    ``delta_i^2 <= |delta_i| <= u_i`` for every item, ``sum delta_i^2 <=
+    sum u_i`` and therefore ``m2`` lies in ``(0, 1]``, with ``m2 = 1`` exactly
+    when every discordant item is fully sign-consistent across its runs (which
+    includes ``R = 1``). The pseudo-mass can never exceed Bonett-Price's own,
+    and can never vanish. Second, ``m2`` IS a shrinkage estimator::
+
+        m2 = w * (sum delta_i^2 / sum u_i) + (1 - w) * 1,
+        w  = sum u_i / (sum u_i + 2)
+
+    (an identity, verified to 2.2e-16). The data term is the observed mean
+    squared magnitude per unit of discordance mass, the prior is the ``R = 1``
+    value of 1, and the weight is "effective discordant items against two
+    pseudo-items". That is also the diagnosis of an earlier variant that used
+    the data term ALONE (``w = 1``, no prior): it undercovered badly wherever
+    discordance was sparse, because the quantity it shrinks toward zero has
+    nothing holding it up.
+
+    Properties, all verified to machine precision:
+
+    * ``R = 1``: ``u_i = |D_i|`` and ``delta_i^2 = |D_i|``, so
+      ``sum delta_i^2 = sum u_i`` and ``m2 = 1`` EXACTLY -- this reduces to
+      :func:`bonett_price_paired_ci` bit-for-bit, with no special case.
+    * Zero discordance: ``m2 = 1``, matching the ``+/-1`` construction, which was
+      already correct there.
+    * Replication invariance: both sums depend only on the per-item values, so
+      ``R`` identical copies of one run leave the interval unchanged.
+    * Antisymmetry under swapping the two arms.
+
+    Note on measured worst-case coverage: a MinCov taken over many cells at
+    modest reps is biased low by selection. The three cells below .93 in the
+    1536-cell sweep at reps=500 all returned .948-.954 when rerun at
+    reps=20000, i.e. they were 1-2 MC standard errors low, not failures.
+
+    Calibration on a 300-cell sweep (5 discordance shapes x n in 20..100 x R in
+    2..20 x five run-consistency mixtures): MinCov .9296 with one cell below
+    .93, mean coverage .9744, at 94% of the ``+/-1`` construction's width. The
+    ``+/-1`` form remains better on worst case (MinCov .9444, no cells below
+    .93) and is still the shipped default; this variant is closer to nominal on
+    average and narrower.
+    """
+    delta_i, u_i = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_shrunk"
+    )
+    if delta_i.shape[0] == 0:
+        return (0.0, 0.0)
+    sq_sum = float(np.sum(delta_i * delta_i))
+    u_sum = float(np.sum(u_i))
+    m2 = (sq_sum + 2.0) / (u_sum + 2.0)
+    return _bonett_price_augmented_interval(delta_i, alpha, pseudo_m2=m2)
 
 
 def resolve_resampling_method(

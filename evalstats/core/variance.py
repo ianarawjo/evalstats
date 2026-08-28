@@ -14,6 +14,7 @@ separately captured by ``seed_variance_decomposition`` and
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -307,7 +308,34 @@ def robustness_metrics(
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
     multi_ci_result: Optional[dict[float, tuple[np.ndarray, np.ndarray]]] = None
+    # These are closed-form CIs for a *proportion or mean* (binomial score
+    # intervals, NIG, logit-t, ...) -- there's no median variant of any of
+    # them, so they silently ignore `statistic` entirely: the point estimate
+    # column would correctly report the median while the CI stayed built
+    # around the mean/proportion, a mismatch that can be severe enough for
+    # the reported CI to not even contain the reported point estimate (e.g.
+    # binary data whose median is 0 or 1 but whose Wilson CI is centered on
+    # the proportion). Substitute a bootstrap method that actually respects
+    # `statistic` instead of silently returning a mismatched CI.
     _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval", "logit_t"}
+    if statistic == "median":
+        warnings.warn(
+            "statistic='median' has not been validated by the same "
+            "simulation-based calibration testing as statistic='mean' "
+            "(the default) -- treat median CIs here more cautiously.",
+            UserWarning,
+            stacklevel=2,
+        )
+        if marginal_method in _analytical:
+            warnings.warn(
+                f"marginal_method='{marginal_method}' has no median variant "
+                "(it's a closed-form CI for a proportion/mean); falling "
+                "back to 'smooth_bootstrap' so the CI actually corresponds "
+                "to the reported median instead of silently mismatching it.",
+                UserWarning,
+                stacklevel=2,
+            )
+            marginal_method = "smooth_bootstrap"
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
@@ -393,10 +421,10 @@ def robustness_metrics(
                             ml, mh = logit_t_ci_1d(row, a)
                         mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "bootstrap_t":
-                lo, hi = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)
+                lo, hi = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng, statistic=statistic)
                 if multi_ci:
                     for a in GRADIENT_CI_ALPHAS:
-                        ml, mh = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)
+                        ml, mh = bootstrap_t_ci_1d(row, point_est, n_bootstrap, a, rng, statistic=statistic)
                         mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "bayes_bootstrap":
                 boot = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)

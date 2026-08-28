@@ -7,12 +7,16 @@ from evalstats.core.resampling import (
     bootstrap_ci_1d,
     bootstrap_diffs_nested,
     bootstrap_means_1d,
+    beta_ci_1d,
     bootstrap_t_ci_nested,
+    degenerate_sample_ci,
+    logit_t_ci_1d,
     nested_resample_cell_means_once,
     resolve_resampling_method,
     smooth_bootstrap_diffs_nested,
     smooth_bootstrap_means_1d,
 )
+from evalstats.core.stats_utils import rescaled_ci
 
 
 def test_resolve_resampling_method_auto_and_passthrough():
@@ -436,3 +440,64 @@ def test_bootstrap_t_nested_tiny_se_instability_falls_back_to_percentile():
     assert ci_t[0] <= ci_t[1]
     # Regression guard: nested bootstrap-t should remain numerically stable.
     assert (ci_t[1] - ci_t[0]) < 2.0
+
+class TestDegenerateSampleCI:
+    """The zero-variance fallback shared by logit_t_ci_1d and beta_ci_1d.
+
+    A constant sample used to produce a zero-width interval from every
+    variance-driven method, which covers the truth with probability 0 for any
+    population that isn't literally a point mass. See degenerate_sample_ci.
+    """
+
+    def test_all_ones_matches_clopper_pearson(self):
+        # n successes out of n: the fallback reduces exactly to the two-sided
+        # Clopper-Pearson interval, so the bounded-continuous path agrees with
+        # the binary path at the boundary instead of contradicting it.
+        n, alpha = 20, 0.05
+        lo, hi = logit_t_ci_1d(np.ones(n), alpha)
+        assert hi == pytest.approx(1.0)
+        assert lo == pytest.approx((alpha / 2) ** (1 / n))
+
+    def test_all_zeros_is_the_mirror_image(self):
+        n, alpha = 20, 0.05
+        lo, hi = logit_t_ci_1d(np.zeros(n), alpha)
+        assert lo == pytest.approx(0.0)
+        assert hi == pytest.approx(1.0 - (alpha / 2) ** (1 / n))
+
+    def test_constant_interior_sample_brackets_the_value(self):
+        lo, hi = logit_t_ci_1d(np.full(20, 0.7), 0.05)
+        assert lo < 0.7 < hi
+        assert 0.0 <= lo and hi <= 1.0
+
+    def test_width_shrinks_with_n(self):
+        widths = [np.diff(logit_t_ci_1d(np.full(n, 0.8), 0.05))[0] for n in (10, 20, 50, 100)]
+        assert widths == sorted(widths, reverse=True)
+
+    def test_inert_on_non_degenerate_data(self):
+        rng = np.random.default_rng(0)
+        vals = rng.beta(4, 2, size=40)
+        # Same answer as the plain delta method: the fallback only fires on a
+        # genuinely constant sample.
+        x_bar = float(np.mean(vals))
+        lo, hi = logit_t_ci_1d(vals, 0.05)
+        assert lo < x_bar < hi
+        assert np.diff([lo, hi])[0] < 0.2
+
+    def test_beta_ci_uses_the_same_fallback(self):
+        assert beta_ci_1d(np.ones(20), 0.05) == pytest.approx(logit_t_ci_1d(np.ones(20), 0.05))
+
+    def test_rescaled_likert_floor_stays_in_range_and_points_upward(self):
+        # All responses at the floor of a 1-5 scale: the interval must live
+        # inside [1, 5] and open upward, not straddle the scale's edge.
+        lo, hi = rescaled_ci(logit_t_ci_1d, np.ones(30), 0.05, 1.0, 5.0)
+        assert lo == pytest.approx(1.0)
+        assert 1.0 < hi < 5.0
+
+    def test_rescaled_paired_zero_diffs_straddle_zero(self):
+        # Every paired difference exactly 0 is not proof of a zero effect.
+        lo, hi = rescaled_ci(logit_t_ci_1d, np.zeros(30), 0.05, -1.0, 1.0)
+        assert lo < 0.0 < hi
+
+    def test_helper_respects_arbitrary_bounds(self):
+        lo, hi = degenerate_sample_ci(3.0, 25, 0.05, lo=1.0, hi=5.0)
+        assert 1.0 <= lo < 3.0 < hi <= 5.0

@@ -28,6 +28,8 @@ CommonStatsMethods = Literal[
     "clopper_pearson",
     "newcombe",
     "tango",
+    "mj_floor",
+    "bonett_price",
     "permutation",
     "sign_test",
 ]

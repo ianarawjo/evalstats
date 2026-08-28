@@ -224,7 +224,7 @@ def make_nav(active_slug, prefix="../", disabled_slugs=None):
     """Build the left investigations sidebar.
 
     active_slug: slug of the current investigation, OR one of
-                 "index" | "resources" | "choose" to highlight a guide link.
+                 "index" | "resources" | "which-method" to highlight a guide link.
     prefix:      relative path prefix to reach the site root.
                  "../" for investigation pages, "./" for top-level pages.
     disabled_slugs: optional set of investigation slugs to render as disabled.
@@ -333,7 +333,7 @@ def make_page(inv):
       <li><a href="../index.html#principles">Core Principles</a></li>
       <li><a href="../index.html#simulation">Simulation Study</a></li>
       <li><a href="../index.html#recommendations">Recommendations</a></li>
-      <li><a href="../choose.html">Choose a Method</a></li>
+      <li><a href="../which-method.html">Which Method?</a></li>
       <li><a href="../index.html#evalstats">evalstats</a></li>
     </ul>
   </div>

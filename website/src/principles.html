@@ -39,9 +39,11 @@
         Basically, we should assume all evals are ill-designed, underpowered, and therefore noisy until proven otherwise. 
         What's more, many evals concern safety, and a wider confidence interval that actually contains the truth is far safer than
         a narrow interval that misses it. Thus, we prefer tests and methods that sacrifice some statistical power to guard
-        against overconfidence. By default, <code>evalstats</code> uses 99% CIs (an alpha of 0.01 for CIs and p-values), which is more conservative than the traditional 0.05, 
-        as a Type I error risk of 5% is too high for the noisy, high-stakes, repeated-testing context of LLM evals. (Arguably, even 0.01 is too high a threshold, 
-        but we also don't want to be so conservative as to never find anything of importance.)
+        against overconfidence. By default, <code>evalstats</code> uses conventional 95% CIs (alpha of 0.05), so results are
+        directly comparable to what most practitioners and reviewers expect; call <code>set_alpha_ci(0.01)</code> to switch
+        to 99% CIs globally for safety-critical contexts where a 5% Type I error risk is too high. The conservatism shows up
+        elsewhere by default instead — a hard sample-size floor, non-parametric methods, and family-wise error control
+        (Šidák / Romano&ndash;Wolf) rather than looser per-comparison corrections.
       </div>
     </div>
     <div class="maxim-item">
@@ -109,7 +111,7 @@
         Conventions were established for (likely) different data types and contexts than LLM evals, and may not be suited to our needs. 
         Thus, whenever possible, we should run simulations that mirror real eval conditions to estimate how different methods 
         perform across realistic data types, sample sizes, and noise. 
-        The <code>method="auto"</code> defaults in <code>prompstats</code> should adapt to sample size N and data type 
+        The <code>method="auto"</code> defaults in <code>evalstats</code> should adapt to sample size N and data type
         based on which methods performed best in simulations that reflect those conditions.
       </div>
     </div>
@@ -129,15 +131,16 @@
     There <em>could</em> be a Bayesian alternative to this guide (amid other alternative philosophies), 
     which would change how we approach and report our evals analysis. 
     The main benefit of a Bayesian approach in this context would be its support for sequential testing 
-    and combining evidence across tests, which is common in evals as developers often start with small test sets 
-    and expand them over time. Although <code class="library">evalstats</code> uses some Bayesian methods 
-    (like <a href="https://github.com/sambowyer/bayes_evals"><code>bayes_evals</code></a> 
-    to approximate CIs at low sample size for binary data), it is decidedly not a Bayesian framework.
+    and combining evidence across tests, which is common in evals as developers often start with small test sets
+    and expand them over time. Although <code class="library">evalstats</code> uses some Bayesian methods
+    (a Normal-Inverse-Gamma credible interval for Likert/discrete paired comparisons, and an optional
+    <a href="https://github.com/sambowyer/bayes_evals"><code>bayes_evals</code></a>-based comparison for small-N binary data),
+    it is decidedly not a Bayesian framework.
     We think that an estimation-first frequentist approach is more accessible to the average practitioner, 
     closer to the traditional methods that they may be familiar with, and thus more likely to be adopted in the short term.
     If our goal is changing practices and making some inroads for uncertainty quantification in the LLM eval community, 
-    then we think this is the best place to start (and honestly, we're already doing some "non-traditional" things here—like using 99% CIs by default,
-    or adapting a max-T CI correction for multiple comparisons). 
+    then we think this is the best place to start (and honestly, we're already doing some "non-traditional" things here—like enforcing a hard
+    sample-size floor, or defaulting to family-wise error control for multiple comparisons instead of looser per-comparison corrections).
     However, we intend to explore a Bayesian mode in a future release.
   </p>
 </section>

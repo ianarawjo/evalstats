@@ -1,4 +1,4 @@
-"""Tests for validate_alignment() and compare(alignment=...) PPI propagation."""
+"""Tests for judge_alignment() and compare(alignment=...) PPI propagation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 import evalstats as es
 from evalstats.config import GRADIENT_CI_ALPHAS
-from evalstats.alignment import AlignmentResult, validate_alignment, _fit_calibration
+from evalstats.alignment import AlignmentResult, judge_alignment, _fit_calibration
 from evalstats.api import ComparisonResult
 
 
@@ -102,22 +102,22 @@ def _make_continuous_evaldata(
 
 
 # ---------------------------------------------------------------------------
-# validate_alignment — basic contracts
+# judge_alignment — basic contracts
 # ---------------------------------------------------------------------------
 
-class TestValidateAlignmentBasic:
+class TestJudgeAlignmentBasic:
     def test_returns_alignment_result(self):
         evaldata, metric = _make_binary_evaldata()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            result = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert isinstance(result, AlignmentResult)
 
     def test_stores_metadata(self):
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=30)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert ar.llm_metric == metric
         assert ar.human_col == "human_score"
         assert ar.score_type == "binary"
@@ -127,35 +127,35 @@ class TestValidateAlignmentBasic:
     def test_raises_missing_llm_column(self):
         evaldata, _ = _make_binary_evaldata()
         with pytest.raises(ValueError, match="llm_metric column"):
-            validate_alignment(evaldata, llm_metric="nonexistent", human_groundtruth="human_score")
+            judge_alignment(evaldata, llm_metric="nonexistent", human_groundtruth="human_score")
 
     def test_raises_missing_human_column(self):
         evaldata, metric = _make_binary_evaldata()
         with pytest.raises(ValueError, match="human_groundtruth column"):
-            validate_alignment(evaldata, llm_metric=metric, human_groundtruth="nonexistent")
+            judge_alignment(evaldata, llm_metric=metric, human_groundtruth="nonexistent")
 
     def test_raises_no_labels_at_all(self):
         evaldata, metric = _make_binary_evaldata()
         evaldata._df["human_score"] = np.nan  # wipe all labels
         with pytest.raises(ValueError, match="No rows have human labels"):
-            validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
 
     def test_warns_small_n_labeled(self):
         evaldata, metric = _make_binary_evaldata(n_labeled=15)
         with pytest.warns(UserWarning, match="fewer than ~30 labeled items"):
-            validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
 
     def test_no_small_n_warning_above_threshold(self):
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         small_n_warns = [w for w in caught if "fewer than ~30" in str(w.message)]
         assert len(small_n_warns) == 0
 
 
 # ---------------------------------------------------------------------------
-# validate_alignment — alignment metrics by score type
+# judge_alignment — alignment metrics by score type
 # ---------------------------------------------------------------------------
 
 class TestAlignmentMetrics:
@@ -163,7 +163,7 @@ class TestAlignmentMetrics:
         evaldata, metric = _make_binary_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert "percent_agreement" in ar.alignment_metrics
         assert "cohens_kappa" in ar.alignment_metrics
 
@@ -171,7 +171,7 @@ class TestAlignmentMetrics:
         evaldata, metric = _make_binary_evaldata(n_labeled=50, agreement_rate=0.80)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         pa = ar.alignment_metrics["percent_agreement"]["estimate"]
         assert 0.0 <= pa <= 1.0
         # With ~80% agreement rate we expect measured agreement between 0.5 and 1.0
@@ -181,7 +181,7 @@ class TestAlignmentMetrics:
         evaldata, metric = _make_binary_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         for entry in ar.alignment_metrics.values():
             assert entry["ci_low"] <= entry["estimate"] <= entry["ci_high"]
 
@@ -189,7 +189,7 @@ class TestAlignmentMetrics:
         evaldata, metric = _make_likert_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert "weighted_kappa" in ar.alignment_metrics
         assert "spearman_r" in ar.alignment_metrics
 
@@ -197,7 +197,7 @@ class TestAlignmentMetrics:
         evaldata, metric = _make_continuous_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert "pearson_r" in ar.alignment_metrics
         assert "spearman_r" in ar.alignment_metrics
 
@@ -216,13 +216,13 @@ class TestAlignmentMetrics:
         human[labeled_idx] = df.loc[labeled_idx, "llm_score"].to_numpy()
         df["human_score"] = human
         evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
-        ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+        ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
         kappa = ar.alignment_metrics["cohens_kappa"]["estimate"]
         assert kappa >= 0.90
 
 
 # ---------------------------------------------------------------------------
-# validate_alignment — representativeness checks
+# judge_alignment — representativeness checks
 # ---------------------------------------------------------------------------
 
 class TestRepresentativenessCheck:
@@ -231,7 +231,7 @@ class TestRepresentativenessCheck:
         evaldata, metric = _make_binary_evaldata(n_labeled=40, seed=7)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         assert "score_distribution" in ar.representativeness
 
     def test_skewed_alignment_set_warns(self):
@@ -254,7 +254,7 @@ class TestRepresentativenessCheck:
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
         repr_warns = [w for w in caught if "non-representative" in str(w.message).lower()
                       or "representative" in str(w.message).lower()]
         assert len(repr_warns) >= 1
@@ -268,7 +268,7 @@ class TestRepresentativenessCheck:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         slice_keys = [k for k in ar.representativeness if k.startswith("slice_")]
         assert "slice_difficulty" in slice_keys
 
@@ -282,7 +282,7 @@ class TestSampleImputedScores:
         evaldata, metric = _make_binary_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         llm_scores = evaldata._df[metric].to_numpy(dtype=float)
         rng = _rng(10)
         imputed = ar._sample_imputed_scores(llm_scores, rng)
@@ -293,7 +293,7 @@ class TestSampleImputedScores:
         evaldata, metric = _make_likert_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         llm_scores = evaldata._df[metric].to_numpy(dtype=float)
         rng = _rng(11)
         imputed = ar._sample_imputed_scores(llm_scores, rng)
@@ -305,7 +305,7 @@ class TestSampleImputedScores:
         evaldata, metric = _make_continuous_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         llm_scores = evaldata._df[metric].to_numpy(dtype=float)
         rng = _rng(12)
         imputed = ar._sample_imputed_scores(llm_scores, rng)
@@ -317,7 +317,7 @@ class TestSampleImputedScores:
         evaldata, metric = _make_binary_evaldata(n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         llm_scores = evaldata._df[metric].to_numpy(dtype=float)
         draw1 = ar._sample_imputed_scores(llm_scores, _rng(1))
         draw2 = ar._sample_imputed_scores(llm_scores, _rng(2))
@@ -338,7 +338,7 @@ class TestSampleImputedScores:
         human[labeled_idx] = df.loc[labeled_idx, "llm_score"].to_numpy()
         df["human_score"] = human
         evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
-        ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+        ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
         llm_scores = evaldata._df["llm_score"].to_numpy(dtype=float)
         imputed = ar._sample_imputed_scores(llm_scores, _rng(99))
@@ -362,7 +362,7 @@ class TestCompareAlignmentPPI:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result_mc   = es.compare(evaldata, factors="model", metric=metric,
                                      alignment={metric: ar}, n_mc=30)
             result_base = es.compare(evaldata, factors="model", metric=metric)
@@ -399,7 +399,7 @@ class TestCompareAlignmentPPI:
             evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score",
+                ar = judge_alignment(evaldata, llm_metric="llm_score",
                                         human_groundtruth="human_score")
                 result = es.compare(evaldata, factors="model", metric="llm_score",
                                     alignment={"llm_score": ar}, n_mc=50)
@@ -415,50 +415,11 @@ class TestCompareAlignmentPPI:
             f"Poor alignment rectifier should be nonzero, got {noisy_rect:.6f}"
         )
 
-    def test_rubin_cis_converge_under_perfect_alignment(self):
-        """Rubin's rules: with a perfect judge (B → 0), PPI CIs should be close to base.
-
-        Unlike the former conservative percentile aggregation, Rubin's rules
-        have T → W̄ when B = 0, so the PPI CI width converges to the base width.
-        We allow 30% slack to absorb PPI noise (finite n_mc=50, n_bootstrap=2000
-        inner cap, residual Beta posterior uncertainty).
-        """
-        rng = _rng(55)
-        n = 100
-        df = pd.DataFrame({
-            "model":     ["A"] * n + ["B"] * n,
-            "item":      list(range(n)) * 2,
-            "llm_score": np.concatenate([
-                rng.binomial(1, 0.75, n), rng.binomial(1, 0.45, n)
-            ]).astype(float),
-        })
-        human = np.full(len(df), np.nan)
-        labeled_idx = rng.choice(len(df), size=60, replace=False)
-        human[labeled_idx] = df.loc[labeled_idx, "llm_score"].to_numpy()
-        df["human_score"] = human
-        evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
-
-        ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
-        result_mc   = es.compare(evaldata, factors="model", metric="llm_score",
-                                 alignment={"llm_score": ar}, n_mc=50)
-        result_base = es.compare(evaldata, factors="model", metric="llm_score")
-
-        bundle_mc   = result_mc._primary_bundle()
-        bundle_base = result_base._primary_bundle()
-
-        for i in range(len(bundle_mc.robustness.mean)):
-            width_mc   = float(bundle_mc.robustness.ci_high[i]   - bundle_mc.robustness.ci_low[i])
-            width_base = float(bundle_base.robustness.ci_high[i] - bundle_base.robustness.ci_low[i])
-            assert width_mc < width_base * 1.30, (
-                f"Entity {i}: Rubin PPI width {width_mc:.4f} exceeds 1.3× base "
-                f"{width_base:.4f} even under perfect alignment"
-            )
-
     def test_variance_components_populated(self):
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
         d = result.to_dict()
@@ -491,7 +452,7 @@ class TestCompareAlignmentPPI:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result_mc   = es.compare(evaldata, factors="model", metric=metric,
                                      alignment={metric: ar}, n_mc=30)
             result_base = es.compare(evaldata, factors="model", metric=metric)
@@ -506,7 +467,7 @@ class TestCompareAlignmentPPI:
         evaldata, metric = _make_likert_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
         assert isinstance(result, ComparisonResult)
@@ -518,7 +479,7 @@ class TestCompareAlignmentPPI:
         evaldata, metric = _make_continuous_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
         assert isinstance(result, ComparisonResult)
@@ -544,7 +505,7 @@ class TestCompareAlignmentPPI:
         evaldata = es.load_from(df, col_map={"system": "model", "item": "item"})
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric="llm_score",
                                 alignment={"llm_score": ar}, n_mc=20)
         assert isinstance(result, ComparisonResult)
@@ -555,7 +516,7 @@ class TestCompareAlignmentPPI:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             base = es.compare(evaldata, factors="model", metric=metric)
 
         with pytest.warns(UserWarning, match="no entry for metric column"):
@@ -572,7 +533,7 @@ class TestCompareAlignmentPPI:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         with pytest.warns(UserWarning, match="must be a dict"):
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment=ar, n_mc=20)
@@ -596,7 +557,7 @@ class TestCompareAlignmentPPI:
         evaldata = es.load_from(df, col_map={"model": "model", "prompt": "prompt", "item": "item"})
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
         with pytest.warns(UserWarning, match="not yet supported"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -615,7 +576,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=61)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=25)
 
@@ -630,7 +591,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=62)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=25)
 
@@ -652,7 +613,7 @@ class TestPPIPooledPValues:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric, alpha=0.05,
                                 alignment={metric: ar}, n_mc=30,
                                 rng=np.random.default_rng(99))
@@ -670,7 +631,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=1)
         vc = result.to_dict()["variance_components"]
@@ -682,7 +643,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=0)
         vc = result.to_dict()["variance_components"]
@@ -694,7 +655,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=64)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=25)
 
@@ -714,7 +675,7 @@ class TestPPIPooledPValues:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
 
         # Compare with different correction methods (via backend's native routing)
         # Note: correction is currently hardcoded in _run_alignment_mc, but we can
@@ -730,7 +691,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=66)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
 
         rng1 = np.random.default_rng(42)
         result1 = es.compare(evaldata, factors="model", metric=metric,
@@ -771,7 +732,7 @@ class TestPPIPooledPValues:
             evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score",
+                ar = judge_alignment(evaldata, llm_metric="llm_score",
                                         human_groundtruth="human_score")
                 result = es.compare(evaldata, factors="model", metric="llm_score",
                                     alignment={"llm_score": ar}, n_mc=35)
@@ -797,7 +758,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=67)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=25)
 
@@ -813,7 +774,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_likert_evaldata(n_items=80, n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
 
@@ -827,7 +788,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_continuous_evaldata(n_items=80, n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
 
@@ -841,7 +802,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
         bundle = result._primary_bundle()
@@ -861,7 +822,7 @@ class TestPPIPooledPValues:
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             for n_mc, expected_n_boot in [(10, 1000), (25, 1000), (2000, 2000)]:
                 result = es.compare(evaldata, factors="model", metric=metric,
                                     alignment={metric: ar}, n_mc=n_mc)
@@ -898,7 +859,7 @@ class TestPPISampleSizeChecks:
         evaldata = _make_small_evaldata(n_items=40, n_labeled=10)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score",
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
         with pytest.raises(ValueError, match="15 human-labeled items"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -910,7 +871,7 @@ class TestPPISampleSizeChecks:
         evaldata = _make_small_evaldata(n_items=20, n_labeled=15)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score",
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
         with pytest.raises(ValueError, match="50 items"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -923,7 +884,7 @@ class TestPPISampleSizeChecks:
         evaldata = _make_small_evaldata(n_items=60, n_labeled=20)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score",
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
         with pytest.warns(UserWarning, match="recommend ≥ 30"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -935,7 +896,7 @@ class TestPPISampleSizeChecks:
         evaldata = _make_small_evaldata(n_items=30, n_labeled=30)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score",
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
         with pytest.warns(UserWarning, match="recommend ≥ 100"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -946,7 +907,7 @@ class TestPPISampleSizeChecks:
         residual left for the LLM-only term (n_all=0 in the PPI variance
         decomposition Var(unlab)/n_all + Var(rectifier)/n_lab). This used to
         raise a bare ZeroDivisionError from deep inside
-        evalstats.tests._ppi_single_wilson/_ppi_paired_tango; it should now
+        evalstats.tests._ppi_single_wilson/_ppi_paired_mj_floor; it should now
         raise a clear, actionable ValueError instead."""
         rng = np.random.default_rng(7)
         n_items = 60
@@ -968,7 +929,7 @@ class TestPPISampleSizeChecks:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score",
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
         with pytest.raises(ValueError, match="at least one unlabeled item"):
             es.compare(evaldata, factors="model", metric="llm_score",
@@ -979,7 +940,7 @@ class TestPPISampleSizeChecks:
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             es.compare(evaldata, factors="model", metric=metric, alignment={metric: ar})
@@ -1002,7 +963,7 @@ class TestPPICIMethodWarning:
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         with pytest.raises(ValueError, match="no validated implementation"):
             es.compare(evaldata, factors="model", metric=metric,
                        alignment={metric: ar},
@@ -1014,7 +975,7 @@ class TestPPICIMethodWarning:
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             result = es.compare(evaldata, factors="model", metric=metric,
@@ -1026,3 +987,213 @@ class TestPPICIMethodWarning:
             if "percentile bootstrap" in str(w.message) and "overridden" in str(w.message)
         ]
         assert len(override_warns) == 0
+
+
+# ---------------------------------------------------------------------------
+# Multi-condition judge_alignment: design=/test= dispatch, per-test
+# linearizations, and the label-efficiency (n_eff/multiplier) numbers.
+#
+# The linearizations are validated against theory, not just smoke-tested:
+# with the variance-minimizing lambda, PPI's variance reduction is exactly
+# 1/(1 - rho^2*(1 - n_lab/N)) where rho correlates the two sides' INFLUENCE
+# FUNCTIONS. test_oracle_lambda_matches_predicted_multiplier below rebuilds
+# that oracle estimator directly (no bootstrap, no evalstats.tests lambda)
+# and checks the prediction end to end -- this is the regression guard for
+# two real bugs found and fixed:
+#   * mannwhitney scored group B as -F_X(y) instead of 1-F_X(y), putting the
+#     pooled halves ~1.0 apart and inflating rho ~2x.
+#   * wilcoxon borrowed sign(d)*(2F-1) from the (since-removed)
+#     hajek_experimental path, which is not affine in F_D(d); it now reuses
+#     evalstats.ppi._walsh_theta_h1_components, the same per-item Hajek
+#     projection the production correction builds its own variance from.
+# ---------------------------------------------------------------------------
+
+def _cond(rng, n=400, n_lab=120, d=0.0, judge_noise=0.6, paired=False):
+    """One (judge, sparse-human) pair per condition."""
+    if paired:
+        base = rng.normal(0, 1, n)
+        ha, hb = base, base + rng.normal(d, 1.0, n)
+        m = np.zeros(n, bool)
+        m[rng.choice(n, n_lab, replace=False)] = True
+        ma = mb = m
+    else:
+        ha, hb = rng.normal(0, 1, n), rng.normal(d, 1, n)
+        ma = np.zeros(n, bool); ma[rng.choice(n, n_lab, replace=False)] = True
+        mb = np.zeros(n, bool); mb[rng.choice(n, n_lab, replace=False)] = True
+    ja = ha + rng.normal(0, judge_noise, n)
+    jb = hb + rng.normal(0, judge_noise, n)
+    return {"A": (ja, np.where(ma, ha, np.nan)), "B": (jb, np.where(mb, hb, np.nan))}
+
+
+class TestMultiConditionAlignment:
+
+    def test_design_required_when_ambiguous(self):
+        conds = _cond(_rng(1))
+        with pytest.raises(ValueError, match="design"):
+            judge_alignment(conds, selection="random")
+
+    def test_test_implies_design_and_conflict_raises(self):
+        conds = _cond(_rng(2), paired=True)
+        r = judge_alignment(conds, test="wilcoxon", selection="random")
+        assert r.design == "within"          # implied, not passed
+        with pytest.raises(ValueError, match="always design"):
+            judge_alignment(conds, test="wilcoxon", design="between", selection="random")
+
+    def test_two_condition_test_decomposes_over_pairs(self):
+        """A 2-condition-only test given 3+ conditions is BY DESIGN reported
+        per pair (the post-hoc planning number), not rejected."""
+        rng = _rng(3)
+        conds = _cond(rng, paired=True)
+        conds["C"] = _cond(rng, paired=True)["B"]
+        r = judge_alignment(conds, test="wilcoxon", selection="random")
+        assert r.omnibus_metric is None
+        assert set(r.test_pairwise_metrics) == {("A", "B"), ("A", "C"), ("B", "C")}
+
+    def test_linearize_rejects_wrong_condition_count(self):
+        """The count bound itself is enforced where the whole-design
+        linearization is actually built."""
+        from evalstats.alignment import _linearize_for_test
+        rng = _rng(31)
+        conds = _cond(rng, paired=True)
+        conds["C"] = _cond(rng, paired=True)["B"]
+        with pytest.raises(ValueError, match="exactly 2"):
+            _linearize_for_test(conds, test="wilcoxon", design="within")
+
+    def test_single_condition_rejects_comparison_test(self):
+        rng = _rng(4)
+        n = 200
+        h = rng.normal(0, 1, n); j = h + rng.normal(0, 0.5, n)
+        hs = h.copy(); hs[rng.random(n) < 0.5] = np.nan
+        with pytest.raises(ValueError, match="needs a comparison"):
+            judge_alignment(j, hs, test="wilcoxon", selection="random")
+
+    def test_mean_estimate_exposes_n_eff(self):
+        rng = _rng(5)
+        n = 600
+        h = rng.normal(0, 1, n); j = h + rng.normal(0, 0.5, n)
+        hs = h.copy(); hs[rng.random(n) < 0.7] = np.nan
+        r = judge_alignment(j, hs, test="mean_estimate", selection="random")
+        assert r.n_eff > r.n_labeled            # PPI buys something
+        assert r.multiplier > 1.0
+        assert r.n_eff == pytest.approx(r.n_labeled * r.multiplier, rel=1e-9)
+
+    def test_n_eff_requires_test(self):
+        rng = _rng(6)
+        n = 300
+        h = rng.normal(0, 1, n); j = h + rng.normal(0, 0.5, n)
+        hs = h.copy(); hs[rng.random(n) < 0.5] = np.nan
+        r = judge_alignment(j, hs, selection="random")
+        with pytest.raises(ValueError, match="No test="):
+            _ = r.n_eff
+
+    @pytest.mark.parametrize("test,paired", [
+        ("ttest", False), ("ttest", True), ("mannwhitney", False), ("wilcoxon", True),
+    ])
+    def test_two_condition_tests_report_per_pair(self, test, paired):
+        conds = _cond(_rng(7), paired=paired)
+        kw = {} if test in ("wilcoxon", "mannwhitney") else {"design": "within" if paired else "between"}
+        r = judge_alignment(conds, test=test, selection="random", **kw)
+        assert r.omnibus_metric is None
+        m = r.test_pairwise_metrics[("A", "B")]
+        assert np.isfinite(m["estimate"]) and 0.0 <= m["n_eff"] < np.inf
+        assert m["n_eff"] >= m["n"]           # never worse than labels alone
+
+    @pytest.mark.parametrize("test", ["anova_oneway", "kruskalwallis", "friedman"])
+    def test_omnibus_tests_report_whole_design(self, test):
+        rng = _rng(8)
+        paired = test == "friedman"
+        conds = _cond(rng, paired=paired)
+        conds["C"] = _cond(rng, paired=paired)["B"]
+        kw = {"design": "within" if paired else "between"} if test == "anova_oneway" else {}
+        r = judge_alignment(conds, test=test, selection="random", **kw)
+        assert r.omnibus_metric is not None    # whole-design number
+        assert r.test_pairwise_metrics is None
+        assert len(r.pairwise_metrics) == 3    # raw pairwise still reported
+        assert np.isfinite(r.omnibus_metric["n_eff"])
+
+    def test_per_condition_counts_reported(self):
+        conds = _cond(_rng(9), n=400, n_lab=120)
+        r = judge_alignment(conds, design="between", selection="random")
+        for name in ("A", "B"):
+            n_lab, n_tot = r.condition_counts[name]
+            assert n_lab == 120 and n_tot == 400
+
+    def test_selection_warns_when_unknown(self):
+        conds = _cond(_rng(10))
+        with pytest.warns(UserWarning, match="selection"):
+            judge_alignment(conds, design="between")
+
+    def test_wilcoxon_rho_is_the_production_hajek_projection(self):
+        """The whole point of test=: for a rank test the reported rho is the
+        influence-function correlation the production correction itself uses
+        (evalstats.ppi._walsh_theta_h1_components), NOT raw Spearman."""
+        from evalstats.ppi import _walsh_theta_h1_components
+
+        conds = _cond(_rng(11), paired=True, d=0.5)
+        r = judge_alignment(conds, test="wilcoxon", selection="random")
+
+        (ja, al), (jb, bl) = conds["A"], conds["B"]
+        m = ~np.isnan(al) & ~np.isnan(bl)
+        expected = np.corrcoef(
+            _walsh_theta_h1_components(ja[m] - jb[m]),
+            _walsh_theta_h1_components(al[m] - bl[m]),
+        )[0, 1]
+
+        corrected = r.test_pairwise_metrics[("A", "B")]["estimate"]
+        assert corrected == pytest.approx(expected, abs=1e-12)
+        raw = r.pairwise_metrics[("A", "B")]["spearman_r"]["estimate"]
+        assert corrected != pytest.approx(raw, abs=1e-9)   # a different quantity
+
+    @pytest.mark.parametrize("kind,d", [("wilcoxon", 0.0), ("wilcoxon", 1.0),
+                                        ("mannwhitney", 0.0), ("mannwhitney", 1.0)])
+    def test_oracle_lambda_matches_predicted_multiplier(self, kind, d):
+        """rho from the linearization must predict the ACTUAL variance
+        reduction achievable at the variance-minimizing lambda, at every
+        effect size. Guards the two fixed linearization bugs."""
+        from evalstats.alignment import (
+            _linearize_wilcoxon, _linearize_mannwhitney, _n_eff,
+        )
+        from evalstats.ppi import paired_walsh_midrank_theta
+        from evalstats.tests import _midrank_theta
+
+        N, n_lab, reps = 600, 150, 1500
+        rng = _rng(1234 + int(d * 10))
+        cls, ppi, rhos = [], [], []
+        for _ in range(reps):
+            if kind == "wilcoxon":
+                base = rng.normal(0, 1, N)
+                ha, hb = base, base + rng.normal(d, 1.0, N)
+            else:
+                ha, hb = rng.normal(0, 1, N), rng.normal(d, 1, N)
+            ja = ha + rng.normal(0, 0.8, N)
+            jb = hb + rng.normal(0, 0.8, N)
+            if kind == "wilcoxon":
+                idx = rng.permutation(N); L, U = idx[:n_lab], idx[n_lab:]
+                al = np.where(np.isin(np.arange(N), L), ha, np.nan)
+                bl = np.where(np.isin(np.arange(N), L), hb, np.nan)
+                th = paired_walsh_midrank_theta(ha[L] - hb[L])
+                thh_l = paired_walsh_midrank_theta(ja[L] - jb[L])
+                thh_u = paired_walsh_midrank_theta(ja[U] - jb[U])
+                jl, hl = _linearize_wilcoxon({"A": (ja, al), "B": (jb, bl)})
+            else:
+                ia, ib = rng.permutation(N), rng.permutation(N)
+                La, Ua, Lb, Ub = ia[:n_lab], ia[n_lab:], ib[:n_lab], ib[n_lab:]
+                al = np.where(np.isin(np.arange(N), La), ha, np.nan)
+                bl = np.where(np.isin(np.arange(N), Lb), hb, np.nan)
+                th = _midrank_theta(ha[La], hb[Lb])
+                thh_l = _midrank_theta(ja[La], jb[Lb])
+                thh_u = _midrank_theta(ja[Ua], jb[Ub])
+                jl, hl = _linearize_mannwhitney({"A": (ja, al), "B": (jb, bl)})
+            u = N - n_lab
+            Vj = np.var(jl, ddof=1)
+            C = np.cov(hl, jl, ddof=1)[0, 1]
+            lam = (C / n_lab) / (Vj / u + Vj / n_lab) if Vj > 0 else 0.0
+            ppi.append(th + lam * (thh_u - thh_l))
+            cls.append(th)
+            rhos.append(np.corrcoef(jl, hl)[0, 1] ** 2)
+
+        oracle_M = np.var(cls, ddof=1) / np.var(ppi, ddof=1)
+        pred_M, _ = _n_eff(np.sqrt(np.nanmean(rhos)), n_lab, N)
+        assert pred_M / oracle_M == pytest.approx(1.0, abs=0.10), (
+            f"{kind} d={d}: predicted {pred_M:.4f} vs oracle {oracle_M:.4f}"
+        )

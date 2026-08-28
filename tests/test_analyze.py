@@ -198,6 +198,67 @@ def test_analyze_multimodel_single_prompt_runs_without_warning():
     assert analysis.best_pair == ("Model 2", "Prompt A")
 
 
+def test_print_summary_multimodel_single_prompt_does_not_crash(capsys):
+    # Regression test: printing a MultiModelBundle's "cross-model
+    # per-template comparison" section used to crash with
+    # AttributeError: 'NoneType' object has no attribute 'test_method'
+    # whenever there was only one prompt (so zero pairwise template
+    # comparisons exist) -- the same degenerate shape also hit inside the
+    # per-model summary loop, since each per-model bundle has exactly one
+    # template too. See _print_pairwise_section's first_result is None guard.
+    rng = np.random.default_rng(0)
+    n_models, n_inputs = 3, 60
+    target_means = np.array([7.0, 8.0, 6.5])
+    scores = np.empty((n_models, 1, n_inputs), dtype=float)
+    for model_idx in range(n_models):
+        scores[model_idx, 0] = rng.normal(loc=target_means[model_idx], scale=0.8, size=n_inputs)
+    scores = np.clip(scores, 0.0, 10.0)
+    result = es.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["Model 1", "Model 2", "Model 3"],
+        template_labels=["Prompt A"],
+        input_labels=[f"item_{i:03d}" for i in range(n_inputs)],
+    )
+
+    analysis = es.analyze(result, n_bootstrap=300, rng=np.random.default_rng(1))
+    es.print_analysis_summary(analysis, top_pairwise=3)
+
+    out = capsys.readouterr().out
+    assert "Executive Summary" in out
+    assert "Model 2" in out
+
+
+def test_print_summary_multimodel_single_prompt_skips_degenerate_sections(capsys):
+    # With only one prompt, "Cross-model per-template comparison" (nothing
+    # to compare across templates) and the per-model breakdown loop (each
+    # model's "breakdown across templates" is just its one already-shown
+    # number again) are pure noise -- they used to print anyway. The
+    # meaningful "Model-level comparison" (3 models IS something to
+    # compare) should still print.
+    rng = np.random.default_rng(0)
+    n_models, n_inputs = 3, 60
+    target_means = np.array([7.0, 8.0, 6.5])
+    scores = np.empty((n_models, 1, n_inputs), dtype=float)
+    for model_idx in range(n_models):
+        scores[model_idx, 0] = rng.normal(loc=target_means[model_idx], scale=0.8, size=n_inputs)
+    scores = np.clip(scores, 0.0, 10.0)
+    result = es.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["Model 1", "Model 2", "Model 3"],
+        template_labels=["Prompt A"],
+        input_labels=[f"item_{i:03d}" for i in range(n_inputs)],
+    )
+
+    analysis = es.analyze(result, n_bootstrap=300, rng=np.random.default_rng(1))
+    es.print_analysis_summary(analysis, top_pairwise=3)
+
+    out = capsys.readouterr().out
+    assert "Cross-model per-template comparison" not in out
+    assert "Per-Model Summary" not in out
+    # _print_loud_section banner-cases its text.
+    assert "MODEL-LEVEL COMPARISON" in out
+
+
 def test_print_summary_includes_critical_difference_groups(capsys):
     # Three identical templates => Nemenyi should mark all as indistinguishable.
     scores = np.array(
@@ -262,7 +323,7 @@ def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(ca
     assert "p (Wilcoxon signed-rank) = 0.03125" in out
 
 
-def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
+def test_print_pairwise_summary_keeps_mcnemar_pvalue_for_newcombe(capsys):
     pair = PairedDiffResult(
         template_a="Prompt A",
         template_b="Prompt B",
@@ -282,8 +343,8 @@ def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
     print_pairwise_summary(pair, alpha=0.05)
     out = capsys.readouterr().out
 
-    assert "p (McNemar exact) =" in out
-    assert "p (McNemar exact) = 0.04" in out
+    assert "p (McNemar mid-p) =" in out
+    assert "p (McNemar mid-p) = 0.04" in out
 
 
 def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
@@ -529,6 +590,101 @@ def test_assign_significance_groups_keeps_clear_winner_in_group_1():
     assert groups["qwen/qwen3-vl-8b-instruct"] == "#1"
     assert groups["gpt-4.1-nano"] == "#2"
     assert groups["google/gemma-3-4b-it"] == "#2"
+
+
+def _pdr(a: str, b: str, *, point_diff: float, p_value: float) -> PairedDiffResult:
+    return PairedDiffResult(
+        template_a=a, template_b=b, point_diff=point_diff, std_diff=0.05,
+        ci_low=point_diff - 0.1, ci_high=point_diff + 0.1, p_value=p_value,
+        test_method="bootstrap", n_inputs=50, per_input_diffs=np.zeros(50, dtype=float),
+        n_runs=1, statistic="mean", wilcoxon_p=None,
+    )
+
+
+def test_assign_significance_groups_merges_chained_bands_and_stays_monotonic():
+    # Regression test for a bug where an isolated performer sandwiched
+    # between two overlapping (chained) non-significance bands got assigned
+    # a *later* group number than lower-ranked entities below it, making
+    # the Grp column non-monotonic down the rank-sorted table.
+    #
+    # Rank order: G04 > G03 > G02 > G01 > G00. G03 is significantly
+    # different from everyone (isolated). G02~G01 and G01~G00 are each
+    # individually non-significant (a chain), but G02~G00 is significant --
+    # the classic critical-difference transitivity gap (Demsar 2006).
+    labels_sorted = ["G04", "G03", "G02", "G01", "G00"]
+    nonsig_pairs = {("G02", "G01"), ("G01", "G00")}
+
+    pairwise_results: dict[tuple[str, str], PairedDiffResult] = {}
+    for i, a in enumerate(labels_sorted):
+        for b in labels_sorted[i + 1:]:
+            is_nonsig = (a, b) in nonsig_pairs or (b, a) in nonsig_pairs
+            pairwise_results[(a, b)] = _pdr(
+                a, b, point_diff=0.1, p_value=0.5 if is_nonsig else 0.001,
+            )
+
+    pairwise = PairwiseMatrix(
+        labels=labels_sorted, results=pairwise_results, correction_method="holm", friedman=None,
+    )
+
+    groups = _assign_significance_groups(pairwise, labels_sorted)
+
+    # G03 is strictly isolated and ranked #2 by mean -- it must not be
+    # pushed behind the (lower-ranked) G02/G01/G00 chain.
+    assert groups["G04"] == "#1"
+    assert groups["G03"] == "#2"
+    # The chained trio merges into a single group, since none of them can
+    # carry two IDs at once in this one-ID-per-entity table.
+    assert groups["G02"] == groups["G01"] == groups["G00"] == "#3"
+
+    # General regression guard: group numbers must be non-decreasing down
+    # the rank-sorted list, for any input -- not just this scenario.
+    numbers = [int(groups[label].lstrip("#")) for label in labels_sorted]
+    assert numbers == sorted(numbers)
+
+
+def test_assign_significance_groups_number_1_does_not_chain_past_direct_ties():
+    # Regression test for a misleading executive-summary verdict: when a
+    # chain touches rank 0 itself (top~2nd non-sig, 2nd~3rd non-sig, but
+    # top~3rd directly SIGNIFICANT), #2+ tiers are allowed to merge chains
+    # (see test_..._merges_chained_bands_and_stays_monotonic above), but #1
+    # must NOT -- _exec_verdict turns #1 membership into an explicit "tied
+    # with X as best" claim, so it has to mean "provably indistinguishable
+    # from the actual top performer," not "reachable via a chain of
+    # individually-nonsignificant neighbors." Found via a real case: the
+    # top-ranked entity (ClipCraze) was directly significantly better than
+    # a same-#1-tier entity four ranks down (FlipFlop), chained through two
+    # intermediate non-significant links -- the exec summary claimed
+    # FlipFlop was "Tied with 5 others as best" when the pairwise table
+    # right above it showed FlipFlop significantly worse than the top.
+    labels_sorted = ["A", "B", "C", "D"]
+    nonsig_pairs = {("A", "B"), ("B", "C")}  # A~B~C chained; A~C is NOT listed -> significant
+
+    pairwise_results: dict[tuple[str, str], PairedDiffResult] = {}
+    for i, a in enumerate(labels_sorted):
+        for b in labels_sorted[i + 1:]:
+            is_nonsig = (a, b) in nonsig_pairs or (b, a) in nonsig_pairs
+            pairwise_results[(a, b)] = _pdr(
+                a, b, point_diff=0.1, p_value=0.5 if is_nonsig else 0.001,
+            )
+
+    pairwise = PairwiseMatrix(
+        labels=labels_sorted, results=pairwise_results, correction_method="holm", friedman=None,
+    )
+
+    groups = _assign_significance_groups(pairwise, labels_sorted)
+
+    # A (top) and B are directly non-significant -> both #1.
+    assert groups["A"] == "#1"
+    assert groups["B"] == "#1"
+    # C is significantly different from A (the top) despite chaining
+    # through B -- must NOT inherit A's "#1" tied-for-best tier.
+    assert groups["C"] != "#1"
+    # D is significant vs both B and C (unrelated to their chain) -- its
+    # own, later tier, not merged with C's.
+    assert groups["D"] != groups["C"]
+
+    numbers = [int(groups[label].lstrip("#")) for label in labels_sorted]
+    assert numbers == sorted(numbers)
 
 
 def test_single_clear_winner_label_detects_unique_statistical_winner():
