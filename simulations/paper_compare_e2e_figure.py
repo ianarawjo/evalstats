@@ -198,7 +198,32 @@ def _ppi_cells(results, et):
     return out
 
 
-def _panel_ppi_budget(ax, results):
+def _ppi_gain_se(results, et, n_lab):
+    """CONSERVATIVE Monte-Carlo SE of the gain at one budget, in points.
+
+    Independence-assuming, and therefore too WIDE: the labels-only reference
+    is computed on the same draw and the same labelled items as the PPI arm
+    (see _run_cell), so the two rates are positively correlated and the paired
+    SE is smaller than sqrt(se_a^2 + se_b^2). Recovering the paired interval
+    needs the joint outcome counts (both reject / PPI only / reference only /
+    neither), which the results CSV does not carry -- it stores each arm's
+    marginal count. Treat these bars as an upper bound, not an interval.
+    """
+    ks = _ref_ks([r for r in results if r.eval_type == et])
+    rs = [r for r in results
+          if r.eval_type == et and not r.is_null and r.ppi_config.startswith("frac=")
+          and (not ks or r.k in ks) and r.subset_n_ok > 0
+          and int(round(float(r.ppi_config.split("=", 1)[1]) * r.n_items)) == n_lab]
+    den = sum(x.n_reps - x.n_errors for x in rs)
+    sden = sum(x.subset_n_ok for x in rs)
+    if not den or not sden:
+        return float("nan")
+    a = sum(x.extreme_reject for x in rs) / den
+    b = sum(x.subset_extreme_reject for x in rs) / sden
+    return float(np.sqrt(a * (1 - a) / den + b * (1 - b) / sden) * 100.0)
+
+
+def _panel_ppi_budget(ax, results, show_err=False):
     """Gain against the absolute labelling budget -- see _ppi_cells."""
     for et in ET_ORDER:
         cells = _ppi_cells(results, et)
@@ -210,8 +235,14 @@ def _panel_ppi_budget(ax, results):
         ax.scatter([c[0] for c in cells], [c[1] for c in cells], s=7,
                    color=ET_COLOR[et], alpha=0.45, lw=0, zorder=2)
         ys = [float(np.mean([c[1] for c in cells if c[0] == x])) for x in xs]
-        ax.plot(xs, ys, marker=ET_MARK[et], ms=3.2, lw=1.3,
-                color=ET_COLOR[et], label=et, zorder=3)
+        if show_err:
+            es = [1.96 * _ppi_gain_se(results, et, x) for x in xs]
+            ax.errorbar(xs, ys, yerr=es, marker=ET_MARK[et], ms=3.2, lw=1.3,
+                        elinewidth=0.8, capsize=1.4, color=ET_COLOR[et],
+                        label=et, zorder=3)
+        else:
+            ax.plot(xs, ys, marker=ET_MARK[et], ms=3.2, lw=1.3,
+                    color=ET_COLOR[et], label=et, zorder=3)
     ax.axhline(0, color="black", ls="--", lw=0.9)
     ax.set_ylabel("PPI power gain\n(percentage points)")
     ax.set_title("pooled over N and budget %", fontsize=6.5, pad=2)
@@ -294,7 +325,7 @@ def _panel_ppi(ax, results, gain_only, ppi_frac=None):
     ax.set_title(_budget, fontsize=6.5, pad=2)
 
 
-def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n"):
+def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", ppi_err=False):
     import matplotlib.pyplot as plt
     n = 2 if style == "duo" else 3
     fig, axes = plt.subplots(1, n, figsize=(width, height))
@@ -312,7 +343,7 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n"):
     else:
         _panel_type1(axes[1], results, alpha)
         if ppi_x == "budget":
-            _panel_ppi_budget(axes[2], results)
+            _panel_ppi_budget(axes[2], results, show_err=ppi_err)
             lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
             panel_sizes = [cov_ns, cov_ns, lab_ns]
         else:
@@ -361,6 +392,10 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
     ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--ppi-err", action="store_true",
+                    help="Draw Monte-Carlo error bars on the budget panel. They are "
+                         "CONSERVATIVE (independence-assuming) because the paired joint "
+                         "counts are not in the CSV -- see _ppi_gain_se.")
     ap.add_argument("--ppi-x", choices=("n", "budget"), default="n",
                     help="x-axis of the PPI panel: 'n' = items per arm at a fixed budget "
                          "fraction, 'budget' = absolute human labels per arm, pooled over "
@@ -387,7 +422,8 @@ def main():
         w = a.width or (3.4 if a.style == "duo" else 7.0)
         pf = None if str(a.ppi_frac).lower() == "all" else float(a.ppi_frac)
         out = multi(results, a.out, a.style, w,
-                    a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf, a.ppi_x)
+                    a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf,
+                    a.ppi_x, a.ppi_err)
     print(f"wrote {out}")
 
 
