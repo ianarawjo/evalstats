@@ -1463,7 +1463,27 @@ def save_calibration_plot(*, results: list[CompareE2EResult], alpha: float, out_
         # main-result fields as row 6; oracle/subset-only pull from the
         # dedicated oracle_*/subset_* fields instead.
         ax = axes[sandwich_row][col]
-        eff_results = [r for r in et_results if not r.is_null]
+        # Restrict to the k values where the reference arms actually EXIST.
+        # oracle_*/subset_* are only computed at reference_estimator_k (the
+        # official preset passes --reference-k 3), but the PPI/none series
+        # read extreme_reject, which every k has. Without this filter the
+        # solid lines pool k=2..10 while the dashed/dotted ones they are
+        # meant to be compared against are k=3 alone -- different
+        # populations on the same axes, which is not the sandwich this row
+        # claims to draw.
+        #
+        # This was masked for as long as the effect ramp grew with k: the
+        # extra k=5/k=10 power inflated the pooled solid line above the
+        # k=3-only dashed one, so the ordering looked right for the wrong
+        # reason. Once MAX_EFFECT_SPAN_STEPS made the ramp k-invariant, the
+        # pooled line fell BELOW its own baseline and the mismatch showed up
+        # as "PPI is worse than using the labels alone" -- a plotting
+        # artefact, not a result: at matched k the PPI gain is unchanged
+        # (binary +11.82% before and after, bit-identical).
+        _ref_ks = {r.k for r in et_results
+                   if r.oracle_n_ok > 0 or r.subset_n_ok > 0}
+        eff_results = [r for r in et_results
+                       if not r.is_null and (not _ref_ks or r.k in _ref_ks)]
         sandwich_sizes: set[int] = set()
 
         def _power_series(rows_by_n_getter, num_attr: str, den_attr: str):
