@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import io
 import multiprocessing as _mp
 import os
@@ -97,7 +98,8 @@ from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_bias_magnitude,
-    _jb_effect_magnitude, _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
+    _jb_effect_magnitude, _jb_effect_magnitude_binary, _ppi_shape, _tier_shapes,
+    sample_group_truth,
 )
 from . import CaseResult
 
@@ -171,9 +173,96 @@ def _effect_frac_for(eval_type: str) -> float:
 
 
 def _effect_step_for(eval_type: str, frac: float) -> float:
+    """The NOMINAL per-arm step, before the k/icc corrections _cell_effect_step
+    applies. Kept as its own function because the standalone
+    investigate_joint_bootstrap_* scripts import it directly."""
     if eval_type == "binary":
         return _jb_effect_magnitude_binary(frac)
     return _jb_effect_magnitude(eval_type, frac)
+
+
+MAX_EFFECT_SPAN_STEPS = 2
+"""Cap on the arm-0..arm-(k-1) ramp, in units of the nominal per-arm step, so
+the total spread is k-INVARIANT above k=3 instead of growing without bound.
+
+`effects = arange(k) * step` with an uncapped step put the k=10 continuous
+ramp at 9 x 0.1146 = 1.031 on a [0, 1] scale -- WIDER THAN THE SCALE. The top
+arms then saturate against the boundary (P(score=1.0) -> 0.999) and a pair
+drawn from among them has ~3 informative items out of 60, so its paired
+difference is ~91% exact zeros with a rare one-sided tail. No mean-based
+interval is calibrated there: family coverage fell to 79% on the two
+ceiling-hugging continuous shapes (cont-left-skew, cont-one-inflated) while
+the FLOOR-hugging shapes (cont-right-skew, cont-zero-inflated) stayed at ~96%
+-- the ramp is positive, so it drives one into the boundary and the other
+away, and flipping the effect sign mirrors the failure exactly. That sign
+asymmetry is what identifies this as DGP saturation rather than a method
+defect: no CI formula can care which direction an effect points.
+
+The cap is 2 steps = the k=3 span, so k=2 and k=3 keep their exact previous
+effects (min() below is 1.0 there) and only k>3 is compressed. At k=10 the
+continuous span becomes 0.229 raw units, well inside the scale; a span sweep
+put the breakdown at >=0.5 and measured 95.1% at 0.30.
+
+Cost: reported POWER at k>3 changes (the extreme pair M0-vs-M(k-1) is now a
+fixed standardized distance regardless of k, rather than growing with k),
+which is the more meaningful power axis anyway -- it no longer pins at 1.000
+for the sole reason that k is large."""
+
+_ICC_SD_MC_N = 1_000_000
+_ICC_SD_MC_SEED = 20260827
+_ICC_SD_RATIO_SNAP = 0.005
+"""Ratios this close to 1.0 are snapped to exactly 1.0. likert and binary are
+STRUCTURALLY icc-invariant (their icc split decomposes a fixed total variance,
+unlike continuous's, which adds to it), so their true ratio is 1.0 and
+anything measured is Monte-Carlo noise -- at _ICC_SD_MC_N the relative SE of
+an SD estimate is ~0.07%, so this 0.5% band is ~7 sigma of noise while
+continuous's real deviations (+55% / -33%) are an order of magnitude outside
+it. Without the snap those two eval types would pick up a spurious ~0.1% step
+change at off-reference icc and stop being bit-identical to previous runs for
+no scientific reason."""
+
+
+@functools.lru_cache(maxsize=None)
+def _representative_sd_at_icc(eval_type: str, icc: float) -> float:
+    """EVAL_TYPE_POPULATION_SD's own methodology -- the representative shape's
+    realized truth SD -- but measured AT `icc` instead of at icc=1.0."""
+    rng = np.random.default_rng(_ICC_SD_MC_SEED)
+    truth = sample_group_truth(_ppi_shape(eval_type), _ICC_SD_MC_N, 1, 1, icc, rng)[0, :, 0]
+    return float(truth.std(ddof=0))
+
+
+def _icc_sd_ratio(eval_type: str, icc: float) -> float:
+    """Rescales the effect step so Cohen's d is CONSTANT across the icc sweep.
+
+    `_jb_effect_magnitude` divides `frac` by a fixed EVAL_TYPE_POPULATION_SD
+    measured once at icc=1.0. But continuous's `_group_noise_var` *adds*
+    var_base*(1/icc - 1) on top of var_base, so its realized SD moves with icc
+    (measured, cont-uniform: 0.447 / 0.392 / 0.323 at icc = 0.05 / 0.20 / 0.60)
+    while likert and binary DECOMPOSE a fixed total and stay flat (likert
+    1.144 / 1.144 / 1.145, binary 0.301 / 0.302 / 0.298). With a fixed
+    denominator and a moving realized SD, sweeping icc silently swept the
+    standardized effect size too -- for continuous and ONLY continuous, which
+    is why the icc trend showed up there and nowhere else.
+
+    Anchored at DEFAULT_ICC rather than at icc=1.0 on purpose: the ratio is
+    exactly 1.0 at the reference, so every icc=DEFAULT_ICC cell -- the
+    realistic point, and the value every PPI cell is pinned to -- keeps its
+    previous effect step bit-for-bit, and EFFECT_FRAC_BY_EVAL_TYPE's
+    oracle-power calibration survives unchanged. Only the off-reference icc
+    values move. For binary/likert the ratio is ~1.0 by construction, so this
+    is a no-op there."""
+    if icc == DEFAULT_ICC:
+        return 1.0
+    ratio = _representative_sd_at_icc(eval_type, icc) / _representative_sd_at_icc(eval_type, DEFAULT_ICC)
+    return 1.0 if abs(ratio - 1.0) < _ICC_SD_RATIO_SNAP else ratio
+
+
+def _cell_effect_step(eval_type: str, frac: float, k: int, icc: float) -> float:
+    """The per-arm effect step for one cell: the nominal step, held at constant
+    Cohen's d across the icc sweep (_icc_sd_ratio) and capped so the total ramp
+    does not outgrow the scale (MAX_EFFECT_SPAN_STEPS)."""
+    step = _effect_step_for(eval_type, frac) * _icc_sd_ratio(eval_type, icc)
+    return step * min(1.0, MAX_EFFECT_SPAN_STEPS / max(k - 1, 1))
 
 DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # k=2 is included deliberately as an UNCORRECTED baseline: with only one pair,
@@ -361,6 +450,16 @@ class CompareE2EResult:
     split. Part of the cell KEY whenever --icc-values sweeps it: without it
     two cells differing only in icc are indistinguishable in the saved CSV and
     silently pool together in every downstream aggregation."""
+
+    effect_step: float = 0.0
+    """The per-arm effect step this cell actually ran (0.0 for null cells).
+
+    Recorded because it is no longer a per-eval-type constant: _cell_effect_step
+    varies it with k (MAX_EFFECT_SPAN_STEPS caps the total ramp) and with icc
+    (_icc_sd_ratio holds Cohen's d fixed). Derivable from the other key columns,
+    but only by re-running that logic -- storing it keeps the CSV self-describing,
+    so a plot rebuilt from the CSV alone can label what effect size each cell
+    was actually run at instead of assuming one number for the whole sweep."""
     n_errors: int = 0
     """Reps where compare() itself raised (e.g. a genuinely-degenerate draw) --
     excluded from all rate denominators below, which use n_reps - n_errors."""
@@ -742,7 +841,8 @@ def _run_cell(
                   (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1 else f"frac={ppi_frac:.2f}"))
     compute_reference = reference_estimator_k is None or k == reference_estimator_k
 
-    effect_step = 0.0 if is_null else _effect_step_for(eval_type, _effect_frac_for(eval_type))
+    effect_step = (0.0 if is_null else
+                   _cell_effect_step(eval_type, _effect_frac_for(eval_type), k, cell_icc))
     effects = np.arange(k, dtype=float) * effect_step
     agreement_rate = _agreement_for(eval_type)
     # Judge bias applies to the PPI cells ONLY. The no-PPI ("none") cells are
@@ -801,6 +901,7 @@ def _run_cell(
     result = CompareE2EResult(
         eval_type=eval_type, shape_label=shape.label, k=k, n_items=n_items,
         ppi_config=ppi_config, is_null=is_null, n_reps=n_reps, icc=cell_icc,
+        effect_step=float(effect_step),
     )
 
     for _rep in range(n_reps):
@@ -1490,7 +1591,8 @@ def save_results_artifacts(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "icc", "n_reps", "n_errors",
+            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "icc", "effect_step",
+            "n_reps", "n_errors",
             "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width", "marginal_mean_score",
             "pairwise_covered", "pairwise_total", "pairwise_coverage", "pairwise_mean_width", "pairwise_mean_score",
             "family_covered", "family_total", "family_coverage",
@@ -1530,7 +1632,10 @@ def save_results_artifacts(
             subset_type1 = r.subset_any_reject / r.subset_n_ok if (r.is_null and r.subset_n_ok) else float("nan")
             subset_power = r.subset_extreme_reject / r.subset_n_ok if (not r.is_null and r.subset_n_ok) else float("nan")
             writer.writerow([
-                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, f"{r.icc:.4f}", r.n_reps, r.n_errors,
+                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, f"{r.icc:.4f}",
+                # repr(float(...)) not a rounded format: effect_step is a DGP
+                # input, so a run must be reproducible from it exactly.
+                repr(float(r.effect_step)), r.n_reps, r.n_errors,
                 r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}", f"{marg_score:.6f}",
                 r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}", f"{pair_width:.6f}", f"{pair_score:.6f}",
                 r.family_covered, r.family_total, f"{fam_cov:.6f}",

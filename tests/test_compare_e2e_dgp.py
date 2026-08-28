@@ -26,7 +26,7 @@ def test_non_ppi_draw_matches_multiarm_ramp_source(eval_type, k):
     src = next(s for s in build_multiarm_sources(
         suite="standard", eval_types=[eval_type], icc=C.DEFAULT_ICC,
         effect_mode="ramp") if s.label == shape.label)
-    step = C._effect_step_for(eval_type, C._effect_frac_for(eval_type))
+    step = C._cell_effect_step(eval_type, C._effect_frac_for(eval_type), k, C.DEFAULT_ICC)
 
     from_source = src.generate_scores(np.random.default_rng(7), 150, 1, k, step)[:, :, 0]
     from_case = sample_group_truth(
@@ -126,3 +126,47 @@ def test_cli_default_and_official_preset_agree_on_icc_sweep():
     cli = parser.parse_args([])
     preset = ce.official_args(42)
     assert list(cli.icc_values) == list(preset.icc_values) == list(ce.DEFAULT_ICC_VALUES)
+
+
+def test_effect_ramp_span_is_capped_above_k3():
+    """The arm-0..arm-(k-1) ramp must not outgrow the scale as k rises.
+
+    An uncapped `arange(k)*step` put the k=10 continuous ramp at 1.031 on a
+    [0, 1] scale, saturating the ceiling-hugging shapes and collapsing family
+    coverage to ~79%. k=2/k=3 keep their previous effects exactly.
+    """
+    for eval_type in ("binary", "continuous", "likert"):
+        frac = C._effect_frac_for(eval_type)
+        base = C._effect_step_for(eval_type, frac)
+        for k in (2, 3):
+            assert C._cell_effect_step(eval_type, frac, k, C.DEFAULT_ICC) == base
+        cap = C.MAX_EFFECT_SPAN_STEPS * base
+        for k in (5, 10):
+            span = (k - 1) * C._cell_effect_step(eval_type, frac, k, C.DEFAULT_ICC)
+            assert span == pytest.approx(cap), (eval_type, k, span, cap)
+
+
+def test_continuous_effect_holds_cohens_d_across_icc():
+    """icc must not silently sweep the standardized effect size.
+
+    continuous's `_group_noise_var` ADDS noise variance, so its realized SD
+    moves with icc while likert/binary decompose a fixed total and stay flat.
+    With a fixed denominator that made the icc axis a hidden effect-size axis,
+    for continuous and only continuous.
+    """
+    # continuous genuinely needs the correction, and in the right direction:
+    # lower icc = more added noise = larger realized SD = larger raw step.
+    assert C._icc_sd_ratio("continuous", 0.05) > 1.2
+    assert C._icc_sd_ratio("continuous", 0.60) < 0.8
+    assert C._icc_sd_ratio("continuous", C.DEFAULT_ICC) == 1.0
+    # ...and the correction actually equalizes d, which is the whole point.
+    frac = C._effect_frac_for("continuous")
+    ds = []
+    for icc in (0.05, 0.20, 0.60):
+        step = C._cell_effect_step("continuous", frac, 3, icc)
+        ds.append(step / C._representative_sd_at_icc("continuous", icc))
+    assert max(ds) - min(ds) < 0.01 * max(ds), ds
+    # likert/binary are structurally invariant -> exactly a no-op there.
+    for eval_type in ("likert", "binary"):
+        for icc in (0.05, 0.20, 0.60):
+            assert C._icc_sd_ratio(eval_type, icc) == 1.0
