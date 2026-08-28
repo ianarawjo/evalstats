@@ -269,6 +269,51 @@ def _panel_cov(ax, results, target):
     ax.set_ylabel("family-wise CI coverage")
 
 
+def _panel_marginal(ax, results, target):
+    for et in ET_ORDER:
+        rows = [r for r in results if r.eval_type == et]
+        xs, ys, es = _by_n(rows, lambda rs: _rate(rs, "marginal_covered", "marginal_total"))
+        ax.errorbar(xs, ys, yerr=[1.96 * e for e in es], marker=ET_MARK[et], ms=3.2,
+                    lw=1.3, elinewidth=0.8, capsize=1.4, color=ET_COLOR[et], label=et)
+    ax.axhline(target, color="black", ls="--", lw=0.9)
+    ax.set_ylim(0.88, 1.0)
+    ax.set_ylabel("per-arm CI coverage")
+    ax.set_title("marginal (no multiplicity)", fontsize=6.5, pad=2)
+
+
+def _panel_pairwise_k2(ax, results, target):
+    for et in ET_ORDER:
+        rows = [r for r in results if r.eval_type == et and r.k == 2]
+        xs, ys, es = _by_n(rows, lambda rs: _rate(rs, "pairwise_covered", "pairwise_total"))
+        ax.errorbar(xs, ys, yerr=[1.96 * e for e in es], marker=ET_MARK[et], ms=3.2,
+                    lw=1.3, elinewidth=0.8, capsize=1.4, color=ET_COLOR[et], label=et)
+    ax.axhline(target, color="black", ls="--", lw=0.9)
+    ax.set_ylim(0.88, 1.0)
+    ax.set_ylabel("pairwise CI coverage")
+    ax.set_title("k=2, uncorrected", fontsize=6.5, pad=2)
+
+
+def _panel_cov_by_ppi(ax, results, target):
+    """Family-wise coverage split by whether PPI correction is in play.
+
+    The other coverage panels pool the PPI and non-PPI cells, which asserts
+    rather than shows that the FWER machinery still holds once PPI is layered
+    under it -- the one combination a reader is most likely to doubt, since
+    each is a correction in its own right.
+    """
+    for et in ET_ORDER:
+        for cfg_is_ppi, ls in ((False, "-"), (True, "--")):
+            rows = [r for r in results if r.eval_type == et and r.k > 2
+                    and ((r.ppi_config != "none") == cfg_is_ppi)]
+            xs, ys, _ = _by_n(rows, lambda rs: _rate(rs, "family_covered", "family_total"))
+            ax.plot(xs, ys, marker=ET_MARK[et], ms=3.0, lw=1.2, ls=ls, color=ET_COLOR[et],
+                    alpha=1.0 if not cfg_is_ppi else 0.8)
+    ax.axhline(target, color="black", ls="--", lw=0.9)
+    ax.set_ylim(0.88, 1.0)
+    ax.set_ylabel("family-wise CI coverage")
+    ax.set_title("plain FWER vs PPI+FWER", fontsize=6.5, pad=2)
+
+
 def _panel_type1(ax, results, alpha):
     for et in ET_ORDER:
         rows = [r for r in results if r.eval_type == et and r.k > 2 and r.is_null]
@@ -327,11 +372,47 @@ def _panel_ppi(ax, results, gain_only, ppi_frac=None):
 
 def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", ppi_err=False):
     import matplotlib.pyplot as plt
-    n = 2 if style == "duo" else 3
-    fig, axes = plt.subplots(1, n, figsize=(width, height))
+    if style == "full":
+        fig, axgrid = plt.subplots(2, 3, figsize=(width, height))
+        axes = list(axgrid.ravel())
+    else:
+        n = 2 if style == "duo" else 3
+        fig, axes = plt.subplots(1, n, figsize=(width, height))
     cov_ns = sorted({r.n_items for r in results if r.k > 2})
     ppi_ns = sorted({r.n_items for r in results
                      if not r.is_null and r.ppi_config != "none" and r.subset_n_ok > 0})
+    if style == "full":
+        t = 1 - alpha
+        _panel_marginal(axes[0], results, t)
+        _panel_pairwise_k2(axes[1], results, t)
+        _panel_cov(axes[2], results, t); axes[2].set_title("k>2, FWER-corrected", fontsize=6.5, pad=2)
+        _panel_cov_by_ppi(axes[3], results, t)
+        _panel_type1(axes[4], results, alpha)
+        _panel_ppi_budget(axes[5], results, show_err=ppi_err)
+        lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
+        panel_sizes = [cov_ns, sorted({r.n_items for r in results if r.k == 2}),
+                       cov_ns, cov_ns, cov_ns, lab_ns]
+        for ax, sizes in zip(axes, panel_sizes):
+            ax.set_xscale("log")
+            _format_log_size_axis(ax, _thin_log_ticks(sizes))
+            for lbl in ax.get_xticklabels():
+                lbl.set_fontsize(6.0)
+            ax.set_xlabel("human labels per arm" if ax is axes[5] else "items per arm (N)")
+            ax.grid(alpha=.25); ax.set_axisbelow(True)
+            for sp in ("top", "right"):
+                ax.spines[sp].set_visible(False)
+        h1 = [plt.Line2D([], [], color=ET_COLOR[e], marker=ET_MARK[e], ls="-", ms=3.2, lw=1.3)
+              for e in ET_ORDER]
+        h2 = [plt.Line2D([], [], color="0.35", ls="-", lw=1.2),
+              plt.Line2D([], [], color="0.35", ls="--", lw=1.2)]
+        axes[0].legend(h1, ET_ORDER, loc="lower right", frameon=False,
+                       handletextpad=0.4, borderpad=0.2, labelspacing=0.2)
+        axes[3].legend(h2, ["no PPI", "PPI"], loc="lower right", frameon=False,
+                       handletextpad=0.4, borderpad=0.2, labelspacing=0.2)
+        fig.tight_layout(pad=0.4)
+        fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02)
+        return out
+
     if ppi_frac is not None:
         ppi_ns = sorted({r.n_items for r in results
                          if not r.is_null and r.ppi_config == f"frac={ppi_frac:.2f}"
@@ -387,7 +468,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("csv", nargs="+")
-    ap.add_argument("--style", choices=("scorecard", "duo", "trio"), default="scorecard")
+    ap.add_argument("--style", choices=("scorecard", "duo", "trio", "full"), default="scorecard")
     ap.add_argument("-o", "--out", default="compare_e2e_paper.pdf")
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
@@ -420,6 +501,8 @@ def main():
         out = scorecard(results, a.out, a.width or 3.3, a.height or 2.4)
     else:
         w = a.width or (3.4 if a.style == "duo" else 7.0)
+        if a.style == "full":
+            a.height = a.height or 3.6
         pf = None if str(a.ppi_frac).lower() == "all" else float(a.ppi_frac)
         out = multi(results, a.out, a.style, w,
                     a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf,
