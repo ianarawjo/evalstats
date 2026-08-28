@@ -1213,7 +1213,15 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     # k==2's own pairwise_width_sum/pairwise_total.
     fam_pair_den = sum(r.pairwise_total for r in kgt2_rows)
     type1_den = sum(r.n_reps - r.n_errors for r in null_rows)
-    power_den = sum(r.n_reps - r.n_errors for r in eff_rows)
+    # 'power' is printed beside ref.pwr as a like-for-like comparison, so it
+    # must be measured on the same cells. oracle_*/subset_* only exist at
+    # reference_estimator_k, so pooling power over every k made the two
+    # columns different populations -- the same mismatch the sandwich row of
+    # save_calibration_plot had. Derived from the data rather than hardcoded
+    # to 3, so --reference-k None (references at every k) is a no-op here.
+    _ref_ks = {r.k for r in rows if r.oracle_n_ok > 0 or r.subset_n_ok > 0}
+    power_rows = [r for r in eff_rows if not _ref_ks or r.k in _ref_ks]
+    power_den = sum(r.n_reps - r.n_errors for r in power_rows)
     # Reference-estimator power/Type-I: oracle_n_ok is only nonzero on
     # ppi_config=="none" rows, subset_n_ok only nonzero on ppi_config!="none"
     # rows (see CompareE2EResult), so these are automatically NaN wherever
@@ -1233,7 +1241,7 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
         fam_width=(sum(r.pairwise_width_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         fam_score=(sum(r.pairwise_score_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         type1=(sum(r.any_reject for r in null_rows) / type1_den) if type1_den else float("nan"),
-        power=(sum(r.extreme_reject for r in eff_rows) / power_den) if power_den else float("nan"),
+        power=(sum(r.extreme_reject for r in power_rows) / power_den) if power_den else float("nan"),
         oracle_type1=(sum(r.oracle_any_reject for r in null_rows) / oracle_type1_den) if oracle_type1_den else float("nan"),
         oracle_power=(sum(r.oracle_extreme_reject for r in eff_rows) / oracle_power_den) if oracle_power_den else float("nan"),
         subset_type1=(sum(r.subset_any_reject for r in null_rows) / subset_type1_den) if subset_type1_den else float("nan"),
@@ -1288,7 +1296,9 @@ def print_key_summary(rows: list[dict], alpha: float) -> None:
         "guarantee. Both should land near the target; they are not the same rows pooled two ways."
     )
     print(
-        "ref.pwr is a REFERENCE-ESTIMATOR power comparison, same synthetic draw as 'power': for "
+        "ref.pwr is a REFERENCE-ESTIMATOR power comparison, same synthetic draw AND the same "
+        "cells as 'power' (both are restricted to the k values where reference arms were "
+        "measured, i.e. --reference-k): for "
         "ppi_config='none' it is 'oracle' power (as if EVERY item were human-labeled -- the ceiling); "
         "for ppi_config='frac=X' it is 'subset-only' power (as if ONLY the labeled X-fraction existed, "
         "LLM data discarded -- the floor PPI should beat). PPI's own 'power' column should sit between "
