@@ -9855,24 +9855,35 @@ def save_ppi_label_efficiency_noise_family_plot(
                 xs = sorted(agg)
                 ys = [float(np.median(agg[x])) for x in xs]
                 mk, col = style.get(fam, ("^:", "#61a05f"))
-                ax.plot(xs, ys, mk, color=col, lw=2.1, ms=6, label=f"{fam} judge")
+                ax.plot(xs, ys, mk, color=col, lw=1.1 if compact else 2.1,
+                        ms=2.8 if compact else 6, label=f"{fam} judge")
                 drew = True
             ax.axhline(1.0, color="grey", ls=":", lw=1)
             ax.grid(alpha=.25); ax.set_axisbelow(True)
+            if compact:
+                # Was gated on ri==0, so only the top row's ticks got sized
+                # down to match the lookup grid; the bottom row silently fell
+                # back to matplotlib's default (larger) tick label size.
+                ax.tick_params(labelsize=6.0, length=2, pad=1.5)
+                for _sp in ("top", "right"):
+                    ax.spines[_sp].set_visible(False)
             if ri == 0:
-                ax.set_title(et, fontsize=6.8 if compact else 11.5)
-                if compact:
-                    ax.tick_params(labelsize=6.0, length=2, pad=1.5)
-                    for _sp in ("top", "right"):
-                        ax.spines[_sp].set_visible(False)
+                ax.set_title(et, fontsize=6.5 if compact else 11.5)
             if ri == len(rows_spec) - 1:
                 ax.set_xlabel(r"judge quality tier  ($\rho^2$)" if compact
                               else r"judge quality tier  ($\rho^2$, score level)",
-                              fontsize=6.3 if compact else None)
+                              fontsize=6.5 if compact else None)
             if ci == 0:
-                ax.set_ylabel(f"{row_label}\nmultiplier" if compact
+                # Compact mode needs a shorter row label than row_label's full
+                # "parametric (t-tests)" / "non-parametric (rank tests)" --
+                # at this font size the two-line label bled into its neighbor.
+                # Matches the "mean-based"/"rank-based" vocabulary used
+                # elsewhere in the text (parametric == mean-based here).
+                _short_row = {"parametric (t-tests)": "parametric",
+                             "non-parametric (rank tests)": "rank-based"}.get(row_label, row_label)
+                ax.set_ylabel(f"{_short_row} multiplier" if compact
                               else f"{row_label}\nlabel-efficiency multiplier",
-                              fontsize=6.3 if compact else 9.5)
+                              fontsize=6.5 if compact else 9.5)
             if not drew:
                 # binary has no rank row: _COMPARISON_METHODS_BINARY excludes
                 # mwu/wilcoxon because ranks are uninformative on 0/1 data.
@@ -9902,7 +9913,7 @@ def save_ppi_label_efficiency_noise_family_plot(
     if _h:
         if compact:
             fig.legend(_h, _l, loc="lower center", ncol=len(_l), frameon=False,
-                       fontsize=6.3, handlelength=1.3, columnspacing=1.2,
+                       fontsize=6.5, handlelength=1.3, columnspacing=1.2,
                        handletextpad=0.4, bbox_to_anchor=(0.5, 0.0))
         else:
             axes[0][0].legend(_h, _l, fontsize=9, loc="upper left")
@@ -9911,8 +9922,11 @@ def save_ppi_label_efficiency_noise_family_plot(
                  "same judge-quality tiers, two judge-error shapes, split by test family",
                  fontsize=11.5)
     if compact:
-        # reserve room for the shared legend the compact branch adds below
-        fig.tight_layout(rect=(0, 0.11, 1, 1), h_pad=0.5, w_pad=0.6)
+        # reserve room for the shared legend the compact branch adds below --
+        # a 2-item single-row legend needs less than the lookup grid's 3-item
+        # one, so this reserves less (was 0.11, oversized: visible gap above
+        # the legend once the markers/lines were sized down to match).
+        fig.tight_layout(rect=(0, 0.075, 1, 1), h_pad=0.5, w_pad=0.6)
         fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
     else:
         fig.tight_layout()
