@@ -192,12 +192,24 @@ def _panel_type1(ax, results, alpha):
     ax.set_ylabel("Type-I error (FWER)")
 
 
-def _panel_ppi(ax, results, gain_only):
+def _panel_ppi(ax, results, gain_only, ppi_frac=None):
+    """PPI vs its labels-only floor.
+
+    `ppi_frac` pins the labelling budget. Pooling the swept fractions instead
+    is NOT a like-for-like curve in N: cells below evalstats' n_lab>=15 floor
+    are skipped, so which fractions are eligible changes with N (at N=60 only
+    frac=0.40 survives; all three appear from N=200), and the gain depends
+    strongly on the fraction -- binary +18.8 points at 0.10 against +6.6 at
+    0.40. Pooling therefore mixes a shifting composition into what reads as a
+    pure sample-size effect, steepening the rising limb. Holding the budget
+    fixed makes the N axis mean one thing.
+    """
     for et in ET_ORDER:
         et_rows = [r for r in results if r.eval_type == et]
         ks = _ref_ks(et_rows)
         rows = [r for r in et_rows if not r.is_null and (not ks or r.k in ks)
-                and r.ppi_config != "none"]
+                and r.ppi_config != "none"
+                and (ppi_frac is None or r.ppi_config == f"frac={ppi_frac:.2f}")]
         ns = sorted({r.n_items for r in rows})
         xs, gp, gs = [], [], []
         for n in ns:
@@ -216,27 +228,33 @@ def _panel_ppi(ax, results, gain_only):
             ax.plot(xs, gp, marker=ET_MARK[et], ms=3.2, lw=1.3, color=ET_COLOR[et], label=f"{et} (PPI)")
             ax.plot(xs, gs, marker=ET_MARK[et], ms=3.2, lw=1.1, ls="--", color=ET_COLOR[et],
                     alpha=.75, label=f"{et} (labels only)")
+    _budget = ("labels: %d%% of N" % round(ppi_frac * 100)) if ppi_frac else "pooled budgets"
     if gain_only:
         ax.axhline(0, color="black", ls="--", lw=0.9)
         ax.set_ylabel("PPI power gain\n(percentage points)")
     else:
         ax.set_ylabel("power (extreme pair)")
+    ax.set_title(_budget, fontsize=6.5, pad=2)
 
 
-def multi(results, out, style, width, height, alpha):
+def multi(results, out, style, width, height, alpha, ppi_frac=None):
     import matplotlib.pyplot as plt
     n = 2 if style == "duo" else 3
     fig, axes = plt.subplots(1, n, figsize=(width, height))
     cov_ns = sorted({r.n_items for r in results if r.k > 2})
     ppi_ns = sorted({r.n_items for r in results
                      if not r.is_null and r.ppi_config != "none" and r.subset_n_ok > 0})
+    if ppi_frac is not None:
+        ppi_ns = sorted({r.n_items for r in results
+                         if not r.is_null and r.ppi_config == f"frac={ppi_frac:.2f}"
+                         and r.subset_n_ok > 0})
     _panel_cov(axes[0], results, 1 - alpha)
     if style == "duo":
-        _panel_ppi(axes[1], results, gain_only=False)
+        _panel_ppi(axes[1], results, gain_only=False, ppi_frac=ppi_frac)
         panel_sizes = [cov_ns, ppi_ns]
     else:
         _panel_type1(axes[1], results, alpha)
-        _panel_ppi(axes[2], results, gain_only=True)
+        _panel_ppi(axes[2], results, gain_only=True, ppi_frac=ppi_frac)
         panel_sizes = [cov_ns, cov_ns, ppi_ns]
     for ax, sizes in zip(axes, panel_sizes):
         ax.set_xscale("log")
@@ -280,6 +298,10 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
     ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--ppi-frac", default="0.20",
+                    help="Labelling budget to show in the PPI panel, as a fraction of N "
+                         "(0.10/0.20/0.40), or 'all' to pool them. Pooling is not "
+                         "like-for-like across N -- see _panel_ppi. Default 0.20.")
     a = ap.parse_args()
 
     import matplotlib
@@ -296,7 +318,9 @@ def main():
         out = scorecard(results, a.out, a.width or 3.3, a.height or 2.4)
     else:
         w = a.width or (3.4 if a.style == "duo" else 7.0)
-        out = multi(results, a.out, a.style, w, a.height or (1.7 if a.style == "duo" else 1.9), a.alpha)
+        pf = None if str(a.ppi_frac).lower() == "all" else float(a.ppi_frac)
+        out = multi(results, a.out, a.style, w,
+                    a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf)
     print(f"wrote {out}")
 
 
