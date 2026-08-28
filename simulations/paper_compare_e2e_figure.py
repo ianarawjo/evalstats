@@ -160,6 +160,63 @@ def _thin_log_ticks(sizes, min_decades: float = 0.11):
     return kept
 
 
+def _ppi_cells(results, et):
+    """Per-cell (N, ppi_frac) PPI-vs-labels-only gain, keyed by absolute budget.
+
+    n_lab -- the number of human labels per arm -- is what the gain actually
+    tracks. Measured on this grid it explains ~0.88 of the variance in gain,
+    against ~0.30 for N and ~0.40 for the labelled FRACTION: cells with the
+    same n_lab agree closely even when they come from different N and
+    different fractions (binary at n_lab=80: 21.0, 20.0, 15.1 points from
+    10%/800, 20%/400, 40%/200). That is the PPI story stated correctly -- what
+    you spend on labels sets the gain, not how big the eval set is.
+    """
+    ks = _ref_ks([r for r in results if r.eval_type == et])
+    # Aggregate to the (N, fraction) CONDITION before differencing. A single
+    # row here is one shape x icc cell at ~100 reps, far too noisy to read a
+    # difference of two rates off; the condition pools its shapes the same way
+    # the summary table does.
+    groups: dict[tuple[int, float], list] = {}
+    for r in results:
+        if r.eval_type != et or r.is_null or r.ppi_config == "none":
+            continue
+        if ks and r.k not in ks:
+            continue
+        if not r.ppi_config.startswith("frac="):
+            continue
+        frac = float(r.ppi_config.split("=", 1)[1])
+        groups.setdefault((r.n_items, frac), []).append(r)
+    out = []
+    for (n_items, frac), rs in groups.items():
+        den = sum(x.n_reps - x.n_errors for x in rs)
+        sden = sum(x.subset_n_ok for x in rs)
+        if not den or not sden:
+            continue
+        gain = (sum(x.extreme_reject for x in rs) / den
+                - sum(x.subset_extreme_reject for x in rs) / sden) * 100.0
+        out.append((int(round(frac * n_items)), gain))
+    return out
+
+
+def _panel_ppi_budget(ax, results):
+    """Gain against the absolute labelling budget -- see _ppi_cells."""
+    for et in ET_ORDER:
+        cells = _ppi_cells(results, et)
+        if not cells:
+            continue
+        xs = sorted({c[0] for c in cells})
+        # light scatter of the individual (N, frac) cells behind the mean, so
+        # the collapse onto one curve is visible rather than asserted
+        ax.scatter([c[0] for c in cells], [c[1] for c in cells], s=7,
+                   color=ET_COLOR[et], alpha=0.45, lw=0, zorder=2)
+        ys = [float(np.mean([c[1] for c in cells if c[0] == x])) for x in xs]
+        ax.plot(xs, ys, marker=ET_MARK[et], ms=3.2, lw=1.3,
+                color=ET_COLOR[et], label=et, zorder=3)
+    ax.axhline(0, color="black", ls="--", lw=0.9)
+    ax.set_ylabel("PPI power gain\n(percentage points)")
+    ax.set_title("pooled over N and budget %", fontsize=6.5, pad=2)
+
+
 def _by_n(rows, fn):
     ns = sorted({r.n_items for r in rows})
     xs, ys, es = [], [], []
@@ -237,7 +294,7 @@ def _panel_ppi(ax, results, gain_only, ppi_frac=None):
     ax.set_title(_budget, fontsize=6.5, pad=2)
 
 
-def multi(results, out, style, width, height, alpha, ppi_frac=None):
+def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n"):
     import matplotlib.pyplot as plt
     n = 2 if style == "duo" else 3
     fig, axes = plt.subplots(1, n, figsize=(width, height))
@@ -254,8 +311,13 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None):
         panel_sizes = [cov_ns, ppi_ns]
     else:
         _panel_type1(axes[1], results, alpha)
-        _panel_ppi(axes[2], results, gain_only=True, ppi_frac=ppi_frac)
-        panel_sizes = [cov_ns, cov_ns, ppi_ns]
+        if ppi_x == "budget":
+            _panel_ppi_budget(axes[2], results)
+            lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
+            panel_sizes = [cov_ns, cov_ns, lab_ns]
+        else:
+            _panel_ppi(axes[2], results, gain_only=True, ppi_frac=ppi_frac)
+            panel_sizes = [cov_ns, cov_ns, ppi_ns]
     for ax, sizes in zip(axes, panel_sizes):
         ax.set_xscale("log")
         # Plain integers at exactly the N values swept -- these are sample
@@ -266,7 +328,8 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None):
         ax.tick_params(axis="x", labelsize=6.0)
         for lbl in ax.get_xticklabels():
             lbl.set_fontsize(6.0)
-        ax.set_xlabel("items per arm (N)")
+        ax.set_xlabel("human labels per arm" if (ppi_x == "budget" and ax is axes[-1])
+                      else "items per arm (N)")
         ax.grid(alpha=.25); ax.set_axisbelow(True)
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
@@ -298,6 +361,10 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
     ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--ppi-x", choices=("n", "budget"), default="n",
+                    help="x-axis of the PPI panel: 'n' = items per arm at a fixed budget "
+                         "fraction, 'budget' = absolute human labels per arm, pooled over "
+                         "N and fraction (the axis the gain actually tracks).")
     ap.add_argument("--ppi-frac", default="0.20",
                     help="Labelling budget to show in the PPI panel, as a fraction of N "
                          "(0.10/0.20/0.40), or 'all' to pool them. Pooling is not "
@@ -320,7 +387,7 @@ def main():
         w = a.width or (3.4 if a.style == "duo" else 7.0)
         pf = None if str(a.ppi_frac).lower() == "all" else float(a.ppi_frac)
         out = multi(results, a.out, a.style, w,
-                    a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf)
+                    a.height or (1.7 if a.style == "duo" else 1.9), a.alpha, pf, a.ppi_x)
     print(f"wrote {out}")
 
 
