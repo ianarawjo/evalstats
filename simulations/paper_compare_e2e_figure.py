@@ -32,6 +32,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simulations.replot_compare_e2e import load_results  # noqa: E402
+from simulations.harness.cases.compare_e2e import _format_log_size_axis  # noqa: E402
 
 # ColorBrewer Dark2, the order the paper's other figures already use.
 ET_COLOR = {"binary": "#1B9E77", "continuous": "#D95F02", "likert": "#7570B3"}
@@ -135,6 +136,30 @@ def scorecard(results, out, width, height):
     return out
 
 
+def _thin_log_ticks(sizes, min_decades: float = 0.11):
+    """Drop tick labels that would collide on a log axis, keeping the endpoints.
+
+    The harness's own plot is wide enough to label every swept N; at this
+    figure's width 800 and 1000 sit 0.097 decades apart and overprint. Walks
+    left to right keeping a tick only once it clears `min_decades` from the
+    last kept one, then forces the final value back in (and drops its
+    predecessor if that reintroduced a collision) so the axis still ends at
+    the largest N actually run.
+    """
+    xs = sorted(set(int(n) for n in sizes))
+    if len(xs) < 3:
+        return xs
+    kept = [xs[0]]
+    for x in xs[1:]:
+        if np.log10(x) - np.log10(kept[-1]) >= min_decades:
+            kept.append(x)
+    if kept[-1] != xs[-1]:
+        if np.log10(xs[-1]) - np.log10(kept[-1]) < min_decades:
+            kept.pop()
+        kept.append(xs[-1])
+    return kept
+
+
 def _by_n(rows, fn):
     ns = sorted({r.n_items for r in rows})
     xs, ys, es = [], [], []
@@ -193,7 +218,7 @@ def _panel_ppi(ax, results, gain_only):
                     alpha=.75, label=f"{et} (labels only)")
     if gain_only:
         ax.axhline(0, color="black", ls="--", lw=0.9)
-        ax.set_ylabel("PPI power gain (pts)")
+        ax.set_ylabel("PPI power gain\n(percentage points)")
     else:
         ax.set_ylabel("power (extreme pair)")
 
@@ -202,14 +227,27 @@ def multi(results, out, style, width, height, alpha):
     import matplotlib.pyplot as plt
     n = 2 if style == "duo" else 3
     fig, axes = plt.subplots(1, n, figsize=(width, height))
+    cov_ns = sorted({r.n_items for r in results if r.k > 2})
+    ppi_ns = sorted({r.n_items for r in results
+                     if not r.is_null and r.ppi_config != "none" and r.subset_n_ok > 0})
     _panel_cov(axes[0], results, 1 - alpha)
     if style == "duo":
         _panel_ppi(axes[1], results, gain_only=False)
+        panel_sizes = [cov_ns, ppi_ns]
     else:
         _panel_type1(axes[1], results, alpha)
         _panel_ppi(axes[2], results, gain_only=True)
-    for ax in axes:
+        panel_sizes = [cov_ns, cov_ns, ppi_ns]
+    for ax, sizes in zip(axes, panel_sizes):
         ax.set_xscale("log")
+        # Plain integers at exactly the N values swept -- these are sample
+        # sizes read off directly, not quantities spanning many orders of
+        # magnitude where 10^2 notation would be the natural choice. Shared
+        # with the harness's own plot so both label the axis the same way.
+        _format_log_size_axis(ax, _thin_log_ticks(sizes))
+        ax.tick_params(axis="x", labelsize=6.0)
+        for lbl in ax.get_xticklabels():
+            lbl.set_fontsize(6.0)
         ax.set_xlabel("items per arm (N)")
         ax.grid(alpha=.25); ax.set_axisbelow(True)
         for sp in ("top", "right"):
