@@ -138,6 +138,11 @@ def main() -> int:
                          "curves for squarer ones that read better.")
     ap.add_argument("--legend-frac", type=float, default=0.22,
                     help="fraction of the width reserved for a right-hand legend.")
+    ap.add_argument("--effect-max", type=float, default=None, metavar="X",
+                    help="Clip the effect-size row's x axis at X (e.g. 0.8). Every arm "
+                         "saturates at 1.0 well before the sweep's largest effect, so the "
+                         "tail is flat lines; cutting it gives the informative region more "
+                         "width. Off by default -- the full sweep is still what ran.")
     ap.add_argument("--show-provenance", action="store_true")
     a = ap.parse_args()
 
@@ -160,7 +165,13 @@ def main() -> int:
             print(f"  single run: {stems.pop()}")
 
     rows = ROWS if a.layout == "2x3" else ROWS[:1]
-    nrow, ncol = len(rows), len(ETS)
+    # Columns are the eval types actually present, in ETS order. With all
+    # three present (the main-text figure) this is identical to len(ETS);
+    # with fewer -- the omnibus sweep has no binary arm, and the official
+    # preset excludes "grades" -- it drops the empty column rather than
+    # rendering a panel-wide gap.
+    ets = [(et, disp) for et, disp in ETS if et in by_et] or ETS
+    nrow, ncol = len(rows), len(ets)
     h = a.height or (2.35 if nrow == 2 else 1.45)
 
     rc = {"font.size": 7.0, "axes.labelsize": 7.0, "axes.titlesize": 7.5,
@@ -171,7 +182,7 @@ def main() -> int:
                                  squeeze=False, sharey=True)
         row_labelled = [False] * len(rows)
         for i, (tag, xcol, xlab) in enumerate(rows):
-            for j, (et, disp) in enumerate(ETS):
+            for j, (et, disp) in enumerate(ets):
                 ax = axes[i][j]
                 cell = by_et.get(et, {}).get(tag)
                 if not cell:
@@ -190,6 +201,11 @@ def main() -> int:
                 # label for the whole figure.
                 if j == 1:
                     ax.set_xlabel(xlab)
+                # Clip only the effect-size row: n_lab's x axis is a budget,
+                # not a saturating quantity, so the same cut there would drop
+                # real signal rather than a flat tail.
+                if a.effect_max is not None and xcol == "effect_size":
+                    ax.set_xlim(right=a.effect_max)
         # Built from ARMS rather than scraped off a panel: the first panel may
         # be hidden (an eval type absent from the CSVs), and scraping it then
         # yields a legend with only the alpha line in it.
