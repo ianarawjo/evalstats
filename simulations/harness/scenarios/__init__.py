@@ -18,6 +18,19 @@ import numpy as np
 
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 
+DEFAULT_EVAL_TYPES = ["binary", "continuous", "likert"]
+"""The eval types the official presets actually sweep. "grades" is a valid
+scenario type (EVAL_TYPES above) but is deliberately NOT swept: it is
+"continuous" rescaled to 0-100, so it adds a third of the runtime for no
+coverage the continuous column does not already give, while "likert" is kept
+as the genuinely distinct integer/few-level case.
+
+Cases must use this as their --eval-types default rather than falling through
+to EVAL_TYPES. Leaving it to None meant a bare CLI run swept four types while
+the official preset swept three, with nothing in the output saying which you
+got -- a multi-run pairwise table in the paper carried 15 grades rows that
+the official test would never have produced."""
+
 # Canonical (lo, hi) natural-scale bounds per eval type -- see synthetic.py's
 # per-shape generators (grades/likert are clipped to exactly these ranges).
 # Used to rescale data onto [0, 1] before calling CI methods whose domain or

@@ -110,7 +110,7 @@ from ..latex_tables import (
     mark_best_and_runnerup,
     report_eval_type_group,
 )
-from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
+from ..scenarios import CIPairSource, EVAL_TYPES, DEFAULT_EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
@@ -2160,7 +2160,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="Synthetic scenario breadth (ignored for real data sources)")
-    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
+    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES,
+                         default=list(DEFAULT_EVAL_TYPES), metavar="TYPE",
+                         help="Default matches the official presets (no 'grades'); pass "
+                              "--eval-types grades explicitly to include it.")
     parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
                          help="Restrict to these CI methods only, by Method.name (e.g. mj_floor "
                               "tango_scc bayes_paired_comp). Skips *computing* (not just reporting) any "
