@@ -498,7 +498,7 @@ def test_compare_prompts_simultaneous_ci_propagates():
 
 
 def test_compare_prompts_simultaneous_ci_true_by_default():
-    scores = {"A": [0.7, 0.8, 0.6], "B": [0.65, 0.75, 0.55]}
+    scores = {"A": [0.7, 0.8, 0.6] * 5, "B": [0.65, 0.75, 0.55] * 5}
     report = es.compare_prompts(scores, rng=_rng(0), n_bootstrap=100)
     assert report.simultaneous_ci is True
 

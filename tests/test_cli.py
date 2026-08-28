@@ -10,26 +10,25 @@ from evalstats import cli
 from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 
 
+_MOCK_N_INPUTS = 15  # at/above MIN_SAMPLE_FLOOR, so these mocks don't trip the sample-floor guard
+
+
 def _make_single_model_result() -> BenchmarkResult:
+    rng = np.random.default_rng(0)
     return BenchmarkResult(
-        scores=np.array([[0.9, 0.8], [0.7, 0.6]], dtype=float),
+        scores=rng.uniform(0.5, 0.9, size=(2, _MOCK_N_INPUTS)),
         template_labels=["Prompt A", "Prompt B"],
-        input_labels=["i1", "i2"],
+        input_labels=[f"i{i+1}" for i in range(_MOCK_N_INPUTS)],
     )
 
 
 def _make_multi_model_result() -> MultiModelBenchmark:
+    rng = np.random.default_rng(0)
     return MultiModelBenchmark(
-        scores=np.array(
-            [
-                [[0.9, 0.8], [0.7, 0.6]],
-                [[0.8, 0.7], [0.6, 0.5]],
-            ],
-            dtype=float,
-        ),
+        scores=rng.uniform(0.5, 0.9, size=(2, 2, _MOCK_N_INPUTS)),
         model_labels=["m1", "m2"],
         template_labels=["Prompt A", "Prompt B"],
-        input_labels=["i1", "i2"],
+        input_labels=[f"i{i+1}" for i in range(_MOCK_N_INPUTS)],
     )
 
 
@@ -159,11 +158,13 @@ def test_load_file_reads_csv_and_xlsx_from_disk(tmp_path, suffix):
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suffix):
+    rng = np.random.default_rng(0)
+    n = _MOCK_N_INPUTS
     df = pd.DataFrame(
         {
-            "input": ["i1", "i2"],
-            "Prompt A": [0.9, 0.8],
-            "Prompt B": [0.7, 0.6],
+            "input": [f"i{i+1}" for i in range(n)],
+            "Prompt A": rng.uniform(0.5, 0.9, size=n),
+            "Prompt B": rng.uniform(0.5, 0.9, size=n),
         }
     )
     file_path = tmp_path / f"benchmark{suffix}"
@@ -207,7 +208,7 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
 
     assert isinstance(analysis_call["benchmark"], BenchmarkResult)
     assert analysis_call["benchmark"].template_labels == ["Prompt A", "Prompt B"]
-    assert analysis_call["benchmark"].input_labels == ["i1", "i2"]
+    assert analysis_call["benchmark"].input_labels == [f"i{i+1}" for i in range(n)]
     assert analysis_call["evaluator_mode"] == "aggregate"
     assert analysis_call["reference"] == "grand_mean"
     assert analysis_call["method"] == "auto"

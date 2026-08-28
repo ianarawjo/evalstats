@@ -19,7 +19,7 @@ from scipy.stats import t as _scipy_t
 
 from evalstats.loader import EvalResults, EvalLoadError, load_from, _scores_dict_to_df, _is_nested_scores_dict
 from evalstats.io import from_dataframe
-from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
+from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS, MIN_SAMPLE_FLOOR
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
 from evalstats.core.design import detect_paired
@@ -881,7 +881,7 @@ _ANALYZE_PARAMS = {
     "evaluator_mode", "reference", "method", "backend", "n_bootstrap",
     "correction", "spread_percentiles", "failure_threshold", "rng", "statistic",
     "template_model_collapse", "simultaneous_ci", "omnibus", "p_values",
-    "pairwise_test", "ci_style", "score_range",
+    "pairwise_test", "ci_style", "score_range", "eval_type",
 }
 
 
@@ -2721,6 +2721,30 @@ def compare(
         factor_col_name = factors_list[0]
         if factor_col_name in df.columns:
             is_canonical_col = True
+
+    # ── enforce the documented minimum sample floor ───────────────────────────
+    # Below MIN_SAMPLE_FLOOR items per compared entity, results are too noisy
+    # to be meaningful -- refuse rather than silently print stats built on too
+    # little data. Uses the per-entity item count when a single clear factor
+    # column is resolved (the common case); falls back to the overall unique
+    # item count for factorial comparisons, where "N" isn't a single number.
+    _floor_factor_col = (
+        model_col if is_model_comparison else
+        prompt_col if is_prompt_comparison else
+        factors_list[0] if (is_canonical_col and factors_list[0] in df.columns) else
+        None
+    )
+    if _floor_factor_col is not None:
+        _min_n = int(df.groupby(_floor_factor_col)[item_col].nunique().min())
+    else:
+        _min_n = int(df[item_col].nunique())
+    if _min_n < MIN_SAMPLE_FLOOR:
+        raise ValueError(
+            f"Only {_min_n} item(s) per compared entity -- evalstats requires at "
+            f"least {MIN_SAMPLE_FLOOR} to report statistics (results below this "
+            "floor are too noisy to be meaningful). Expand your eval set before "
+            "calling compare()."
+        )
 
     # ── design detection / routing (paired vs. unpaired) ─────────────────────
     # Scoped to "pure" single-factor cases only -- i.e. whichever of paths A/B/C

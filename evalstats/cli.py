@@ -30,7 +30,7 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
-from evalstats.config import set_alpha_ci
+from evalstats.config import set_alpha_ci, MIN_SAMPLE_FLOOR
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +649,14 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         print(f"  Prompts:   {result.template_labels}")
         if result.n_evaluators > 1:
             print(f"  Evaluators: {result.evaluator_names}")
+
+    # --- Enforce the documented minimum sample floor ---
+    if result.n_inputs < MIN_SAMPLE_FLOOR:
+        _die(
+            f"only {result.n_inputs} input(s) per prompt/model -- evalstats "
+            f"requires at least {MIN_SAMPLE_FLOOR} to report statistics (results "
+            "below this floor are too noisy to be meaningful). Expand your eval set."
+        )
 
     # --- Validate --evaluator-mode ---
     evaluator_mode = args.evaluator_mode

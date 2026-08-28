@@ -17,6 +17,13 @@ _alpha: float = 0.05
 # [99%/95%/90%/68%]; keep this list and that legend in step.
 GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
+# Hard minimum sample floor: below this many items per compared entity,
+# evalstats refuses to report statistics at all (too noisy to be
+# meaningful -- see the paper's "enforce a minimum sample floor" principle).
+# Enforced at the top of both compare() (api.py) and the `evalstats analyze`
+# CLI (cli.py), before any analysis runs.
+MIN_SAMPLE_FLOOR: int = 15
+
 
 def supports_ansi_color() -> bool:
     """Whether ANSI color escape codes should be emitted for console output.

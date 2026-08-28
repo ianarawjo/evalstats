@@ -96,7 +96,7 @@ def test_plot_ci_forest_gradient_matches_single_on_mean_and_outer_ci():
 
 
 def test_plot_ci_forest_compare_to_still_works_with_gradient_primary():
-    small = _make_result(n_items=10, seed=1)
+    small = _make_result(n_items=15, seed=1)
     big = _make_result(n_items=80, seed=2)
     fig = plot_ci_forest(big, compare_to=small)
     assert fig is not None
@@ -106,7 +106,7 @@ def test_plot_ci_forest_compare_to_still_works_with_gradient_primary():
 def test_plot_ci_forest_compare_to_uses_gradient_bands_and_same_hue():
     from matplotlib.patches import Rectangle
 
-    small = _make_result(n_items=10, seed=1)
+    small = _make_result(n_items=15, seed=1)
     big = _make_result(n_items=80, seed=2)
     # color_rule="factor" guarantees each entity gets a distinct hue --
     # "tier" mode legitimately lets multiple entities share a hue (e.g. two
