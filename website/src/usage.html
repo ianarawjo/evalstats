@@ -121,7 +121,7 @@
       <code>prompt</code> / <code>template</code> / <code>prompt_template</code> &mdash;
       <code>input</code> / <code>example</code> / <code>item</code> / <code>id</code> &mdash;
       <code>score</code> / <code>value</code> / <code>result</code> / <code>metric</code> &mdash;
-      <code>run</code> / <code>seed</code> / <code>trial</code>.
+      <code>run</code> / <code>seed</code> / <code>repeat</code> / <code>run_id</code> / <code>trial</code>.
       Add a <code>model</code> column for multi-model data.
     </p>
   </div>
@@ -136,50 +136,53 @@
 
   <h3 id="example-output" style="margin-top:2rem;">3. Read the output</h3>
   <p>
-    The terminal report has three sections. Here's what you'd see for the
+    The terminal report breaks the analysis into several sections. Here's what you'd see for the
     CSV above (20 inputs × 3 prompts × 3 runs, continuous scores):
   </p>
 
-  <div class="ps-output"><pre>====================
- PROMPTS COMPARISON
-====================
-3 prompts | 20 inputs | method=nig | 95% confidence intervals (CI)
+  <div class="ps-output"><pre>--- Mean Performance (marginal logit-t CIs) ---
+  axis: [0.518, 0.975]  (· ±1σ, ░▒▓█ CI gradient [99%/95%/90%/68%], │ grand mean)
+  Prompt     Interval Plot                                 Mean    CI Low   CI High
+  prompt_a     ···░▒▓█████▓▒░░···│                       0.636    0.589    0.680
+  prompt_b              ···░░▒▓██│███▓▒░····             0.753    0.700    0.799
+  prompt_c                       │ ··░░▒▓█████▓▒░···     0.864    0.816    0.901
 
---- Mean Performance (marginal NIG CIs) ---
-  axis: [0.561, 1.009]  (· ±1σ, ─ CI, ● mean, │ grand mean)
-  Prompt                   Interval Plot                                 Mean    CI Low   CI High
-  prompt_a                   ···──────●─────···│                       0.680    0.616    0.744
-  prompt_b                          ····──────●│─────····              0.776    0.707    0.846
-  prompt_c                                     │  ···─────●────···     0.906    0.852    0.957
-
---- Pairwise Comparisons (nested smooth bootstrap (n=10000, R=3) (simultaneous CIs computed with max-T)) ---
-  legend: (· ±1σ, ─ CI, ● mean, │ zero)    axis: [-0.351, +0.351]    effect: Left - Right
+--- Pairwise Comparisons (Paired logit-t CIs) ---
+  legend: (· ±1σ, ░▒▓█ CI gradient [99%/95%/90%/68%], │ zero)    axis: [-0.369, +0.369]    effect: Left - Right
   Left         Right        Interval Plot                                 Mean    CI Low   CI High       ES
-  prompt_c     prompt_b                        ·│──────●──────···      +0.1297   +0.0235   +0.2359    0.790
-  prompt_c     prompt_a                         │     ··─────●─────··  +0.2261   +0.1345   +0.3177    0.990
-  prompt_b     prompt_a                     ··──│────●────────··       +0.0965   -0.0265   +0.2195    0.600
+  prompt_c     prompt_b                       ··│░▒▓█████▓▒░···        +0.1109   +0.0203   +0.1997    0.667
+  prompt_c     prompt_a                         │    ··░░▓▓████▓▒░···  +0.2282   +0.1444   +0.3086    0.981
+  prompt_b     prompt_a                         │·░░▓████▓░··          +0.1172   +0.0513   +0.1821    0.857
   ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
+  CI method: Paired logit-t  |  α=0.05
+  Simultaneous CI method: Šidák
 
-  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI, max_t-adjusted:
-    #2–#3: [prompt_b ─ prompt_a]
+  Statistically indistinguishable rank bands (95% CI): none
 
-  -> Evidence suggests a clear best option: 'prompt_c'
+--- Per-input Variance Across Runs (R=3 runs) ---
+  key: ▁–█ = per-input noise   (globally scaled; █ = 0.0860)
+  Prompt      Per-input noise               run_std    input_std    total_std  instability  Consistency (ICC)   Verdict
+  prompt_a    ▄▂▆▄▆▄▂▄▇▇▅▃▄▃▄▄▅▅▄▅           0.0459       0.0968       0.1071       0.0428  0.82 (good)         very stable across runs
+  prompt_b    ▃█▂▃▃▄▃▅▆▇▄█▁▅▃▆▄▂▃▇           0.0485       0.1062       0.1168       0.0425  0.83 (good)         very stable across runs
+  prompt_c    ▄▂▁▆▃▁▇▁▇▆▆▆▃▄▆▄▁▄▆▄           0.0453       0.0901       0.1009       0.0376  0.80 (good)         very stable across runs
+  instability = how many points a score typically moves between repeated runs
+  Consistency (ICC) = how much of the difference between inputs is real signal, rather than run-to-run noise
 
 --- Executive Summary (Prompt leaderboard) ---
-  Prompt            Grp     Mean  CI               Stability         Verdict
-  ──────────────────────────────────────────────────────────────────────────
-  prompt_c           #1    0.906  [0.852, 0.957]   Stable            Likely best
-  prompt_b           #2    0.776  [0.707, 0.846]   Stable            Significant drop-off
-  prompt_a           #2    0.680  [0.616, 0.744]   Stable            Significant drop-off
-  ──────────────────────────────────────────────────────────────────────────</pre></div>
+  Prompt            Grp     Mean  CI               Per-run noise  Stability         Verdict
+  ─────────────────────────────────────────────────────────────────────────────────────────
+  prompt_c           #1    0.864  [0.816, 0.901]   ▂▃▅▆▃▅▂▅       Stable            Likely best
+  prompt_b           #2    0.753  [0.700, 0.799]   ▅▃▅▆▃▄▃▅       Stable            Significant drop-off
+  prompt_a           #3    0.636  [0.589, 0.680]   ▄▅▅▅▃▄▅▅       Stable            Significant drop-off
+  ─────────────────────────────────────────────────────────────────────────────────────────</pre></div>
 
   <p>
     Start at the <strong>Executive Summary</strong> at the bottom. Entities in the same rank
     group (<strong>#1</strong>, <strong>#2</strong>, …) are statistically indistinguishable
-    after multiple-comparisons correction — even if one has a higher mean. Here,
-    <code>prompt_c</code> is the clear best (<strong>#1</strong>), while
-    <code>prompt_b</code> and <code>prompt_a</code> both land in <strong>#2</strong>,
-    meaning the gap between them is not yet statistically significant.
+    after multiple-comparisons correction — even if one has a higher mean. Here, all three
+    prompts land in their own group: <code>prompt_c</code> is the clear best (<strong>#1</strong>),
+    <code>prompt_b</code> is a clear step down (<strong>#2</strong>), and <code>prompt_a</code>
+    trails behind that (<strong>#3</strong>).
   </p>
   <p>
     The <strong>Pairwise Comparisons</strong> section shows a visual CI plot and effect-size
@@ -259,7 +262,7 @@ result.summary()</code></pre>
     },
 }
 
-result = estats.compare_models(scores)
+result = estats.compare_models(scores, show_rank_probabilities=True)
 result.summary()</code></pre>
 
   <div class="ps-output"><pre>================================================
@@ -267,41 +270,42 @@ result.summary()</code></pre>
 ================================================
                   5-shot    0-shot
   ─────────────────────────────────
-    gpt-4o-mini  0.814 █*  0.656 ·
-  gemma-3-4b-it  0.704 ▒   0.624 ·
+    gpt-4o-mini  0.797 █*  0.676 ░
+  gemma-3-4b-it  0.708 ▒   0.630 ·
   ─────────────────────────────────
-  * = best pair by mean  |  heat: · (low) → █ (high), range [0.624, 0.814]
+  * = statistically tied for best (95% CI, not significantly beaten)  |  heat: · (low) → █ (high), range [0.630, 0.797]
 
---- Rank Probabilities: All 4 by P(Best) (smooth bootstrap, n=10000, ranked by mean) ---
+--- Rank Probabilities: All 4 by P(Best) (bootstrap, n=10000, ranked by mean) ---
   Model           Template   P(Best)                  E[Rank]
-  gpt-4o-mini     5-shot     100.0% ██████████████     1.00 █▆▃───────────
-  gpt-4o-mini     0-shot       0.0% ░░░░░░░░░░░░░░     3.07 ───────▃▆█▆▃──
-  gemma-3-4b-it   5-shot       0.0% ░░░░░░░░░░░░░░     2.04 ──▃▆█▆▃───────
-  gemma-3-4b-it   0-shot       0.0% ░░░░░░░░░░░░░░     3.89 ───────────▃▆█
+  gpt-4o-mini     5-shot      99.9% ██████████████     1.00 █▆▃───────────
+  gemma-3-4b-it   5-shot       0.1% ░░░░░░░░░░░░░░     2.15 ───▃▆█▆▃──────
+  gpt-4o-mini     0-shot       0.0% ░░░░░░░░░░░░░░     2.91 ──────▃▆█▆▃───
+  gemma-3-4b-it   0-shot       0.0% ░░░░░░░░░░░░░░     3.93 ───────────▃▆█
 
 --- Mean Performance: All 4 (marginal CIs) ---
-  axis: [0.517, 0.921]  (· ±1σ, ─ CI, ● mean, │ grand mean)
+  axis: [0.471, 0.935]  (· ±1σ, ░▒▓█ CI gradient [99%/95%/90%/68%], │ grand mean)
   Model           Template Interval Plot                                 Mean    CI Low   CI High
-  gpt-4o-mini     5-shot                     │  ····────●─────····     0.814    0.770    0.860
-  gpt-4o-mini     0-shot       ·····─────●───│─·····                   0.656    0.604    0.711
-  gemma-3-4b-it   5-shot              ···────│●────···                 0.704    0.663    0.744
-  gemma-3-4b-it   0-shot     ····─────●────··│·                        0.624    0.579    0.670
+  gpt-4o-mini     5-shot                     ··│··░░▓█████▓░······     0.797    0.757    0.832
+  gemma-3-4b-it   5-shot          ········░▒▓██│███▓░░········         0.708    0.658    0.754
+  gpt-4o-mini     0-shot          ······░▒▓████│▒░······               0.676    0.636    0.714
+  gemma-3-4b-it   0-shot     ······░░▓▓█████▓░░│······                 0.630    0.585    0.672
 
 --- Executive Summary (Cross-model pair leaderboard) ---
   Model            Template      Grp     Mean  CI               Verdict
   ─────────────────────────────────────────────────────────────────────
-  gpt-4o-mini      5-shot         #1    0.814  [0.770, 0.860]   Likely best
-  gemma-3-4b-it    5-shot         #2    0.704  [0.663, 0.744]   Significant drop-off
-  gpt-4o-mini      0-shot         #2    0.656  [0.604, 0.711]   Significant drop-off
-  gemma-3-4b-it    0-shot         #3    0.624  [0.579, 0.670]   Significant drop-off
+  gpt-4o-mini      5-shot         #1    0.797  [0.757, 0.832]   Likely best
+  gemma-3-4b-it    5-shot         #2    0.708  [0.658, 0.754]   Significant drop-off
+  gpt-4o-mini      0-shot         #2    0.676  [0.636, 0.714]   Significant drop-off
+  gemma-3-4b-it    0-shot         #2    0.630  [0.585, 0.672]   Significant drop-off
   ─────────────────────────────────────────────────────────────────────</pre></div>
 
   <p>
-    In the crossed leaderboard, <code>gpt-4o-mini / 5-shot</code> ranks first.
-    The <code>5-shot</code> setting is stronger for both models, and the
-    <code>gemma-3-4b-it / 5-shot</code> and <code>gpt-4o-mini / 0-shot</code>
-    rows landing in the same group (<strong>#2</strong>) indicate those two
-    middle conditions are not cleanly separated at this confidence level.
+    In the crossed leaderboard, <code>gpt-4o-mini / 5-shot</code> ranks alone at the top.
+    The <code>5-shot</code> setting is stronger for both models, but only
+    <code>gpt-4o-mini / 5-shot</code> is statistically distinguishable from the rest — the
+    other three rows (<code>gemma-3-4b-it / 5-shot</code>, <code>gpt-4o-mini / 0-shot</code>,
+    and <code>gemma-3-4b-it / 0-shot</code>) all land in the same group (<strong>#2</strong>),
+    meaning they aren't cleanly separated from each other at this confidence level.
   </p>
 
   <h3 id="api-pvalues" style="margin-top:2rem;">Looking for p-values?</h3>
@@ -326,46 +330,44 @@ result = estats.compare_models(
 )
 result.summary()</code></pre>
 
-  <div class="ps-output"><pre>===================
- MODELS COMPARISON
-===================
-3 models | 40 inputs | method=nig | 95% confidence intervals (CI)
+  <div class="ps-output"><pre>--- Mean Performance (marginal logit-t CIs) ---
+  axis: [0.566, 0.999]  (· ±1σ, ░▒▓█ CI gradient [99%/95%/90%/68%], │ grand mean)
+  Model           Interval Plot                                 Mean    CI Low   CI High
+  gpt-4o-mini               ······░░▒▓█│███▓▒░········        0.808    0.761    0.848
+  gemma-3-4b-it     ·······░░▓▓█████▓▒░│·······               0.729    0.681    0.772
+  qwen3-8b                       ·····░│▒▓▓████▓▒░·······     0.854    0.809    0.890
 
---- Mean Performance (marginal NIG CIs) ---
-  axis: [0.683, 0.937]  (· ±1σ, ─ CI, ● mean, │ grand mean)
-  Model                    Interval Plot                                 Mean    CI Low   CI High
-  gpt-4o-mini                          ······───│─●────······          0.827    0.798    0.857
-  gemma-3-4b-it              ·····────●────·····│                      0.753    0.726    0.778
-  qwen3-8b                                    ··│··────●─────·····     0.863    0.836    0.891
-
---- Pairwise Comparisons (smooth bootstrap (n=10000) (fdr_bh-corrected p-values) (simultaneous CIs computed with max-T)) ---
-  Friedman omnibus: χ²(2) = 28.950, p = 5.171e-07***
-  legend: (· ±1σ, ─ CI, ● mean, │ zero)    axis: [-0.193, +0.193]    effect: Left - Right
+--- Pairwise Comparisons (Paired logit-t CIs) ---
+  Friedman omnibus: χ²(2) = 13.371, p = 0.001249*
+  legend: (· ±1σ, ░▒▓█ CI gradient [99%/95%/90%/68%], │ zero)    axis: [-0.329, +0.329]    effect: Left - Right
   Left            Right           Interval Plot                                 Mean    CI Low   CI High       ES    p (wsr)
-  qwen3-8b        gpt-4o-mini                    ····─│───●────·····         +0.0361   -0.0082   +0.0804    0.429    0.01716
-  qwen3-8b        gemma-3-4b-it                       │  ····────●─────····  +0.1101   +0.0681   +0.1521    0.944 3.492e-09***
-  gpt-4o-mini     gemma-3-4b-it                     ··│··─────●─────·····    +0.0740   +0.0249   +0.1231    0.702 6.606e-05***
+  qwen3-8b        gpt-4o-mini                  ·····░░│████▓▒░······         +0.0456   -0.0198   +0.1106    0.326    0.07635
+  qwen3-8b        gemma-3-4b-it                  ·····│·░░▓▓█████▓▒░·······  +0.1248   +0.0435   +0.2044    0.639 0.0007445**
+  gpt-4o-mini     gemma-3-4b-it               ·······░│▓▓█████▓▒░·······     +0.0792   -0.0025   +0.1598    0.480  0.007264*
   ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
-  p (wsr) = Wilcoxon signed-rank (fdr_bh-corrected)
+  CI method: Paired logit-t  |  p-value method: Wilcoxon signed-rank  |  α=0.05
+  Simultaneous CI method: Šidák  |  FWER correction for p-values: Romano-Wolf
+  p (wsr) = Wilcoxon signed-rank (romano_wolf-corrected)
   stars: * p<0.01, ** p<0.001, *** p<0.0001
 
-  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI, max_t-adjusted:
+  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI:
     #1–#2: [qwen3-8b ─ gpt-4o-mini]
+    #2–#3: [gpt-4o-mini ─ gemma-3-4b-it]
 
 --- Executive Summary (Model leaderboard) ---
   Model             Grp     Mean  CI               Verdict
   ────────────────────────────────────────────────────────
-  qwen3-8b           #1    0.863  [0.836, 0.891]   Tied with gpt-4o-mini as best
-  gpt-4o-mini        #1    0.827  [0.798, 0.857]   Tied with qwen3-8b as best
-  gemma-3-4b-it      #2    0.753  [0.726, 0.778]   Significant drop-off
+  qwen3-8b           #1    0.854  [0.809, 0.890]   Tied with gpt-4o-mini as best
+  gpt-4o-mini        #1    0.808  [0.761, 0.848]   Tied with qwen3-8b as best
+  gemma-3-4b-it      #2    0.729  [0.681, 0.772]   Significant drop-off
   ────────────────────────────────────────────────────────</pre></div>
 
   <p>
-    The Friedman omnibus test (χ²(2) = 28.95, p &lt; 0.001) confirms there is overall
+    The Friedman omnibus test (χ²(2) = 13.37, p = 0.0012) confirms there is overall
     variation across models. In the pairwise comparisons, <code>qwen3-8b</code> vs
-    <code>gpt-4o-mini</code> has a CI that crosses zero ([-0.008, +0.080] — not
-    significant), so both land in rank group <strong>#1</strong>. The new
-    <code>p (wsr)</code> column reports corrected Wilcoxon p-values for each pair.
+    <code>gpt-4o-mini</code> has a CI that crosses zero ([-0.020, +0.111] — not
+    significant), so both land in rank group <strong>#1</strong>. The
+    <code>p (wsr)</code> column reports Romano&ndash;Wolf-corrected Wilcoxon p-values for each pair.
     Only the gaps to <code>gemma-3-4b-it</code> are conclusive.
   </p>
 
@@ -416,15 +418,15 @@ estats.print_analysis_summary(result)</code></pre>
       </thead>
       <tbody>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.95</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Confidence level. Use 0.99 for a more conservative interval.</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">method</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Auto-selects based on data type. Options: <code>"lmm"</code>, <code>"bootstrap"</code>, <code>"smooth_bootstrap"</code>, <code>"bca"</code>, <code>"bayes_bootstrap"</code>, <code>"bayes_binary"</code>, <code>"wilson"</code>, <code>"newcombe"</code>, <code>"permutation"</code>, <code>"fisher_exact"</code>, <code>"sign_test"</code>.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">method</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Auto-selects based on data type and sample size — see <a href="which-method.html">Which Method?</a> for the full decision tree. Options: <code>"lmm"</code>, <code>"bootstrap"</code>, <code>"smooth_bootstrap"</code>, <code>"bootstrap_t"</code>, <code>"bca"</code>, <code>"bayes_bootstrap"</code>, <code>"bayes_binary"</code>, <code>"wilson"</code>, <code>"wald"</code>, <code>"clopper_pearson"</code>, <code>"newcombe"</code>, <code>"tango"</code>, <code>"mj_floor"</code>, <code>"bonett_price"</code>, <code>"logit_t"</code>, <code>"nig"</code>, <code>"t_interval"</code>, <code>"permutation"</code>, <code>"sign_test"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">n_bootstrap</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">10000</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Bootstrap resamples. Increase for smoother CI estimates.</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">simultaneous_ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">True</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Family-wise CI correction (max-T). Set to False for marginal CIs.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">simultaneous_ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">True</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Family-wise CI correction (Šidák by default; opt into max-T resampling via <code>prefer="max_t"</code>). Set to False for marginal CIs.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">statistic</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"mean"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Central tendency. Also supports <code>"median"</code>.</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">reference</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"grand_mean"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Comparison baseline for the advantage plot. Pass a template label to compare against a specific prompt or model.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">omnibus</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Run a Friedman omnibus test before pairwise comparisons (k ≥ 3).</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">p_values</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Show pairwise p-values in the report. CLI: <code>--p-values</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">pairwise_test</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Pairwise p-value test. Options: <code>"auto"</code>, <code>"bootstrap"</code>, <code>"wilcoxon"</code>, <code>"nemenyi"</code>. CLI: <code>--pairwise-test TEST</code> (setting this explicitly also enables p-values).</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"fdr_bh"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Multiple-comparison correction. Options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"none"</code>.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">FWER/multiple-comparison correction. <code>"auto"</code> resolves to Shaffer's (n&lt;30) or Romano&ndash;Wolf (n&ge;30) for p-values, and Šidák for simultaneous CIs — see <a href="which-method.html">Which Method?</a>. Other options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"hochberg"</code>, <code>"shaffer"</code>, <code>"romano_wolf"</code>, <code>"none"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">failure_threshold</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">None</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Flag inputs scoring below this value in the robustness table.</td></tr>
       </tbody>
     </table>

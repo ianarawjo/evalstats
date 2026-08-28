@@ -116,13 +116,15 @@
       <div class="callout callout-info">
         <div class="callout-label">The real takeaway</div>
         <p>
-          In our own simulations (see below): Wilson is strongest for binary
-          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage at small-to-mid N,
-          and smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
-          However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
-          N≈200+, producing overconfident intervals that can be dangerously wrong.
-          Thus, <code>evalstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
-          bootstrap for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
+          In our own simulations (see <a href="which-method.html">Which Method?</a>): Wilson is strongest for binary
+          single-sample coverage, and the Bonett&ndash;Price adjusted Wald interval is strongest for binary pairwise
+          coverage across the full N range we tested. We initially split the recommendation by N &mdash; Bayesian
+          paired below N&nbsp;&lt;&nbsp;100, since in our larger-N runs the <code>bayes_evals</code> Bayesian paired
+          method breaks down around N≈200+, producing overconfident intervals that can be dangerously wrong &mdash;
+          but Bonett&ndash;Price turned out to be better-calibrated than both across the whole range, so
+          <code>evalstats</code> now uses it at every N instead of switching. For non-binary scores, Logit-t
+          (bounded data) or NIG (Likert/discrete) are the defaults; smooth bootstrap with kernel density estimation
+          (KDE) remains the conservative fallback when you want a distribution-free method.
         </p>
       </div>
     </section>
@@ -149,8 +151,8 @@
             and power analysis for eval design. Addresses cluster structure (multi-run, multi-judge
             settings) via cluster-robust standard errors. The paper identified a genuine gap: the
             industry norm of reporting bare means without uncertainty is indefensible at any sample
-            size. See the <a href="./index.html#debunking">Debunking section</a> for how
-            evalstats&rsquo; smooth bootstrap improves on SE-based intervals at small N.
+            size. See <a href="which-method.html">Which Method?</a> for how evalstats' current
+            defaults improve on SE-based intervals at small N.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag tag-debated">discussed in guide</span>
@@ -170,10 +172,11 @@
             methods substantially outperform frequentist and bootstrap alternatives. The paper&rsquo;s simulation
             design evaluates Bayesian estimates on distributions that match the Bayesian prior, which
             inflates its apparent advantage. It also focuses exclusively on the binary case and does not
-            benchmark against the Wilson interval or smoothed bootstrap. See the
-            <a href="./index.html#debunking">Debunking section</a> of the Stats Reference Guide for a
-            detailed critique. The paper&rsquo;s core call for more rigorous statistics in LLM evals
-            is well-founded, even if the specific recommendation is overstated.
+            benchmark against the Wilson interval or smoothed bootstrap. See
+            <a href="which-method.html">Which Method?</a> for our current recommendations, and the
+            forthcoming <code>evalstats</code> paper for the full critique and simulation comparison.
+            The paper&rsquo;s core call for more rigorous statistics in LLM evals is well-founded, even
+            if the specific recommendation is overstated.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag tag-debated">debated in guide</span>
@@ -657,7 +660,7 @@
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag tag-used">used in evalstats</span>
-            <span class="paper-tag">smooth bootstrap default</span>
+            <span class="paper-tag">smooth bootstrap (conservative fallback)</span>
           </div>
         </div>
 

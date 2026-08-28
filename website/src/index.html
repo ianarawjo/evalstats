@@ -8,7 +8,7 @@
     for comparing models and prompts.
   </p>
   <div class="hero-meta">
-    <span>Last updated: March 2026</span>
+    <span>Last updated: August 2026</span>
     <span class="dot"></span>
     <a class="badge" href="https://github.com/ianarawjo/evalstats" target="_blank">
       <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 012-.27 7.6 7.6 0 012 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -89,97 +89,6 @@
         That said, you can get something from this guide without using the library.
       </p>
     </section>
-
-    <!-- ── SECTION: BOOTSTRAP METHODS ── -->
-    <!-- <section id="bootstrap">
-      <h2>Methods for Caculating Confidence Intervals</h2>
-      <p class="section-lead">
-        Not all methods are equal. Here is a concise map of the main approaches used in our simulations.
-      </p>
-      <div class="method-grid">
-        <div class="method-card">
-          <div class="method-card-name">Percentile Bootstrap</div>
-          <div class="method-card-desc">
-            The simplest bootstrap. Resamples with replacement, takes the α/2 and 1−α/2 quantiles of
-            the distribution of resampled statistics. Surprisingly robust and tends to produce conservative
-            (wide) CIs, which is often what we want.
-          </div>
-        </div>
-        <div class="method-card">
-          <div class="method-card-name">BCa (Bias-Corrected, Accelerated)</div>
-          <div class="method-card-desc">
-            Adjusts percentile CIs for bias and skewness. Common wisdom holds it superior to percentile
-            bootstrap, but simulation studies suggest it often has worse coverage — especially for
-            pairwise comparisons at small N.
-          </div>
-        </div>
-        <div class="method-card">
-          <div class="method-card-name">Bayesian Bootstrap</div>
-          <div class="method-card-desc">
-            Assigns Dirichlet-distributed weights to observed data rather than resampling with replacement.
-            Tends to produce tighter CIs (higher precision) but lower coverage rates for single-sample
-            estimates — over-optimistic in safety-critical contexts.
-          </div>
-        </div>
-        <div class="method-card">
-          <div class="method-card-name">Bayesian Independent Samples</div>
-          <div class="method-card-desc">
-            A Beta-Bernoulli model with a uniform
-            <code>Beta(1,1)</code> prior per model. For each model, observed successes/failures update to
-            a posterior <code>Beta(a+1, b+1)</code>, and intervals are read directly from posterior quantiles.
-            It is simple and fast, but in our single-sample binary simulation it under-covers relative to Wilson.
-          </div>
-        </div>
-        <div class="method-card highlight">
-          <div class="method-card-name">Bayesian Paired Comparison ★</div>
-          <div class="method-card-desc">
-            For binary A-vs-B comparisons, this method builds paired 2×2 counts
-            (both correct, A-only, B-only, both wrong), then use a Dirichlet-multinomial style posterior
-            with importance sampling. It reweights samples by likelihood and estimates posterior probabilities 
-            of the score difference. In our pairwise simulation results, this is strongest at small N,
-            but the <code>bayes_evals</code> implementation becomes unstable around N≈200+, where it can return
-            dangerously overconfident intervals.
-          </div>
-        </div>
-        <div class="method-card highlight">
-          <div class="method-card-name">Smooth Bootstrap (KDE) ★</div>
-          <div class="method-card-desc">
-            Adds i.i.d. Gaussian noise (σ&nbsp;=&nbsp;h) to each resampled observation, where the
-            bandwidth is computed by Scott's rule: h&nbsp;=&nbsp;n<sup>−1/5</sup>&nbsp;×&nbsp;s
-            (s&nbsp;= sample std). This is the Kernel Density Estimation (KDE) approach. Bandwidth shrinks
-            automatically as N grows. Falls back to plain percentile bootstrap when std&nbsp;=&nbsp;0. 
-            In simulation, the most conservative and highest-coverage method across nearly all eval data types.
-          </div>
-        </div>
-        <div class="method-card highlight">
-          <div class="method-card-name">Wilson Score Interval ★</div>
-          <div class="method-card-desc">
-            A closed-form algebraic CI for proportions (binary 0/1 data). Dramatically outperforms
-            all bootstrap methods for binary scores at small N. Instantaneous to compute.
-          </div>
-        </div>
-        <div class="method-card">
-          <div class="method-card-name">Newcombe Score Interval</div>
-          <div class="method-card-desc">
-            The pairwise (paired-difference) analogue of the Wilson interval. The gold standard for
-            comparing two proportions on paired binary data. In our simulations, this is a
-            safer high-N fallback for binary pairwise comparisons when Bayesian paired becomes unstable.
-          </div>
-        </div>
-      </div>
-      <p class="aside">
-        ★ marks methods that were strongest in our simulations.
-        Smooth bootstrap remains the default in <code>evalstats</code> for numeric and interval data;
-        for binary data, <code>evalstats</code> uses Wilson for single-sample CIs and
-        Bayesian paired only for pairwise comparisons with <code>N &lt; 100</code>, then switches to
-        bootstrap at <code>N &ge; 100</code> for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
-        <strong>Boundary note:</strong> for bounded data (0–1 floats, Likert scales), the Gaussian
-        perturbation is applied without clamping — individual resampled values may stray slightly outside
-        the data range. This does not materially affect coverage on the <em>mean</em> statistic, which
-        is what <code>evalstats</code> estimates. Wilson and Newcombe are used for strictly binary
-        data.
-      </p>
-    </section> -->
 
     <!-- ── SECTION: EVALSTATS ── -->
     <section id="evalstats">
@@ -280,8 +189,9 @@ report.summary()</code></pre>
       </p>
       <pre><code class="language-bash">evalstats analyze results.csv</code></pre>
       <p>
-        For multi-model comparison, use a <strong>long/tidy format</strong> CSV with at minimum
-        <code>model</code>, <code>prompt</code>, <code>input</code>, and <code>score</code> columns:
+        Use a <strong>long/tidy format</strong> CSV: one row per (item, score) observation, plus
+        <code>input</code> and <code>score</code> columns, and at least one of <code>model</code> or
+        <code>prompt</code> depending on what you're comparing. For example, a multi-model comparison:
       </p>
       <div style="overflow-x:auto; margin: 1rem 0;">
         <table style="border-collapse:collapse; font-size:0.88rem; width:100%;">
