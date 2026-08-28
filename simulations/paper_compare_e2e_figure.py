@@ -413,7 +413,11 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", p
             _format_log_size_axis(ax, _thin_log_ticks(sizes))
             for lbl in ax.get_xticklabels():
                 lbl.set_fontsize(6.0)
-            ax.set_xlabel("human labels per arm" if ax is axes[5] else "items per arm (N)")
+            # Small labelpad: the 45-degree tick labels already occupy the
+            # gap under the axis, and at the default pad the top row's xlabel
+            # drifted down into the bottom row's panel titles.
+            ax.set_xlabel("human labels per arm" if ax is axes[5] else "items per arm (N)",
+                          labelpad=1.0)
             ax.grid(alpha=.25); ax.set_axisbelow(True)
             for sp in ("top", "right"):
                 ax.spines[sp].set_visible(False)
@@ -425,7 +429,9 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", p
                        handletextpad=0.4, borderpad=0.2, labelspacing=0.2)
         axes[3].legend(h2, ["no PPI", "PPI"], loc="lower right", frameon=False,
                        handletextpad=0.4, borderpad=0.2, labelspacing=0.2)
-        fig.tight_layout(pad=0.4)
+        # h_pad buys the extra clearance between the top row's xlabel and the
+        # bottom row's titles that labelpad alone cannot.
+        fig.tight_layout(pad=0.4, h_pad=1.4)
         fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02)
         return out
 
