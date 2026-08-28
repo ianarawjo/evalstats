@@ -385,6 +385,91 @@ def _panel_ppi(ax, results, gain_only, ppi_frac=None):
     ax.set_title(_budget, fontsize=6.5, pad=2)
 
 
+K_COLOR = {2: "#999999", 3: "#1B9E77", 5: "#D95F02", 10: "#7570B3"}
+
+
+def _power(rows):
+    ok = _nok(rows)
+    return (sum(r.extreme_reject for r in rows) / ok) if ok else float("nan")
+
+
+def power_views(results, out, width, height):
+    """Power of the auto path, three ways. Diagnostic, not a calibration claim.
+
+    compare_e2e runs everything at correction="auto", so this is ONE p-value
+    path -- Friedman omnibus, Wilcoxon pairwise, Shaffer correction -- not a
+    comparison between methods (that sweep is cases/pvalues.py). What it shows
+    is that the calibration reported elsewhere is not bought by a test that
+    simply never rejects: coverage and Type-I hold while power still rises
+    with N, which is the pairing that makes either number worth having.
+
+    The k panel reads as the multiplicity cost, and only because
+    MAX_EFFECT_SPAN_STEPS holds the arm-0..arm-(k-1) separation constant above
+    k=3: same true effect, more pairs, stricter correction. k=2 is EXCLUDED
+    from that reading and drawn dashed -- the cap leaves it at a single step,
+    so its extreme pair is half the separation of k>=3 and its lower curve is
+    a smaller effect, not a property of testing two arms.
+    """
+    import matplotlib.pyplot as plt
+    eff = [r for r in results if not r.is_null]
+    fig, ax = plt.subplots(1, 3, figsize=(width, height))
+
+    for et in ET_ORDER:
+        g = [r for r in eff if r.eval_type == et]
+        ns = sorted({r.n_items for r in g})
+        ys, es = [], []
+        for n in ns:
+            rows = [r for r in g if r.n_items == n]
+            p = _power(rows); ok = _nok(rows)
+            ys.append(p); es.append(1.96 * np.sqrt(max(p * (1 - p), 0) / ok) if ok else 0)
+        ax[0].errorbar(ns, ys, yerr=es, marker=ET_MARK[et], ms=3.2, lw=1.3,
+                       elinewidth=0.8, capsize=1.4, color=ET_COLOR[et], label=et)
+    ax[0].set_ylabel("power (extreme pair)")
+    ax[0].set_title("by data type", pad=2)
+    ax[0].legend(frameon=False, loc="lower right", handletextpad=0.4, labelspacing=0.2)
+
+    for k in sorted({r.k for r in eff}):
+        g = [r for r in eff if r.k == k]
+        ns = sorted({r.n_items for r in g})
+        ys = [_power([r for r in g if r.n_items == n]) for n in ns]
+        ax[1].plot(ns, ys, marker="o", ms=3.0, lw=1.3, color=K_COLOR.get(k, "#444444"),
+                   ls="--" if k == 2 else "-", label=f"k={k}" + (" *" if k == 2 else ""))
+    ax[1].set_title("by number of arms $k$", pad=2)
+    ax[1].legend(frameon=False, loc="lower right", handletextpad=0.4, labelspacing=0.2,
+                 ncol=2, columnspacing=0.8)
+
+    mid = [r for r in eff if r.n_items in (100, 200)]
+    for i, et in enumerate(ET_ORDER):
+        g = [r for r in mid if r.eval_type == et]
+        shapes = sorted({r.shape_label for r in g})
+        vals = sorted(_power([r for r in g if r.shape_label == sh]) for sh in shapes)
+        vals = [v for v in vals if v == v]
+        if not vals:
+            continue
+        xs = np.full(len(vals), i) + np.linspace(-0.16, 0.16, len(vals))
+        ax[2].scatter(xs, vals, s=9, color=ET_COLOR[et], alpha=0.75, lw=0)
+        ax[2].plot([i - 0.26, i + 0.26], [np.median(vals)] * 2, color=ET_COLOR[et], lw=1.6)
+    ax[2].set_xticks(range(len(ET_ORDER)))
+    ax[2].set_xticklabels(ET_ORDER, rotation=12)
+    # matplotlib is not LaTeX: "--" renders literally, so use a real en dash.
+    ax[2].set_title("per-shape spread ($N$=100\u2013200)", pad=2)
+    ax[2].set_ylabel("power (extreme pair)")
+
+    for a in ax[:2]:
+        a.set_xscale("log")
+        _format_log_size_axis(a, _thin_log_ticks(sorted({r.n_items for r in eff})))
+        for lbl in a.get_xticklabels():
+            lbl.set_fontsize(6.0)
+        a.set_xlabel("items per arm (N)", labelpad=1.0)
+    for a in ax:
+        a.set_ylim(0, 1.02); a.grid(alpha=.25); a.set_axisbelow(True)
+        for sp in ("top", "right"):
+            a.spines[sp].set_visible(False)
+    fig.tight_layout(pad=0.4)
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02)
+    return out
+
+
 def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", ppi_err=False):
     import matplotlib.pyplot as plt
     if style == "full":
@@ -490,7 +575,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("csv", nargs="+")
-    ap.add_argument("--style", choices=("scorecard", "duo", "trio", "full"), default="scorecard")
+    ap.add_argument("--style", choices=("scorecard", "duo", "trio", "full", "power"),
+                    default="scorecard")
     ap.add_argument("-o", "--out", default="compare_e2e_paper.pdf")
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--width", type=float, default=None)
@@ -519,7 +605,9 @@ def main():
     })
     results = load_results(a.csv)
     print(f"loaded {len(results)} cells; eval_types {sorted({r.eval_type for r in results})}")
-    if a.style == "scorecard":
+    if a.style == "power":
+        out = power_views(results, a.out, a.width or 7.6, a.height or 2.2)
+    elif a.style == "scorecard":
         out = scorecard(results, a.out, a.width or 3.3, a.height or 2.4)
     else:
         w = a.width or (3.4 if a.style == "duo" else 7.0)
