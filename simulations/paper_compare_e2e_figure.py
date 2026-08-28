@@ -314,12 +314,27 @@ def _panel_cov_by_ppi(ax, results, target):
     ax.set_title("plain FWER vs PPI+FWER", fontsize=6.5, pad=2)
 
 
-def _panel_type1(ax, results, alpha):
+def _panel_type1(ax, results, alpha, by_ppi=False):
+    """Type-I error, optionally split by whether PPI is in play.
+
+    Layering PPI under the FWER correction costs a small but real amount of
+    Type-I: +0.35pp on binary (z=+3.0), +0.31 likert, +0.21 continuous. It
+    stays under alpha everywhere (worst cell 0.046), so this is a cost to
+    state rather than a failure to hide -- and pooling the two arms, which is
+    what the compact styles do, averages it away entirely.
+    """
     for et in ET_ORDER:
-        rows = [r for r in results if r.eval_type == et and r.k > 2 and r.is_null]
-        xs, ys, es = _by_n(rows, lambda rs: _reject_rate(rs, "any_reject"))
-        ax.errorbar(xs, ys, yerr=[1.96 * e for e in es], marker=ET_MARK[et], ms=3.2,
-                    lw=1.3, elinewidth=0.8, capsize=1.4, color=ET_COLOR[et], label=et)
+        base = [r for r in results if r.eval_type == et and r.k > 2 and r.is_null]
+        if not by_ppi:
+            xs, ys, es = _by_n(base, lambda rs: _reject_rate(rs, "any_reject"))
+            ax.errorbar(xs, ys, yerr=[1.96 * e for e in es], marker=ET_MARK[et], ms=3.2,
+                        lw=1.3, elinewidth=0.8, capsize=1.4, color=ET_COLOR[et], label=et)
+            continue
+        for cfg_is_ppi, ls in ((False, "-"), (True, "--")):
+            rows = [r for r in base if (r.ppi_config != "none") == cfg_is_ppi]
+            xs, ys, _ = _by_n(rows, lambda rs: _reject_rate(rs, "any_reject"))
+            ax.plot(xs, ys, marker=ET_MARK[et], ms=3.0, lw=1.2, ls=ls,
+                    color=ET_COLOR[et], alpha=1.0 if not cfg_is_ppi else 0.8)
     ax.axhline(alpha, color="black", ls="--", lw=0.9)
     ax.set_ylim(0, 0.10)
     ax.set_ylabel("Type-I error (FWER)")
@@ -387,7 +402,8 @@ def multi(results, out, style, width, height, alpha, ppi_frac=None, ppi_x="n", p
         _panel_pairwise_k2(axes[1], results, t)
         _panel_cov(axes[2], results, t); axes[2].set_title("k>2, FWER-corrected", fontsize=6.5, pad=2)
         _panel_cov_by_ppi(axes[3], results, t)
-        _panel_type1(axes[4], results, alpha)
+        _panel_type1(axes[4], results, alpha, by_ppi=True)
+        axes[4].set_title("plain FWER vs PPI+FWER", fontsize=6.5, pad=2)
         _panel_ppi_budget(axes[5], results, show_err=ppi_err)
         lab_ns = sorted({c[0] for et in ET_ORDER for c in _ppi_cells(results, et)})
         panel_sizes = [cov_ns, sorted({r.n_items for r in results if r.k == 2}),
