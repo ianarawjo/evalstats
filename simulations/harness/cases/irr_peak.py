@@ -44,10 +44,19 @@ WHAT THE GRID IS. The cross product of four axes:
     truth ICC). Every one of these moved the peak by more than the estimator's
     own seed-to-seed noise when probed, which is why they are swept rather
     than assumed away.
-  * bias_delta: BIAS_LEVELS, in population-SD units (the same standardized
-    convention _jb_bias_magnitude uses), spanning well below to well above
-    the discretization threshold described next.
-  * llm_noise: NOISE_LEVELS.
+  * judge bias: BIAS_FRACS, standardized as a fraction of the eval type's own
+    population SD, spanning well below to well above the discretization
+    threshold described next.
+  * judge noise: NOISE_FRACS, on the same standardized footing.
+
+Bias and noise are swept as standardized FRACTIONS and converted to the raw
+absolute offsets JudgeBiasSource takes, per panel, via _jb_bias_magnitude --
+the same conversion build_ppi_factorial_sources performs. Handing a fraction
+straight to bias_delta would mean wildly different real severities per eval
+type (a raw 0.30 is 0.26 SD on Likert but 2.5 SD on continuous). Binary
+bypasses this entirely: its judge model is a confusion matrix, so its grids
+are flip probabilities used as-is, and variants that only touch slope or
+noise_family are dropped there because that model implements neither.
 
 every cell at effect_size=0 (a true null), so rejects_llm_only / n_reps IS
 the uncorrected Type-I rate directly. rejects_ppi is carried alongside as the
@@ -83,8 +92,10 @@ rounding boundaries, yet small enough not to swamp the signal -- so the peak's
 location is pinned by the 0.5-point grid geometry rather than by bias, which
 is why it moves so little across sub-threshold bias magnitudes.
 
-For likert at EVAL_TYPE_POPULATION_SD["likert"] = 1.1447, half a scale point
-is 0.437 SD. BIAS_LEVELS straddles that value deliberately, and it is where
+Half a scale point is an ABSOLUTE quantity, so as a standardized fraction it
+depends on the scale width: 0.437 on a 5-point Likert scale (SD 1.1447) and
+0.298 on a 7-point one (SD 1.679). BIAS_FRACS straddles both deliberately,
+and that is where
 the qualitative behaviour changes: above it the metric can no longer reach
 1.0 at any noise level, the "looks perfect but isn't" regime disappears, and
 the false-positive rate is high everywhere instead of humped. Continuous data
@@ -112,6 +123,7 @@ from . import CaseResult
 from ..scenarios import JudgeBiasSource
 from ..scenarios.synthetic import (
     EVAL_TYPE_POPULATION_SD,
+    _jb_bias_magnitude,
     measure_judge_alignment,
 )
 from .pvalues import (
@@ -124,22 +136,37 @@ CASE_NAME = "irr_peak"
 
 _ALPHA = 0.05
 
-BIAS_LEVELS: tuple[float, ...] = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.437, 0.60, 0.90, 1.30)
-"""bias_delta in population-SD units. 0.0 is the no-bias control (every metric
-should stay at nominal across the whole noise sweep -- if it does not, the
-grid is mis-specified). 0.30 is exactly PPI_FACTORIAL_BIAS_MAGNITUDES'
-"severe", i.e. the single value the paper's existing factorial view plots, so
-this sweep contains that curve as one column and can be checked against it.
-0.437 SD is half a Likert point at EVAL_TYPE_POPULATION_SD["likert"] -- the
-rounding threshold described in the module docstring -- and the levels above
-it are there to show the regime change, not because a real judge is likely to
-be that badly biased."""
+BIAS_FRACS: tuple[float, ...] = (0.0, 0.05, 0.10, 0.15, 0.22, 0.30, 0.44, 0.60, 0.90, 1.30)
+"""Judge bias as a FRACTION of the eval type's own population SD -- a
+Cohen's-d-style standardized severity, the convention every bias tier and
+noise level in this harness shares (see _jb_bias_magnitude).
 
-NOISE_LEVELS: tuple[float, ...] = (
+These are NOT the values handed to JudgeBiasSource. That field is a raw
+additive offset on the eval type's native scale, so build_sources converts
+each frac with _jb_bias_magnitude(eval_type, frac, scale_bounds=...) exactly
+as build_ppi_factorial_sources does. Passing a frac straight through as
+bias_delta is a real hazard: on continuous (population SD 0.1206) a raw 0.30
+is 2.5 SD and a raw 1.30 is 10.8 SD, which saturates the false-positive rate
+at 1.0 across most of the grid and leaves no peak to find.
+
+0.0 is the no-bias control (every metric should stay at nominal across the
+whole noise sweep -- if it does not, the grid is mis-specified). 0.30 is
+exactly PPI_FACTORIAL_BIAS_MAGNITUDES' "severe", the single value the paper's
+existing factorial view plots, so this sweep contains that curve as one
+column and can be checked against it.
+
+The levels straddle the Likert rounding threshold on BOTH scales. That
+threshold is half a scale point in ABSOLUTE units on any integer scale, which
+is a different frac per scale width: 0.5/1.1447 = 0.437 on a 5-point scale,
+0.5/1.679 = 0.298 on a 7-point one. Hence both 0.22-0.30 (bracketing the
+7-point threshold) and 0.44 (at the 5-point one) are present."""
+
+NOISE_FRACS: tuple[float, ...] = (
     0.025, 0.05, 0.084, 0.137, 0.20, 0.283, 0.36,
     0.46, 0.586, 0.75, 0.95, 1.55, 2.51, 4.08,
 )
-"""llm_noise as a fraction of the eval type's population SD.
+"""llm_noise as a fraction of the eval type's population SD, converted to an
+absolute value per panel the same way BIAS_FRACS is.
 
 NOT the geometric grid PPI_FACTORIAL_NOISE_LEVELS uses. This case pays for
 three extra axes (bias, variant, panel), so a uniform 20-point geometric grid
@@ -156,6 +183,42 @@ establish the shape:
 
 Measured peak locations were unchanged between this grid and the 20-point one
 at matched settings."""
+
+BINARY_BIAS_LEVELS: tuple[float, ...] = (0.0, 0.02, 0.05, 0.08, 0.12, 0.18, 0.25, 0.30, 0.45, 0.60)
+BINARY_NOISE_LEVELS: tuple[float, ...] = (
+    0.025, 0.0354, 0.05, 0.0707, 0.10, 0.1414, 0.20, 0.2828, 0.35, 0.40,
+)
+"""Binary's own grids, in its own units -- used DIRECTLY, with no
+_jb_bias_magnitude conversion.
+
+Binary's judge model (_jb_llm_binary) is a confusion-matrix model, not an
+additive one: llm_noise is a symmetric flip probability and bias_delta pulls
+the two error rates apart. Neither is a multiple of a population SD, and
+_jb_bias_magnitude's docstring says outright that binary "is not meant to be
+passed here."
+
+The noise grid is PPI_BINARY_NOISE_LEVELS' range and stops at 0.40 for the
+reason that constant gives: at 0.50 the judge is a coin flip regardless of
+truth, and past it the judge anti-correlates with truth, which is not a
+"noisier judge" any more. Reusing the continuous grid here would push seven of
+its fourteen points past that line, up to a nonsensical flip probability of
+4.08.
+
+The bias grid is anchored on PPI_BINARY_BIAS_MAGNITUDES (moderate 0.10,
+severe 0.30) and extends to 0.60 to reach the same "well past severe" regime
+the other panels get. At the high-bias/low-noise corner one of the two flip
+probabilities clips against [0, 1] -- the harness's own binary factorial
+exercises that corner too, so it is a known regime rather than a new one."""
+
+_BINARY_INAPPLICABLE = frozenset({"slope", "noise_family", "contam_frac", "contam_scale"})
+"""Judge-model fields _jb_llm_binary does not implement. Its docstring: "slope
+and noise_family have no analogue here (not yet meaningful for a plain
+flip-probability judge) and are simply not modeled."
+
+Variants that only touch these are therefore silent no-ops on the binary
+panel -- they would burn compute to redraw the baseline curve and stack
+duplicate lines in every binary subplot, implying a spread that is not real.
+build_sources drops them for that panel instead."""
 
 PANELS: tuple[tuple[str, int], ...] = (
     ("binary", 5), ("continuous", 5), ("likert", 5), ("likert", 7),
@@ -273,13 +336,44 @@ decided by _alignment_metric_dict, not here -- this maps whatever it returns."""
 _METRIC_ORDER = tuple(_METRIC_LABELS)
 
 
+def panel_grid(eval_type: str, likert_max: int) -> tuple[tuple[float, ...], tuple[float, ...], object]:
+    """(bias_grid, noise_grid, scale_bounds) in the units that panel's judge
+    model actually takes.
+
+    Binary gets its own grids in flip-probability units and no conversion;
+    everything else gets the standardized fracs plus the scale_bounds that
+    make a frac mean the same severity on a wider Likert scale."""
+    if eval_type == "binary":
+        return BINARY_BIAS_LEVELS, BINARY_NOISE_LEVELS, None
+    bounds = (1.0, float(likert_max)) if eval_type == "likert" else None
+    return BIAS_FRACS, NOISE_FRACS, bounds
+
+
+def applicable_variants(eval_type: str,
+                        variants: tuple[tuple[str, dict], ...]) -> tuple[tuple[str, dict], ...]:
+    """Drop variants whose every override is a no-op for this judge model, so
+    they neither burn compute nor stack duplicate curves (see
+    _BINARY_INAPPLICABLE)."""
+    if eval_type != "binary":
+        return variants
+    out = []
+    for label, over in variants:
+        if over and all(any(k.startswith(p) for p in _BINARY_INAPPLICABLE) for k in over):
+            continue
+        out.append((label, over))
+    return tuple(out)
+
+
 def build_sources(
     panels: tuple[tuple[str, int], ...] = PANELS,
     variants: tuple[tuple[str, dict], ...] = VARIANTS,
-    bias_levels: tuple[float, ...] = BIAS_LEVELS,
-    noise_levels: tuple[float, ...] = NOISE_LEVELS,
 ) -> list[tuple[JudgeBiasSource, str, str, dict]]:
     """One null-effect cell per (panel, variant, bias, noise).
+
+    Bias and noise arrive as standardized FRACTIONS and are converted to the
+    absolute values JudgeBiasSource actually takes, per panel -- see
+    BIAS_FRACS. Binary bypasses the conversion entirely, since its model is a
+    confusion matrix rather than an additive offset.
 
     Returns (source, panel_id, variant_label, overrides) rather than bare
     sources: the overrides have to reach the CSV so a later re-analysis can
@@ -287,16 +381,26 @@ def build_sources(
     out: list[tuple[JudgeBiasSource, str, str, dict]] = []
     for eval_type, lmax in panels:
         pid = panel_id(eval_type, lmax)
-        for vlabel, over in variants:
-            for bias in bias_levels:
-                for noise in noise_levels:
+        biases, noises, bounds = panel_grid(eval_type, lmax)
+        for vlabel, over in applicable_variants(eval_type, variants):
+            for bias_frac in biases:
+                for noise_frac in noises:
+                    if eval_type == "binary":
+                        bias_abs, noise_abs = bias_frac, noise_frac
+                    else:
+                        bias_abs = _jb_bias_magnitude(eval_type, bias_frac, scale_bounds=bounds)
+                        noise_abs = _jb_bias_magnitude(eval_type, noise_frac, scale_bounds=bounds)
                     sc = JudgeBiasSource(
-                        name=f"irrpeak|{pid}|{vlabel}|b{bias:g}|z{noise:g}",
+                        name=f"irrpeak|{pid}|{vlabel}|b{bias_frac:g}|z{noise_frac:g}",
                         tag="irr_peak", eval_type=eval_type, effect_size=0.0,
                         likert_max=lmax,
-                        **{**_BASE, "bias_delta": bias, "llm_noise": noise, **over},
+                        # bias_type mirrors build_ppi_factorial_sources_binary:
+                        # a zero bias is "none", not a differential of size 0.
+                        **{**_BASE, "bias_delta": bias_abs, "llm_noise": noise_abs,
+                           "bias_type": "none" if bias_frac == 0.0 else "differential", **over},
                     )
-                    out.append((sc, pid, vlabel, over))
+                    out.append((sc, pid, vlabel, {**over, "_bias_frac": bias_frac,
+                                                  "_noise_frac": noise_frac}))
     return out
 
 
@@ -380,10 +484,18 @@ def run_sweep(
             "eval_type": sc.eval_type,
             "likert_max": sc.likert_max,
             "variant": vlabel,
-            "variant_overrides": ";".join(f"{k}={v}" for k, v in sorted(over.items())) or "-",
-            # Read straight off the source rather than parsing sc.name.
-            "bias": float(sc.bias_delta),
-            "noise": float(sc.llm_noise),
+            "variant_overrides": ";".join(f"{k}={v}" for k, v in sorted(over.items())
+                                          if not k.startswith("_")) or "-",
+            # `bias`/`noise` are the STANDARDIZED sweep coordinates (population-SD
+            # fractions; flip probabilities on binary) -- comparable across
+            # panels, and what the plots and peak summary are keyed on. The
+            # absolute values actually handed to the judge model are kept
+            # beside them, since they are what the model saw and they differ by
+            # panel for the same frac.
+            "bias": float(over["_bias_frac"]),
+            "noise": float(over["_noise_frac"]),
+            "bias_delta_abs": float(sc.bias_delta),
+            "llm_noise_abs": float(sc.llm_noise),
             # Every swept judge-model parameter, so a re-analysis can group or
             # filter on the actual value instead of parsing `variant`.
             "n": sc.n,
@@ -883,8 +995,8 @@ def run(args: argparse.Namespace) -> CaseResult:
         est = estimate_runtime_s(len(cells), args.reps, n_boot, workers)
         n_align = len({_align_key(sc, pid) for sc, pid, _v, _o in cells})
         print(f"\nirr_peak simulation -- {len(cells)} cells "
-              f"({len(panels)} panels x {len(variants)} variants x {len(BIAS_LEVELS)} bias "
-              f"x {len(NOISE_LEVELS)} noise), reps={args.reps}, n_boot={n_boot}")
+              f"({len(panels)} panels x <=%d variants x %d bias x %d noise), "
+              "reps=%d, n_boot=%d" % (len(variants), len(BIAS_FRACS), len(NOISE_FRACS), args.reps, n_boot))
         print(f"  alignment measurements: {n_align} distinct judge models "
               f"({len(cells) - n_align} deduplicated away)")
         boot_share = _SEC_PER_BOOT_DRAW * n_boot / (_SEC_PER_CELL_FIXED + _SEC_PER_BOOT_DRAW * n_boot)
