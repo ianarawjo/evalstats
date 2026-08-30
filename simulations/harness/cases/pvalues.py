@@ -5359,7 +5359,7 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     what generate_judge_bias_cell actually reads)."""
     if sc.tag in ("power", "power_binary"):
         return _parse_ppi_power_name(sc.name)[1]
-    if sc.tag in ("nlab_grid", "nlab_grid_binary"):
+    if sc.tag in ("nlab_grid", "nlab_grid_binary", "irr_peak"):
         return 0.0
     if sc.tag in ("compare_label_frac", "nlab_grid_power", "complab_binary", "nlab_grid_power_binary"):
         return PPI_COMPARISON_MODERATE_EFFECT_FRAC
