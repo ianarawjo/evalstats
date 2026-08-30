@@ -40,6 +40,7 @@ def plot_accuracy_bar(
     cis: Optional[Mapping[str, Sequence[float]]] = None,
     sort_by: str = "input_order",
     as_percent: bool = True,
+    score_range: Optional[tuple[float, float]] = None,
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional["Axes"] = None,
@@ -78,7 +79,17 @@ def plot_accuracy_bar(
         * ``"label"`` — alphabetical.
     as_percent : bool
         When ``True`` (default), display values as percentages (0–100).
-        Set to ``False`` to keep raw (0–1) scores.
+        Set to ``False`` to keep raw scores in their native units.
+    score_range : tuple[float, float], optional
+        The metric's true (min, max) range, e.g. ``(1, 5)`` for a 5-point
+        Likert scale or ``(0, 100)`` for a percentage grade. When omitted,
+        the y-axis assumes accuracy/probability data in ``[0, 1]``
+        (``[0, 100]`` when ``as_percent=True``) -- the right default for
+        binary pass/fail scores, but wrong for any other score type. Data
+        outside the assumed range is never clipped (the axis auto-expands
+        to fit it instead), but pass this explicitly for non-binary scores
+        so the axis reflects the metric's real bounds rather than an
+        expanded guess.
     figsize : tuple[float, float], optional
         Figure size.  Defaults to ``(max(5, 0.9 * N + 1.5), 3.8)``.
     title : str, optional
@@ -224,7 +235,37 @@ def plot_accuracy_bar(
         "Accuracy (%)" if as_percent else "Score",
         fontsize=10, color=_PALETTE["text"],
     )
-    ax.set_ylim(0, 100 if as_percent else 1.0)
+
+    # ---- y-axis limits -----------------------------------------------------
+    # The natural floor/ceiling for the metric: an explicit score_range when
+    # given, else the accuracy/probability assumption ([0, 1] or [0, 100])
+    # that's right for binary pass/fail data but wrong for anything else
+    # (e.g. a 1-5 Likert score plotted with as_percent=False used to get
+    # silently clipped to a [0, 1] axis -- every bar rendered as a flat
+    # line at the top instead of its real height). Data is never clipped:
+    # when it exceeds the assumed/declared range the axis expands to fit
+    # it; when it fits, the axis keeps the previous tight, exact bounds.
+    if score_range is not None:
+        floor, ceiling = score_range[0] * scale, score_range[1] * scale
+    else:
+        floor, ceiling = (0.0, 100.0) if as_percent else (0.0, 1.0)
+
+    all_vals = list(ordered_means)
+    if yerr is not None:
+        all_vals += [m + hi for m, hi in zip(ordered_means, yerr[1])]
+        all_vals += [m - lo for m, lo in zip(ordered_means, yerr[0])]
+    if baseline is not None:
+        all_vals.append(baseline_val)
+    data_lo, data_hi = min(all_vals), max(all_vals)
+
+    if data_lo >= floor and data_hi <= ceiling:
+        axis_lo, axis_hi = floor, ceiling
+    else:
+        span = max(data_hi - data_lo, 1e-9)
+        pad = 0.06 * span
+        axis_lo, axis_hi = min(floor, data_lo - pad), max(ceiling, data_hi + pad)
+
+    ax.set_ylim(axis_lo, axis_hi)
 
     if as_percent:
         ax.yaxis.set_major_formatter(mticker.PercentFormatter())

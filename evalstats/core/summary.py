@@ -1076,16 +1076,21 @@ def _prepare_paired_pairwise_rows(
         and len(bundle.pairwise.results) > 1
     )
 
+    # Column-header PPI tag: only for p-value paths that are actually
+    # PPI-corrected when alignment= is passed (McNemar/sign-test binary
+    # paths and Nemenyi don't run through PPI, so they never get tagged).
+    _ppi_tag = "PPI-" if getattr(bundle, "ppi_applied", False) else ""
+
     if p_value_method == "auto":
         if is_romano_wolf_active:
-            eff_p_source, p_col_header = "boot", "p (RW)"
+            eff_p_source, p_col_header = "boot", f"p ({_ppi_tag}RW)"
         else:
-            eff_p_source, p_col_header = "wsr", "p (wsr)"
+            eff_p_source, p_col_header = "wsr", f"p ({_ppi_tag}wsr)"
     elif p_value_method == "boot":
         eff_p_source = "max_t" if (using_max_t and is_bootstrap_path) else "boot"
-        p_col_header = "p (boot)"
+        p_col_header = f"p ({_ppi_tag}boot)"
     elif p_value_method == "wsr":
-        eff_p_source, p_col_header = "wsr", "p (wsr)"
+        eff_p_source, p_col_header = "wsr", f"p ({_ppi_tag}wsr)"
     elif p_value_method == "nem":
         eff_p_source, p_col_header = "nem", "p (nem)"
     else:  # None
@@ -1207,14 +1212,16 @@ def _prepare_paired_pairwise_rows(
         fr = bundle.pairwise.friedman
         fr_p_str = _format_p_value(fr.p_value)
         fr_p_color = _BRIGHT_GREEN if fr.p_value <= 0.05 else _YELLOW
-        stat_note = " (uncorrected LLM-only statistic)" if getattr(bundle, "ppi_applied", False) else ""
-        p_note = " (PPI-corrected)" if getattr(bundle, "ppi_applied", False) else ""
+        ppi_applied = getattr(bundle, "ppi_applied", False)
+        omnibus_label = "PPI-Friedman omnibus" if ppi_applied else "Friedman omnibus"
+        stat_note = " (uncorrected LLM-only statistic)" if ppi_applied else ""
+        p_note = " (PPI-corrected)" if ppi_applied else ""
         print(
-            f"  Friedman omnibus: χ²({fr.df}) = {fr.statistic:.3f}{stat_note}, "
+            f"  {omnibus_label}: χ²({fr.df}) = {fr.statistic:.3f}{stat_note}, "
             f"p = {fr_p_color}{fr_p_str}{_RESET}{p_note}"
         )
         if fr.p_value > 0.05:
-            print(f"  {_YELLOW}[!] Friedman p > 0.05: no significant omnibus effect — treat pairwise results with caution.{_RESET}")
+            print(f"  {_YELLOW}[!] {omnibus_label} p > 0.05: no significant omnibus effect — treat pairwise results with caution.{_RESET}")
 
     def _footer(_rows: list[dict], _max_pairs: int) -> None:
         print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
@@ -1223,20 +1230,25 @@ def _prepare_paired_pairwise_rows(
         # separately on the FWER-corrections line below) for the explicit
         # methods summary. The fuller descriptive line further down (with
         # correction detail folded in) still prints too.
+        ppi_applied = getattr(bundle, "ppi_applied", False)
+        # Nemenyi has no PPI-corrected variant (disallowed together with
+        # alignment= at the call site), so it never gets the prefix.
+        ppi_prefix = "PPI-" if ppi_applied else ""
+
         p_value_method_label = None
         if eff_p_source in {"max_t", "boot"}:
             if is_romano_wolf_active and eff_p_source == "boot":
-                p_value_method_label = "Romano-Wolf step-down"
+                p_value_method_label = f"{ppi_prefix}Romano-Wolf step-down"
             elif is_newcombe_pairwise:
                 p_value_method_label = "McNemar mid-p test"
             elif is_sign_pairwise:
                 p_value_method_label = "Paired sign test"
             elif eff_p_source == "max_t":
-                p_value_method_label = "Max-T bootstrap"
+                p_value_method_label = f"{ppi_prefix}Max-T bootstrap"
             else:
-                p_value_method_label = "Bootstrap"
+                p_value_method_label = f"{ppi_prefix}Bootstrap"
         elif eff_p_source == "wsr":
-            p_value_method_label = "Wilcoxon signed-rank"
+            p_value_method_label = f"{ppi_prefix}Wilcoxon signed-rank"
         elif eff_p_source == "nem":
             p_value_method_label = "Nemenyi post-hoc"
 
@@ -1261,18 +1273,17 @@ def _prepare_paired_pairwise_rows(
 
         if eff_p_source in {"max_t", "boot"}:
             if is_romano_wolf_active and eff_p_source == "boot":
-                print(f"{_DIM}  {p_col_header} = Romano-Wolf step-down (FWER-controlled){_RESET}")
+                print(f"{_DIM}  {p_col_header} = {ppi_prefix}Romano-Wolf step-down (FWER-controlled){_RESET}")
             elif is_newcombe_pairwise:
                 print(f"{_DIM}  {p_col_header} = McNemar mid-p test (two-sided, uncorrected){_RESET}")
             elif is_sign_pairwise:
                 print(f"{_DIM}  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected){_RESET}")
             elif eff_p_source == "max_t":
-                print(f"{_DIM}  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
+                print(f"{_DIM}  {p_col_header} = {ppi_prefix}max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
             else:
-                print(f"{_DIM}  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected){_RESET}")
+                print(f"{_DIM}  {p_col_header} = {ppi_prefix}bootstrap p-value ({bundle.pairwise.correction_method}-corrected){_RESET}")
         elif eff_p_source == "wsr":
-            ppi_note = ", PPI-corrected" if getattr(bundle, "ppi_applied", False) else ""
-            print(f"{_DIM}  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note}){_RESET}")
+            print(f"{_DIM}  {p_col_header} = {ppi_prefix}Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected){_RESET}")
         elif eff_p_source == "nem":
             print(f"{_DIM}  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled){_RESET}")
         if eff_p_source is not None:
@@ -1347,6 +1358,26 @@ def _prepare_unpaired_pairwise_rows(
     mean_by_label = {g.label: g.mean for g in result.groups}
     show_mean_diff = result.pairwise and result.pairwise[0].estimand == "dominance"
 
+    # Explicit pairwise test name -- previously the column header was just
+    # "p" with no indication of which test produced it, PPI-corrected or
+    # not. Mirrors the paired path's p_col_header/p-value-method labeling
+    # (e.g. "p (PPI-wsr)" for Wilcoxon): tag with "PPI-" whenever
+    # alignment= was passed, since both families' pairwise tests run
+    # through the PPI rectifier in that case (_binary_pairwise_ppi /
+    # _rank_based_pairwise_ppi above).
+    ppi_applied = getattr(result, "ppi_applied", False)
+    ppi_prefix = "PPI-" if ppi_applied else ""
+    if result.family == "rank_based":
+        pairwise_test_name, pairwise_test_abbrev = "Mann-Whitney U", "MWU"
+    elif result.family == "binary_proportion":
+        pairwise_test_name, pairwise_test_abbrev = "Welch's t-test", "Welch"
+    else:
+        pairwise_test_name = pairwise_test_abbrev = None
+    p_col_header = (
+        f"p ({ppi_prefix}{pairwise_test_abbrev})"
+        if (show_p and pairwise_test_abbrev) else ("p" if show_p else None)
+    )
+
     label_index = {lbl: i for i, lbl in enumerate(result.labels)}
     rows = []
     for p in result.pairwise:
@@ -1382,6 +1413,9 @@ def _prepare_unpaired_pairwise_rows(
             )
 
     def _footer(_rows: list[dict], _max_pairs: int) -> None:
+        if show_p and pairwise_test_name:
+            corr_note = f"{result.pvalue_correction}-corrected" if n_pairs > 1 else "uncorrected, single comparison"
+            print(f"{_DIM}  {p_col_header} = {ppi_prefix}{pairwise_test_name} ({corr_note}){_RESET}")
         if n_pairs > 1 and show_p:
             print(
                 f"  {_DIM}Verdict reflects the {result.ci_correction}-corrected CI; p is "
@@ -1424,7 +1458,7 @@ def _prepare_unpaired_pairwise_rows(
         # column -- the binary/mean_diff family's primary column already
         # *is* the raw difference (Δp), so a second copy would be redundant.
         "es_label": "Δmean" if show_mean_diff else None,
-        "p_col_header": "p" if show_p else None,
+        "p_col_header": p_col_header,
         "friedman_line_fn": None,
         "footer_fn": _footer,
     }
@@ -1759,28 +1793,28 @@ def _print_mean_advantage(
         )
 
 
-def _print_ppi_banner(alignment_result) -> None:
-    """Print the standard "PPI-CORRECTED" banner + inline alignment report.
+def _print_ppi_banner() -> None:
+    """Print the standard "PPI-CORRECTED" banner.
 
     Shared by the paired path's ``_print_bundle_summary`` and the unpaired
     path's ``print_group_comparison_summary`` (also in this module) --
     previously two copy-pasted, near-identical blocks; unified so a banner
     text/formatting change only needs to happen once.
+
+    Does not reprint the alignment report itself: judge_alignment(...) is a
+    required step before alignment=/PPI correction can be used at all, so
+    by the time compare() prints this, the caller has already seen (or can
+    call) judge_alignment(...).summary() -- reprinting it here on every
+    compare() call duplicated it for no benefit.
     """
     banner = "═" * 58
     print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
     print(
-        f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED — every estimate below relies on the "
-        f"alignment report printed here first.{_RESET}"
+        f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED. Every estimate below relies on the "
+        f"judge_alignment(...) result passed via alignment=; see its .summary() for "
+        f"the full alignment report.{_RESET}"
     )
     print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
-    if alignment_result is not None:
-        alignment_result.summary()
-    else:
-        print(
-            f"{_BOLD}{_BRIGHT_MAGENTA}(Alignment report unavailable -- run "
-            f"judge_alignment(...).summary() directly.){_RESET}"
-        )
     print()
 
 
@@ -1818,7 +1852,7 @@ def _print_bundle_summary(
     print()
 
     if getattr(bundle, "ppi_applied", False):
-        _print_ppi_banner(bundle.alignment_result)
+        _print_ppi_banner()
 
     _print_subsection("--- Descriptive Statistics ---")
     _rob_df = bundle.robustness.summary_table()
@@ -3722,7 +3756,7 @@ def print_group_comparison_summary(result: "GroupComparisonResult", *, style: st
     print()
 
     if result.ppi_applied:
-        _print_ppi_banner(result.alignment_result)
+        _print_ppi_banner()
 
     # ── Per-group means ──────────────────────────────────────────────────────
     label_width = min(24, max(8, max(len(g.label) for g in result.groups)))
@@ -3744,7 +3778,8 @@ def print_group_comparison_summary(result: "GroupComparisonResult", *, style: st
 
     # ── Omnibus test ─────────────────────────────────────────────────────────
     if result.omnibus_test_name is not None:
-        _print_subsection(f"--- Omnibus Test: {result.omnibus_test_name} ---")
+        omnibus_name = f"PPI-{result.omnibus_test_name}" if result.ppi_applied else result.omnibus_test_name
+        _print_subsection(f"--- Omnibus Test: {omnibus_name} ---")
         p_str = f"{result.omnibus_p_value:.4f}" if result.omnibus_p_value >= 0.0001 else f"{result.omnibus_p_value:.2e}"
         print(f"  statistic = {result.omnibus_statistic:.4f}   p = {p_str}"
               f"{'  (uncorrected)' if result.ppi_applied else ''}")

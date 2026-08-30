@@ -559,6 +559,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     label.add_argument(
+        "--sort",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Move sampled (marked) rows to the top of the output file, so a "
+            "labeler doesn't have to scroll through the whole eval set to find "
+            "them (default: on). Original relative row order is otherwise "
+            "preserved within both groups. Pass --no-sort to keep the input "
+            "file's row order untouched."
+        ),
+    )
+    label.add_argument(
         "--interactive",
         action="store_true",
         help=(
@@ -819,6 +831,7 @@ def _cmd_label(args: argparse.Namespace) -> None:
             n_lab=args.n_lab,
             seed=args.seed,
             human_col_prefix=args.human_prefix,
+            sort_labeled_first=getattr(args, "sort", True),
         )
     except ValueError as exc:
         _die(str(exc))

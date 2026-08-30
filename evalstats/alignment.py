@@ -73,6 +73,21 @@ class AlignmentResult:
         that governs ``test``'s PPI variance reduction. For
         ``test="mean_estimate"`` this is identical to ``alignment_metrics
         ["pearson_r"]``. :attr:`n_eff`/:attr:`multiplier` read from here.
+    per_condition_metrics : dict or None
+        Only set for form 1 (an ``EvalResults`` with a ``model``/condition
+        column). The same headline metric ``bias_check`` uses (e.g.
+        weighted κ for likert), recomputed separately within each
+        condition's labeled items -- point estimates only, no CI (see
+        :func:`_compute_per_condition_alignment`'s docstring for why).
+        Shape: ``{"column": str, "spread": float, "conditions": {label:
+        {"n": int, "too_few": bool, "label": str, "estimate": float}}}``.
+        A pooled metric can look fine while a judge is biased *differently*
+        per condition -- generous to one, stingy to another -- which is
+        invisible to any pooled statistic; this is printed automatically in
+        :meth:`summary` so that risk isn't discovered only after a
+        PPI-corrected ``compare()`` disagrees with the naive one. ``None``
+        when there's no condition column, or fewer than 2 conditions have
+        any labeled items.
     """
 
     def __init__(
@@ -90,6 +105,7 @@ class AlignmentResult:
         selection: str = "unknown",
         test: Optional[str] = None,
         test_metric: Optional[dict] = None,
+        per_condition_metrics: Optional[dict] = None,
     ) -> None:
         self.llm_metric = llm_metric
         self.human_col = human_col
@@ -103,6 +119,7 @@ class AlignmentResult:
         self.selection = selection
         self.test = test
         self.test_metric = test_metric
+        self.per_condition_metrics = per_condition_metrics
 
     @property
     def n_eff(self) -> float:
@@ -201,7 +218,7 @@ class AlignmentResult:
             one line per check/metric, with an explanation only where
             something looks off. Aimed at readers who don't need the
             statistical background spelled out every time.
-            If ``True``, print the full report — every metric's definition,
+            If ``True``, print the full report: every metric's definition,
             why it was chosen, how to interpret it, and citation-ready
             wording for a paper.
         """
@@ -222,7 +239,7 @@ class AlignmentResult:
         print(f"Label selection: {sel_icon} {self.selection}")
         print(
             "Note: corrections below assume the labeled subset is a random "
-            "sample of the full item pool (MCAR) — see 'Representativeness'."
+            "sample of the full item pool (MCAR). See 'Representativeness'."
         )
         print()
 
@@ -244,8 +261,8 @@ class AlignmentResult:
             bc = self.bias_check
             print(
                 f"⚠ Possible judge scale bias: {bc['corr_label']} = "
-                f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f} "
-                "— the judge ranks items like humans do, but its raw scores "
+                f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f}. "
+                "The judge ranks items like humans do, but its raw scores "
                 "look shifted or compressed relative to human scores."
             )
             print(
@@ -270,7 +287,11 @@ class AlignmentResult:
         score_type_note = _SCORE_TYPE_NOTES.get(
             self.score_type, f"score type detected as {self.score_type!r}"
         )
-        print(f"Alignment metrics ({self.score_type} scores — {score_type_note}):")
+        print(f"Alignment metrics ({self.score_type} scores, {score_type_note}):")
+        label_width = max(
+            (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
+            default=20,
+        )
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
             est = entry["estimate"]
@@ -278,11 +299,49 @@ class AlignmentResult:
             hi = entry["ci_high"]
             band = entry.get("band")
             tail = f"  {band}" if band else ""
-            print(f"  {label:<20} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
+            print(f"  {label:<{label_width}} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
         print()
+        self._print_per_condition_block()
         print("Run .summary(verbose=True) for definitions, rationale, and")
         print("citation-ready wording for each check above.")
         print("─" * 58)
+
+    def _print_per_condition_block(self, *, verbose: bool = False) -> None:
+        """Per-condition alignment breakdown, shared by both summary modes.
+
+        See :func:`_compute_per_condition_alignment`'s docstring for why
+        this exists: a pooled IRR number can look fine while hiding a judge
+        biased differently per condition, which no pooled statistic --
+        including the scale-bias check above -- can catch.
+        """
+        pc = self.per_condition_metrics
+        if pc is None:
+            return
+        conds = pc["conditions"]
+        widest = max((len(str(c)) for c in conds), default=8)
+        print(f"Per-condition alignment ({pc['column']!r}):")
+        if verbose:
+            print(
+                "  The pooled metric above averages over every condition. It "
+                "stays high even if the judge is generous to one condition and "
+                "stingy to another, as long as the two roughly cancel out."
+            )
+        for cond, entry in conds.items():
+            cond_str = f"{str(cond):<{widest}}"
+            if entry.get("too_few"):
+                print(f"  {cond_str}   too few human labels (n={entry['n']}) to estimate")
+            else:
+                print(f"  {cond_str}   {entry['label']} = {entry['estimate']:.2f}  (n={entry['n']})")
+        spread = pc["spread"]
+        if spread >= _PER_CONDITION_SPREAD_FLAG:
+            print(
+                f"  ⚠ Spread of {spread:.2f} across conditions on the same scale "
+                "as the pooled metric above. The judge may be tracking humans "
+                "unevenly."
+            )
+        else:
+            print("  ✓ No condition stands out from the others on this metric.")
+        print()
 
     def _summary_verbose(self) -> None:
         self._header()
@@ -330,12 +389,16 @@ class AlignmentResult:
         print(f"Alignment metrics (score type: {self.score_type}):")
         print(f"  ({score_type_note})")
         print()
+        verbose_label_width = max(
+            (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
+            default=24,
+        )
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
             est = entry["estimate"]
             lo = entry["ci_low"]
             hi = entry["ci_high"]
-            print(f"  {label:<24}: {est:.3f}  [{lo:.3f}, {hi:.3f}]")
+            print(f"  {label:<{verbose_label_width}}: {est:.3f}  [{lo:.3f}, {hi:.3f}]")
             what = entry.get("what")
             why = entry.get("why")
             interpretation = entry.get("interpretation")
@@ -349,6 +412,8 @@ class AlignmentResult:
             if example:
                 print(f"      -> Example paper reporting: {example}")
             print()
+
+        self._print_per_condition_block(verbose=True)
 
         if self.bias_check is not None:
             print("Bias diagnostics:")
@@ -525,7 +590,7 @@ def _interpret_icc(est: float, lo: float, hi: float, n: int, label: str) -> tupl
 
 def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: str) -> tuple[Optional[str], str, str]:
     interpretation = (
-        "no universally-agreed threshold exists for raw percent agreement — read it "
+        "no universally-agreed threshold exists for raw percent agreement. Read it "
         "alongside Cohen's κ, since it does not correct for chance and can look high "
         "purely from imbalanced label classes"
     )
@@ -658,7 +723,7 @@ def _build_bias_check(
     if flagged:
         interpretation = (
             "the judge tracks human relative ordering but disagrees on "
-            "absolute scale — treat raw judge scores as biased; consider "
+            "absolute scale. Treat raw judge scores as biased; consider "
             "using the Bayesian calibration model fit by judge_alignment "
             "(e.g. via compare(alignment=...)) to correct for it before "
             "drawing conclusions from raw judge scores"
@@ -666,7 +731,7 @@ def _build_bias_check(
     else:
         interpretation = (
             "the correlation and absolute-agreement metrics tell a "
-            "consistent story — no sign that the judge's ranking ability is "
+            "consistent story. No sign that the judge's ranking ability is "
             "masking a scale or offset problem"
         )
     return {
@@ -840,20 +905,23 @@ def _compute_alignment_metrics(
 
         if k >= 2:
             est, lo, hi = _ci2(wk, llm, human, alpha=alpha, rng=rng)
-            band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
+            band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Quadratic-weighted Cohen's κ")
             metrics["weighted_kappa"] = {
                 "estimate": est, "ci_low": lo, "ci_high": hi,
-                "label": "Weighted Cohen's κ",
+                "label": "Quadratic-weighted Cohen's κ",
                 "band": band,
                 "what": (
-                    "Cohen's κ extended so that disagreements receive larger penalties "
-                    "as ratings become farther apart on the ordinal scale (Cohen, 1968)."
+                    "Cohen's κ with quadratic weights, so disagreements are penalized "
+                    "in proportion to the square of their distance on the ordinal "
+                    "scale (Cohen, 1968). The other common convention, linear "
+                    "weighting, penalizes distance directly rather than its square."
                 ),
                 "why": (
                     "Your judge produces ordered categorical (Likert) labels, so an "
                     "ordinal-aware kappa is used instead of the unweighted version, "
                     "which would penalize a near-miss (e.g. judge=4 vs human=5) as "
-                    "harshly as a large disagreement."
+                    "harshly as a large disagreement. Quadratic weighting is the more "
+                    "common convention for Likert-scale IRR and is used here."
                 ),
                 "interpretation": interp,
                 "example": example,
@@ -886,7 +954,7 @@ def _compute_alignment_metrics(
             "label": "Spearman r",
             "band": band,
             "what": (
-                "Rank correlation between judge and human scores — checks whether "
+                "Rank correlation between judge and human scores. Checks whether "
                 "higher judge scores correspond to higher human scores, without "
                 "assuming the categories are equally spaced."
             ),
@@ -925,7 +993,7 @@ def _compute_alignment_metrics(
 
             gap_est, gap_lo, gap_hi = _cigap(wk, _icc_21, llm, human, alpha=alpha, rng=rng)
             metrics["_bias_check"] = _build_bias_check(
-                "Weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
+                "Quadratic-weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
                 icc_est, gap_est, gap_lo, gap_hi,
             )
 
@@ -1033,6 +1101,104 @@ _REPRESENTATIVENESS_WHY = (
 _REP_ALPHA = 0.02
 
 
+# Which alignment_metrics key is "the" headline metric per score type --
+# the same one _build_bias_check compares against ICC(2,1) (see the
+# score-type branches inside _compute_alignment_metrics above). Reused here
+# so the per-condition breakdown reports the same metric a reader already
+# saw pooled, rather than introducing a second unfamiliar number.
+_PRIMARY_ALIGNMENT_KEY = {
+    "binary": "cohens_kappa",
+    "likert": "weighted_kappa",
+    "continuous": "pearson_r",
+    "grade": "pearson_r",
+}
+
+# Below this many labeled items in a single condition, the primary metric
+# is little more than noise (e.g. a single disagreement can swing Cohen's
+# kappa by 0.3+) -- flagged as "too few" rather than shown with a
+# misleadingly precise-looking number.
+_PER_CONDITION_MIN_N = 5
+
+# A same-direction-for-everyone judge is the ONLY failure mode a pooled
+# metric can catch; a spread this large across conditions in the metric's
+# own [-1, 1]-ish scale is large enough to be worth a reader's attention
+# even without a formal test (no CI is computed per condition -- see
+# _compute_per_condition_alignment's docstring for why).
+_PER_CONDITION_SPREAD_FLAG = 0.15
+
+
+def _compute_per_condition_alignment(
+    df: pd.DataFrame,
+    labeled_mask: "pd.Series[bool]",
+    model_col: str,
+    llm_metric: str,
+    human_col: str,
+    score_type: str,
+    *,
+    alpha: float,
+) -> Optional[dict]:
+    """Per-condition/model breakdown of the headline alignment metric.
+
+    A single *pooled* IRR number can look perfectly fine while hiding a
+    judge that is biased *differently* per condition -- generous to one
+    model, stingy to another -- which is exactly the failure mode PPI
+    correction exists to catch, and exactly what no pooled statistic
+    (including this function's own bias_check) can see. Surfacing the
+    per-condition numbers here means a user sees that risk at
+    judge_alignment() time, rather than discovering it only after a
+    PPI-corrected compare() call disagrees with the naive one.
+
+    Point estimates only, no bootstrap CI: each condition's labeled subset
+    is a fraction of an already-small alignment set split across k
+    conditions, so a per-condition CI would mostly be noise, and computing
+    a full 2000-resample CI per condition would multiply
+    judge_alignment()'s cost by k for little benefit. Returns None when
+    there's no model column in the data, or fewer than 2 conditions have
+    any labeled items at all.
+    """
+    if model_col not in df.columns:
+        return None
+    primary_key = _PRIMARY_ALIGNMENT_KEY.get(score_type)
+    if primary_key is None:
+        return None
+
+    labeled_df = df.loc[labeled_mask]
+    conditions = labeled_df[model_col].unique().tolist()
+    if len(conditions) < 2 or len(conditions) > 20:
+        # >20: model_col almost certainly isn't a small factor of interest
+        # here (same cardinality cap the categorical slice-column check
+        # uses elsewhere in this file) -- a per-condition table that long
+        # would bury the signal it's meant to surface, not highlight it.
+        return None
+
+    rng = np.random.default_rng(42)
+    out: dict = {}
+    for cond in conditions:
+        cond_mask = (labeled_df[model_col] == cond).to_numpy()
+        n = int(cond_mask.sum())
+        if n < _PER_CONDITION_MIN_N:
+            out[cond] = {"n": n, "too_few": True}
+            continue
+        cond_llm = labeled_df.loc[cond_mask, llm_metric].to_numpy(dtype=float)
+        cond_human = labeled_df.loc[cond_mask, human_col].to_numpy(dtype=float)
+        metrics = _compute_alignment_metrics(
+            cond_llm, cond_human, score_type, alpha=alpha, rng=rng, ci=False,
+        )
+        entry = metrics.get(primary_key)
+        if entry is None:
+            continue
+        out[cond] = {
+            "n": n, "too_few": False,
+            "label": entry["label"], "estimate": entry["estimate"],
+        }
+
+    if not out:
+        return None
+    estimates = [v["estimate"] for v in out.values() if not v.get("too_few")]
+    spread = (max(estimates) - min(estimates)) if len(estimates) >= 2 else 0.0
+    return {"conditions": out, "spread": spread, "column": model_col}
+
+
 def _rep_check_display_name(key: str) -> str:
     """Human-readable label for a representativeness-check dict key, for
     the short/simple summary (:meth:`AlignmentResult._summary_simple`)."""
@@ -1049,12 +1215,12 @@ def _interpret_representativeness(passed: bool, subject: str) -> str:
     if passed:
         return (
             f"no evidence (p ≥ {_REP_ALPHA:g}) that {subject} differs between the "
-            "labeled subset and the full pool — alignment estimates should "
+            "labeled subset and the full pool. Alignment estimates should "
             "generalize reasonably well"
         )
     return (
         f"{subject} differs between the labeled subset and the full pool "
-        f"(p < {_REP_ALPHA:g}) — treat alignment estimates as potentially biased "
+        f"(p < {_REP_ALPHA:g}). Treat alignment estimates as potentially biased "
         "for unlabeled items; consider expanding or re-sampling the alignment set"
     )
 
@@ -1090,7 +1256,7 @@ def _check_score_distribution(
                 "what": what,
                 "why": _REPRESENTATIVENESS_WHY,
                 "interpretation": (
-                    "not applicable — every item already has a human label, so "
+                    "not applicable: every item already has a human label, so "
                     "there is no unlabeled pool to generalize to"
                 ),
             }
@@ -1103,7 +1269,7 @@ def _check_score_distribution(
         passed = p >= _REP_ALPHA
         msg = f"χ² p={p:.3f}"
         if not passed:
-            msg += " — labeled 0/1 distribution differs from unlabeled pool"
+            msg += ": labeled 0/1 distribution differs from unlabeled pool"
     else:
         compare_target = unlabeled_scores if unlabeled_scores is not None and len(unlabeled_scores) > 0 else all_scores
         what = (
@@ -1118,7 +1284,7 @@ def _check_score_distribution(
                 "what": what,
                 "why": _REPRESENTATIVENESS_WHY,
                 "interpretation": (
-                    "not applicable — the labeled scores don't vary enough to run "
+                    "not applicable: the labeled scores don't vary enough to run "
                     "this test"
                 ),
             }
@@ -1127,7 +1293,7 @@ def _check_score_distribution(
         passed = p >= _REP_ALPHA
         msg = f"KS p={p:.3f}"
         if not passed:
-            msg += " — labeled subset appears non-representative of full score range"
+            msg += ": labeled subset appears non-representative of full score range"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what,
@@ -1147,7 +1313,7 @@ def _check_slice_column(
     )
     why = (
         "Checks whether the alignment set is representative across this "
-        "categorical variable — important if judge accuracy might vary by "
+        "categorical variable. Important if judge accuracy might vary by "
         "subgroup (e.g. domain, difficulty, model)."
     )
     labeled = df.loc[labeled_mask, col].dropna()
@@ -1157,7 +1323,7 @@ def _check_slice_column(
             "passed": True, "message": "no unlabeled items", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — there are no unlabeled items to compare against"
+                "not applicable: there are no unlabeled items to compare against"
             ),
         }
     cats = sorted(df[col].dropna().unique())
@@ -1172,7 +1338,7 @@ def _check_slice_column(
     passed = p >= _REP_ALPHA
     msg = f"χ² p={p:.3f}"
     if not passed:
-        msg += " — labeled subset is over/under-represented in some categories"
+        msg += ": labeled subset is over/under-represented in some categories"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what, "why": why,
@@ -1195,7 +1361,7 @@ def _check_slice_column_numeric(
     )
     why = (
         "Checks whether the alignment set is representative across this "
-        "numeric covariate — important if judge accuracy might vary with it "
+        "numeric covariate. Important if judge accuracy might vary with it "
         "(e.g. difficulty, length, latency). Categorical (string) columns are "
         "checked with a chi-square test instead; this covers the numeric "
         "columns that check silently skips."
@@ -1207,7 +1373,7 @@ def _check_slice_column_numeric(
             "passed": True, "message": "no unlabeled items", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — there are no unlabeled items to compare against"
+                "not applicable: there are no unlabeled items to compare against"
             ),
         }
     if len(np.unique(labeled)) < 2:
@@ -1215,7 +1381,7 @@ def _check_slice_column_numeric(
             "passed": True, "message": "insufficient labeled variation to test", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — the labeled values don't vary enough to run "
+                "not applicable: the labeled values don't vary enough to run "
                 "this test"
             ),
         }
@@ -1224,7 +1390,7 @@ def _check_slice_column_numeric(
     passed = p >= _REP_ALPHA
     msg = f"KS p={p:.3f}"
     if not passed:
-        msg += " — labeled subset differs from unlabeled pool on this covariate"
+        msg += ": labeled subset differs from unlabeled pool on this covariate"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what, "why": why,
@@ -1263,12 +1429,12 @@ def _apply_family_correction(results: dict[str, dict], method: str = "holm") -> 
         if raw_p_k < _REP_ALPHA:
             if passed:
                 res["message"] += (
-                    f" — no longer significant after Holm correction across "
+                    f". No longer significant after Holm correction across "
                     f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
                 )
             else:
                 res["message"] += (
-                    f" — still significant after Holm correction across "
+                    f". Still significant after Holm correction across "
                     f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
                 )
             res["interpretation"] = _interpret_representativeness(passed, "this covariate")
@@ -1457,6 +1623,7 @@ def _judge_alignment_core(
     labeled_mask: Optional[np.ndarray] = None,
     selection: str = "unknown",
     test: Optional[str] = None,
+    per_condition_metrics: Optional[dict] = None,
     warn_stacklevel: int = 3,
 ) -> AlignmentResult:
     """Shared core behind both :func:`judge_alignment` call forms: fits the
@@ -1622,6 +1789,7 @@ def _judge_alignment_core(
         selection=selection,
         test=test,
         test_metric=test_metric,
+        per_condition_metrics=per_condition_metrics,
     )
 
 
@@ -1685,6 +1853,14 @@ def _judge_alignment_from_evaldata(
         if c is not None
     }
 
+    model_col = evaldata._col.get("model")
+    per_condition_metrics = None
+    if model_col is not None:
+        per_condition_metrics = _compute_per_condition_alignment(
+            df, labeled_mask, model_col, llm_metric, human_groundtruth, score_type,
+            alpha=alpha,
+        )
+
     return _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth,
@@ -1692,6 +1868,7 @@ def _judge_alignment_from_evaldata(
         slice_df=df, slice_labeled_mask=labeled_mask,
         slice_exclude_cols=frozenset({llm_metric, human_groundtruth}) | structural_cols,
         labeled_mask=labeled_mask.to_numpy(), selection=selection, ci=ci,
+        per_condition_metrics=per_condition_metrics,
         warn_stacklevel=4,
     )
 
