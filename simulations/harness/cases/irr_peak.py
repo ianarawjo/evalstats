@@ -149,11 +149,17 @@ bias_delta is a real hazard: on continuous (population SD 0.1206) a raw 0.30
 is 2.5 SD and a raw 1.30 is 10.8 SD, which saturates the false-positive rate
 at 1.0 across most of the grid and leaves no peak to find.
 
-0.0 is the no-bias control (every metric should stay at nominal across the
-whole noise sweep -- if it does not, the grid is mis-specified). 0.30 is
-exactly PPI_FACTORIAL_BIAS_MAGNITUDES' "severe", the single value the paper's
-existing factorial view plots, so this sweep contains that curve as one
-column and can be checked against it.
+0.0 is the no-bias control, but only for variants whose judge has no OTHER
+source of between-group difference. The confound variants carry
+confound_shift_a=1.0, a nuisance covariate that differs between conditions
+independently of bias_delta, so they legitimately reject well above nominal at
+bias=0 -- that is the confound's whole point, not a mis-specified grid. Every
+other variant should sit at nominal there; print_report checks them
+separately for exactly this reason.
+
+0.30 is exactly PPI_FACTORIAL_BIAS_MAGNITUDES' "severe", the single value the
+paper's existing factorial view plots, so this sweep contains that curve as
+one column and can be checked against it.
 
 The levels straddle the Likert rounding threshold on BOTH scales. That
 threshold is half a scale point in ABSOLUTE units on any integer scale, which
@@ -247,8 +253,10 @@ VARIANTS: tuple[tuple[str, dict], ...] = (
     ("contaminated", {"noise_family": "contaminated"}),
     ("slope=0.7", {"slope_a": 0.7}),
     ("slope=0.5", {"slope_a": 0.5}),
-    ("confound=0.2", {"confound_weight": 0.2, "confound_truth_corr": 0.3, "confound_shift_a": 1.0}),
-    ("confound=0.4", {"confound_weight": 0.4, "confound_truth_corr": 0.3, "confound_shift_a": 1.0}),
+    ("confound=0.05", {"confound_weight_frac": 0.05, "confound_truth_corr": 0.3,
+                       "confound_shift_a": 1.0}),
+    ("confound=0.08", {"confound_weight_frac": 0.08, "confound_truth_corr": 0.3,
+                       "confound_shift_a": 1.0}),
     ("icc=0.10", {"icc": 0.10}),
     ("icc=0.50", {"icc": 0.50}),
 )
@@ -364,6 +372,42 @@ def applicable_variants(eval_type: str,
     return tuple(out)
 
 
+def _resolve_overrides(over: dict, eval_type: str, bounds) -> dict:
+    """Translate a variant's standardized override keys into the absolute
+    values JudgeBiasSource takes.
+
+    Only `confound_weight_frac` needs this today. confound_weight is in the
+    eval type's own score units, exactly like bias_delta -- the harness's own
+    confound scenarios set it as `_jb_bias_magnitude(et, 0.06)` and tier it at
+    fracs of 0.03/0.05/0.08, with a comment noting those values were chosen to
+    stay out of a saturated rejection range. Passing a frac through raw walks
+    straight into that trap: 0.2 raw on continuous is ~1.7 SD against an
+    intended 0.08 SD, which pins the false-positive rate at 1.0 everywhere and
+    contributes nothing but a flat ceiling line to the variant band.
+
+    Binary is the exception again -- there the confound rides inside
+    _jb_llm_binary's flip-probability skew rather than an additive score term
+    (see confound_weight's docstring), so the frac is used as a probability
+    directly, on PPI_BINARY_BIAS_MAGNITUDES' scale."""
+    if "confound_weight_frac" not in over:
+        return dict(over)
+    out = {k: v for k, v in over.items() if k != "confound_weight_frac"}
+    frac = over["confound_weight_frac"]
+    out["confound_weight"] = (
+        frac * _BINARY_CONFOUND_SCALE if eval_type == "binary"
+        else _jb_bias_magnitude(eval_type, frac, scale_bounds=bounds)
+    )
+    return out
+
+
+_BINARY_CONFOUND_SCALE = 2.5
+"""Maps a confound frac onto binary's flip-probability skew scale: the
+0.05/0.08 fracs used elsewhere become 0.125/0.20, inside
+PPI_BINARY_BIAS_MAGNITUDES' own ~0.10-0.30 range (its "moderate" is 0.10,
+"severe" 0.30). A single factor rather than a second grid keeps the variant
+labels meaning the same severity tier on every panel."""
+
+
 def build_sources(
     panels: tuple[tuple[str, int], ...] = PANELS,
     variants: tuple[tuple[str, dict], ...] = VARIANTS,
@@ -383,6 +427,7 @@ def build_sources(
         pid = panel_id(eval_type, lmax)
         biases, noises, bounds = panel_grid(eval_type, lmax)
         for vlabel, over in applicable_variants(eval_type, variants):
+            over_abs = _resolve_overrides(over, eval_type, bounds)
             for bias_frac in biases:
                 for noise_frac in noises:
                     if eval_type == "binary":
@@ -397,7 +442,8 @@ def build_sources(
                         # bias_type mirrors build_ppi_factorial_sources_binary:
                         # a zero bias is "none", not a differential of size 0.
                         **{**_BASE, "bias_delta": bias_abs, "llm_noise": noise_abs,
-                           "bias_type": "none" if bias_frac == 0.0 else "differential", **over},
+                           "bias_type": "none" if bias_frac == 0.0 else "differential",
+                           **over_abs},
                     )
                     out.append((sc, pid, vlabel, {**over, "_bias_frac": bias_frac,
                                                   "_noise_frac": noise_frac}))
@@ -613,9 +659,41 @@ def mean_curve(p_rows: list[dict], metrics: list[str]) -> list[dict]:
     return out
 
 
+def print_controls(rows: list[dict]) -> None:
+    """Two checks that should hold on every run, printed before the results so
+    a bad grid is obvious rather than buried.
+
+    The bias=0 check EXCLUDES the confound variants. Their nuisance covariate
+    differs between conditions regardless of bias_delta, so they reject above
+    nominal there by construction; folding them in turns a sharp control into
+    a meaningless average (0.13 pooled, versus 0.05 for every other variant)."""
+    conf = [r for r in rows if r["confound_weight"] > 0]
+    plain0 = [r for r in rows if r["bias"] == 0 and r["confound_weight"] == 0]
+    print(f"\n{'=' * 84}\n  CONTROLS\n{'=' * 84}")
+    if plain0:
+        rate = sum(r["rejects_llm_only"] for r in plain0) / sum(r["n_reps"] for r in plain0)
+        worst = max(r["fpr_uncorrected"] for r in plain0)
+        ok = "ok" if abs(rate - _ALPHA) < 0.015 else "OFF -- grid may be mis-specified"
+        print(f"  bias=0, no confound: uncorrected FPR {rate:.4f} (nominal {_ALPHA}), "
+              f"worst cell {worst:.3f}   [{ok}]")
+    if conf:
+        c0 = [r for r in conf if r["bias"] == 0]
+        if c0:
+            rate = sum(r["rejects_llm_only"] for r in c0) / sum(r["n_reps"] for r in c0)
+            print(f"  bias=0, WITH confound: {rate:.4f} -- expected above nominal "
+                  f"(a between-condition nuisance covariate is a bias in its own right)")
+    rate = sum(r["rejects_ppi"] for r in rows) / sum(r["n_reps"] for r in rows)
+    worst = max(r["fpr_ppi"] for r in rows)
+    ok = "ok" if abs(rate - _ALPHA) < 0.015 else "OFF -- PPI should hold nominal everywhere"
+    print(f"  PPI-corrected, ALL cells: {rate:.4f}, worst cell {worst:.3f}   [{ok}]")
+    failed = sum(1 for r in rows if r["n_failed"])
+    print(f"  cells with failed replicates: {failed}")
+
+
 def print_report(rows: list[dict], peaks: list[dict]) -> None:
     """Per panel: the across-variant MEAN peak location, plus the spread of
     per-variant peaks, so the console shows whether the variants agree."""
+    print_controls(rows)
     for pid in sorted({r["panel"] for r in rows}):
         print(f"\n{'=' * 84}\n  {pid.upper()} -- uncorrected false-positive peak by judge bias\n{'=' * 84}")
         p_peaks = [p for p in peaks if p["panel"] == pid]
@@ -953,18 +1031,26 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     )
 
 
-_SEC_PER_CELL_FIXED = 3.14
+_SEC_PER_CELL_FIXED = 2.60
 _SEC_PER_BOOT_DRAW = 0.0085
 """Measured cost model: wall-clock seconds per cell at reps=1000 on 15
 workers is ``_SEC_PER_CELL_FIXED + _SEC_PER_BOOT_DRAW * n_boot``.
 
-Fitted to (n_boot, s/cell) = (20, 3.31), (100, 4.22), (400, 6.54), (1000,
-11.0). The split matters for choosing defaults, and is easy to get wrong: at
-n_boot=1000 the bootstrap is ~70% of the cost, which makes it look like the
-dominant lever, but at the default it is under 10% and the FIXED term -- five
-classical tests x reps, plus PPI's non-bootstrap work -- is what actually
-sets the runtime. The real levers are therefore `reps` and the grid size
-(panels x variants x bias x noise), not n_boot."""
+The n_boot slope is fitted to 10-cell microbenchmarks at (20, 3.31),
+(100, 4.22), (400, 6.54), (1000, 11.0) s/cell. That split matters for
+choosing defaults and is easy to misread: at n_boot=1000 the bootstrap is
+~70% of the cost, which makes it look like the dominant lever, but at the
+default it is under 10% and the FIXED term -- five classical tests x reps,
+plus PPI's non-bootstrap work -- is what sets the runtime. The real levers
+are `reps` and the grid size, not n_boot.
+
+The FIXED term is deliberately NOT the microbenchmark's intercept (3.14).
+A real 5420-cell run at reps=80 on 12 workers took 21.5 min, which implies
+~2.4 s/cell at reps=1000 on 15 workers -- the small batches paid per-batch
+pool overhead the full grid amortizes away. 2.60 splits the difference,
+leaning conservative: extrapolating from reps=80 assumes the per-cell setup
+that does NOT scale with reps is negligible, which biases the other way.
+Treat the printed estimate as +-30%, which is all it is for."""
 
 
 def estimate_runtime_s(n_cells: int, reps: int, n_boot: int, n_workers: int) -> float:
