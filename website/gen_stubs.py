@@ -128,6 +128,20 @@ INVESTIGATIONS = [
         ],
     },
     {
+        "slug": "trusting-llm-judges",
+        "nav_label": "Trusting LLM Judge Scores",
+        "tier": "Going Deeper",
+        "title": "How to Run Statistics over LLM Judge Scores and (Actually) Trust the Results",
+        "subtitle": "You hand-labeled a sample, computed inter-rater reliability against your LLM judge, and it came back high. Surely that licenses running your stats directly on the judge&rsquo;s scores? Counter-intuitively, that&rsquo;s often exactly when the false-positive rate is worst.",
+        "intro": "LLM judges are widely used to scale up grading, and the standard practice is to validate one against a human-labeled sample, report an inter-rater reliability (IRR) metric like Cohen&rsquo;s &kappa; or ICC, and then run statistics directly on the judge&rsquo;s scores. This investigation shows why that practice is risky: for several common IRR metrics, false-positive risk actually peaks at high, not low, agreement. It then walks through the fix, prediction-powered inference (PPI), which folds the human-labeled sample into the comparison itself rather than treating a pooled agreement number as a stamp of trust. A synthetic three-coding-agent comparison, run through real <code>evalstats</code> code, shows a judge biased toward verbosity flip a leaderboard&rsquo;s winner once judge uncertainty is properly propagated.",
+        "learns": [
+            ("Why high IRR is not a license to trust judge scores", "Simulation results showing false-positive rate against judge-human alignment across five common IRR metrics: risk can peak at 0.80&ndash;0.90 agreement on Likert data, and rises monotonically with Pearson&rsquo;s r on continuous data."),
+            ("What prediction-powered inference (PPI) actually buys you", "A short, practical introduction to PPI: how folding a small human-labeled sample into a comparison corrects for judge bias without discarding the judge&rsquo;s scores."),
+            ("Comparing three coding agents scored by a biased judge", "A worked example with three agent configurations, an LLM judge on a 1&ndash;5 rubric, and a verbosity bias that quietly rewards the wrong agent, using <code>evalstats</code>' <code>judge_alignment()</code> and <code>alignment=</code> to correct the comparison."),
+            ("The only two things you need to do", "Why nothing more than a randomly sampled set of human gold labels and passing <code>alignment=</code> is required to make judge-based comparisons trustworthy, regardless of how good or bad the judge turns out to be."),
+        ],
+    },
+    {
         "slug": "regression-guard",
         "tier": "Advanced",
         "title": "Regression Guard: CI-Based Safety Net for Model Updates",
