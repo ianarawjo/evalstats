@@ -1394,15 +1394,19 @@ def _stepdown_max_t_pvalues(
 def _compute_multiarm_metrics(
     *, scores: np.ndarray, labels: list[str], method: str, corrections: list[str],
     n_bootstrap: int, alpha: float, statistic: str, rng: np.random.Generator,
+    eval_type: str | None = None,
 ) -> tuple[dict[str, tuple[bool, bool]], dict[str, float]]:
     """Compute (any_reject, best_selected) for every correction strategy.
 
-    none/holm/bonferroni/fdr_bh/hochberg/shaffer correct the Wilcoxon
-    signed-rank p-value (evalstats' canonical, eval-type-agnostic paired
-    test -- unlike Tango/Logit-t in --mode simultaneous_ci, one test covers
-    binary/continuous/likert/grades alike, so no per-eval-type branching is
-    needed here) via _safe_wilcoxon_p on each pair's per_input_diffs, rather
-    than --multiarm-method's raw p-value (bootstrap_t by default).
+    none/holm/bonferroni/fdr_bh/hochberg/shaffer correct the base paired
+    p-value evalstats itself would report for the data type: McNemar mid-p on
+    binary (all three binary branches of core/paired.py route there), Wilcoxon
+    signed-rank otherwise, via _safe_wilcoxon_p on each pair's
+    per_input_diffs -- NOT --multiarm-method's raw p-value (bootstrap_t by
+    default). This branches per eval_type, like Tango/Logit-t in --mode
+    simultaneous_ci: an earlier version used Wilcoxon for every type, which
+    made the binary FWER rows describe a test the library never runs on
+    binary data.
     per_input_diffs/point_diff are built directly from `scores` (a plain
     per-input difference and its mean/median -- no resampling involved), not
     via all_pairwise(method=method, ...): that used to run the *full*
@@ -1507,7 +1511,23 @@ def _compute_multiarm_metrics(
             diffs_by_pair[pair] = d
             point_diff_by_pair[pair] = float(d.mean()) if statistic == "mean" else float(np.median(d))
 
-        raw_p = np.array([_safe_wilcoxon_p(diffs_by_pair[pair]) for pair in pairs])
+        # Base p-value per pair, matching what evalstats itself would report
+        # for this data type. Wilcoxon everywhere was wrong for binary: the
+        # library routes binary paired data to McNemar mid-p (all three binary
+        # branches in core/paired.py), so a binary FWER row built on Wilcoxon
+        # described a test users never get. The two are not interchangeable --
+        # measured on the compare_e2e binary DGP, Wilcoxon rejects a strict
+        # SUPERSET of mid-p's rejections (every discordant decision across
+        # 12k paired draws x 6 cells went Wilcoxon-only, none the other way),
+        # so it carries more power and more Type-I, crossing nominal by n=200
+        # where mid-p stays under it.
+        if eval_type == "binary":
+            raw_p = np.array([
+                _mcnemar_midp_p(flat[label_to_idx[a]], flat[label_to_idx[b]])
+                for a, b in pairs
+            ])
+        else:
+            raw_p = np.array([_safe_wilcoxon_p(diffs_by_pair[pair]) for pair in pairs])
         pair_to_idx = {pair: idx for idx, pair in enumerate(pairs)}
         _setup_elapsed = time.perf_counter() - _t_setup0
 
@@ -1743,6 +1763,7 @@ def _run_multiarm_cell(
                 _scores_elapsed = time.perf_counter() - _t_none0
                 metrics, timings = _compute_multiarm_metrics(
                     scores=scores, labels=labels, method=multiarm_method, corrections=corrections,
+                    eval_type=source.eval_type,
                     n_bootstrap=n_bootstrap, alpha=alpha, statistic=statistic, rng=rng,
                 )
                 if "none" in timings:
@@ -13254,7 +13275,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--multiarm-method", default=BOOTSTRAP_T.name, metavar="METHOD",
                          choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name, BOOTSTRAP_T.name],
                          help="multiarm mode: only affects max_t's point estimate + bootstrap draws (none/holm/"
-                              "bonferroni/fdr_bh correct the canonical Wilcoxon signed-rank p-value regardless) / "
+                              "bonferroni/fdr_bh correct the base paired p-value for the data type regardless -- "
+                              "McNemar mid-p on binary, Wilcoxon otherwise) / "
                               "simultaneous_ci mode: only affects max_t's construction (none/bonferroni/sidak/boot "
                               "build on the canonical per-eval-type CI regardless) -- must be bootstrap-compatible "
                               "for max-T to apply")

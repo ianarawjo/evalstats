@@ -180,13 +180,15 @@ PROSE_NOTE = (
 CAPTIONS = {
  "pvalues_pairwise": r"""Pairwise p-value methods (nominal $\alpha{=}0.05$), on the synthetic
 suite and, to the right of the rule, on real evals data. Per-$n$ columns give Type-I error at
-that sample size; anything above $\alpha$ is inflated. The exact binary tests (McNemar,
-Newcombe, sign, permutation) are severely conservative on synthetic binary data, running at
-0.010 against a nominal 0.05 and losing power accordingly, while \texttt{bayes\_bootstrap}
-attains the best power in every block at the cost of running mildly anti-conservative.
-\texttt{paired\_t} and \texttt{wilcoxon} are the dependable general-purpose choices, holding
-close to nominal from $n{=}20$ upward on both synthetic and real data. Note the real suite
-covers binary and continuous only.""",
+that sample size; anything above $\alpha$ is inflated. On binary data the exact conditional
+tests coincide---McNemar, the sign test and the sign-flip permutation test are the same test,
+and all three run at 0.010 against a nominal 0.05, losing power accordingly. McNemar's mid-$p$
+sits between them and \texttt{wilcoxon} (0.019 Type-I, 0.332 power against 0.027 and 0.354),
+recovering much of that lost power while staying the more conservative of the two.
+\texttt{bayes\_bootstrap} attains the best power in every block at the cost of running mildly
+anti-conservative on continuous and Likert data. \texttt{paired\_t} and \texttt{wilcoxon} are
+the dependable general-purpose choices, holding close to nominal from $n{=}20$ upward on both
+synthetic and real data. Note the real suite covers binary and continuous only.""",
  "ci_single": r"""CI methods for mean point estimates, single-run (nominal 95\%, 2000 MC reps
 per cell). Wilson and Jeffreys score intervals are best for binary data, at a fraction of
 \texttt{bayes\_indep}'s cost. For numeric data the logit-transformed t-interval is the
