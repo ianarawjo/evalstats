@@ -716,17 +716,18 @@ UNPAIRED_BINARY_METHODS = [
 literature. None of these are shipped by evalstats today; this is the
 candidate slate the ci_unpaired sweep exists to adjudicate."""
 
-THETA_BOOTSTRAP = Method("theta_bootstrap", "#393b79")
-THETA_BCA = Method("theta_bca", "#5254a3")
-BRUNNER_MUNZEL = Method("brunner_munzel", "#637939")
-BRUNNER_MUNZEL_LOGIT = Method("brunner_munzel_logit", "#8c6d31")
+# A dominance-probability (theta) family -- theta_bootstrap, theta_bca,
+# brunner_munzel, brunner_munzel_logit -- was built here and removed.
+# theta = P(A>B) + .5 P(A=B) is what compare(design="unpaired") currently
+# reports for continuous/likert via the Kruskal-Wallis post-hoc, so measuring
+# it looked like due diligence. It is a DIFFERENT ESTIMAND from the mean
+# difference every other recommendation in this project is stated in, which
+# makes its coverage and width numbers incomparable with the rest of the
+# table, and it cost ~65% of the sweep's runtime to produce them. If the
+# shipped theta path ever needs calibrating, it needs its own case, not a
+# second estimand bolted onto this one.
 
-UNPAIRED_THETA_METHODS = [THETA_BOOTSTRAP, THETA_BCA, BRUNNER_MUNZEL, BRUNNER_MUNZEL_LOGIT]
-"""Intervals for theta = P(A>B) + .5 P(A=B). theta_bootstrap is the shipped
-behavior (evalstats.core.unpaired._rank_based_pairwise_uncorrected); the rest
-are candidates."""
-
-UNPAIRED_METHODS = UNPAIRED_MEAN_EXTRA_METHODS + UNPAIRED_BINARY_METHODS + UNPAIRED_THETA_METHODS
+UNPAIRED_METHODS = UNPAIRED_MEAN_EXTRA_METHODS + UNPAIRED_BINARY_METHODS
 
 
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [

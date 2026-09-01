@@ -12,19 +12,21 @@ AUTO_UNPAIRED_METHOD_TABLE, evalstats/core/unpaired.py):
                              a linear-probability-model patch, explicitly
                              flagged in config.py as "a deliberate patch, not
                              a clean solution".
-  continuous/likert/grade -> percentile bootstrap on theta_ab, the
+  continuous/likert/grade -> a percentile bootstrap on theta_ab, the
                              stochastic-dominance probability from the
-                             Mann-Whitney / Kruskal-Wallis path -- NOT a mean
-                             difference.
+                             Mann-Whitney / Kruskal-Wallis path.
 
-So there are two distinct estimands in play, and a validation that only
-covered one of them would be validating a method the library does not use:
+This case measures ONE estimand: the mean difference mean(A) - mean(B) (which
+on binary data is the proportion difference). That is the estimand every other
+recommendation in this project is stated in, including the paired path's, and
+the one a reader of those recommendations expects.
 
-  mean_diff : mean(A) - mean(B)  (a.k.a. Delta-p on binary)
-  theta     : P(A > B) + 0.5 * P(A = B)
-
-Every row this case emits is tagged with its estimand, and the two are never
-pooled -- their coverage targets are different quantities.
+theta is deliberately out of scope. It was implemented here and removed: it is
+a different quantity, not a different method for the same quantity, so its
+coverage and width are not comparable with anything else in the table, and
+carrying it cost ~65% of the sweep's runtime. If the shipped theta path needs
+calibrating, that is its own case with its own estimand, not a second axis
+bolted onto this one.
 
 Data generation
 ---------------
@@ -38,27 +40,29 @@ explicitly:
      linear -- whether a and b were drawn jointly or independently does not
      change it. This holds for the hand-built 2x2 binary scenarios too
      (true_diff = p10 - p01 = p_A - p_B).
-  2. ``true_theta`` does NOT follow from true_diff and has to be estimated by
-     Monte Carlo per source (``_estimate_true_theta``), from independent
-     draws, with ties handled at 0.5.
+  2. Real corpora (``scenarios/real_unpaired.py``) draw each arm from a fixed
+     pool with replacement, so the pool mean is exactly the coverage target.
 
 Unequal group sizes are the norm in between-subjects work, so ``--size-ratios``
 sweeps n_B / n_A (default 1.0; e.g. ``--size-ratios 1.0 2.0``).
 
 Method slate
 ------------
-Deliberately a *starting* slate, not a settled recommendation -- picking the
-right candidates from the two-independent-proportions and stochastic-dominance
-literatures is the open question this case exists to answer. Currently:
+Deliberately a *starting* slate, not a settled recommendation:
 
-  mean_diff, all eval types : bootstrap, bca, bayes_bootstrap,
-                              smooth_bootstrap, bootstrap_t (all two-sample
-                              forms), welch_t, student_t
-  mean_diff, binary only    : wald_unpaired (naive baseline), agresti_caffo,
-                              newcombe_hybrid, miettinen_nurminen,
-                              bayes_beta_indep
-  theta, all eval types     : theta_bootstrap (the shipped behavior),
-                              theta_bca, brunner_munzel, brunner_munzel_logit
+  all eval types : bootstrap, bca, bayes_bootstrap, smooth_bootstrap,
+                   bootstrap_t (two-sample forms), welch_t, student_t,
+                   mover_t, mover_logit_t
+  non-binary     : mover_nig (NIG is invalid on a proportion -- it returns
+                   limits above 1)
+  binary only    : wald_unpaired (naive baseline), agresti_caffo,
+                   newcombe_hybrid, miettinen_nurminen, agresti_min
+
+The mover_* family builds a CI for each arm with a shipped one-sample method
+and combines them by MOVER (Zou & Donner 2008). Newcombe's hybrid score IS
+that construction with Wilson arms, which is what lets the paired path's own
+recommendations (logit_t, nig) transfer here directly. mover_t is the control
+that separates what the combination rule buys from what the arm buys.
 
 Known limitations of this first pass (deliberate, to keep the engine small):
 synthetic sources only (no real-data corpora), runs=1 only (no multi-run /
@@ -112,8 +116,7 @@ from ..methods import (
     WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG,
     WALD_UNPAIRED, AGRESTI_CAFFO, NEWCOMBE_HYBRID, MIETTINEN_NURMINEN, BAYES_BETA_INDEP,
     AGRESTI_MIN,
-    THETA_BOOTSTRAP, THETA_BCA, BRUNNER_MUNZEL, BRUNNER_MUNZEL_LOGIT,
-    UNPAIRED_MEAN_EXTRA_METHODS, UNPAIRED_BINARY_METHODS, UNPAIRED_THETA_METHODS,
+    UNPAIRED_MEAN_EXTRA_METHODS, UNPAIRED_BINARY_METHODS,
     order_present_methods,
 )
 from . import CaseResult
@@ -121,13 +124,9 @@ from . import CaseResult
 CASE_NAME = "ci_unpaired"
 
 DATA_SOURCES = ["synthetic", "real"]
-ESTIMANDS = ["mean_diff", "theta", "both"]
 PROGRESS_MODES = ["bar", "cell", "off"]
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
-
-MEAN_ESTIMAND = "mean_diff"
-THETA_ESTIMAND = "theta"
 
 _AGRESTI_MIN_MAX_N = 30
 """Largest group size at which agresti_min is run in the Monte Carlo sweep.
@@ -156,17 +155,11 @@ by construction, and on binary it is the strongest method in the exact table
 (0.954 minimum coverage, holding nominal), so excluding it would discard a
 real result rather than avoid a spurious one."""
 
-_THETA_NULL_VALUE = 0.5
-"""theta's "no difference" point -- the analogue of 0 for a mean difference.
-Used for the Type I error / power counter, not for coverage."""
-
-
 @dataclass
 class SimResult:
     source: str
     label: str
     eval_type: str
-    estimand: str  # "mean_diff" | "theta"
     n_a: int
     n_b: int
     method: str
@@ -177,8 +170,7 @@ class SimResult:
     total_pen_under: float = 0.0
     total_pen_over: float = 0.0
     rejects: int = 0
-    """Reps whose CI excluded the estimand's null value (0 for mean_diff, 0.5
-    for theta): Type I error on is_null rows, power elsewhere."""
+    """Reps whose CI excluded zero: Type I error on is_null rows, power elsewhere."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     is_null: bool = False
@@ -827,204 +819,6 @@ def _two_sample_bootstrap_t_ci(
 
 
 # ---------------------------------------------------------------------------
-# theta = P(A > B) + 0.5 * P(A = B)
-# ---------------------------------------------------------------------------
-
-
-def _theta_hat(a: np.ndarray, b: np.ndarray) -> float:
-    """Point estimate of theta, ties counted at one half.
-
-    O((na+nb) log nb) via binary search into a sorted copy of b, rather than
-    the O(na*nb) pairwise comparison -- this is called once per bootstrap
-    replicate, so the difference matters.
-    """
-    na, nb = a.size, b.size
-    if na == 0 or nb == 0:
-        return 0.5
-    bs = np.sort(b)
-    wins = np.searchsorted(bs, a, side="left")
-    wins_or_ties = np.searchsorted(bs, a, side="right")
-    ties = wins_or_ties - wins
-    return float((wins.sum() + 0.5 * ties.sum()) / (na * nb))
-
-
-def _theta_pair_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """C[i, j] = 1 if a_i > b_j, 0.5 if equal, 0 otherwise.
-
-    theta_hat is mean(C), and -- the point of building it -- every bootstrap
-    replicate and every leave-one-out value is a weighted sum of the SAME
-    matrix, so it is built once per rep instead of once per replicate.
-    """
-    return (np.greater.outer(a, b).astype(float)
-            + 0.5 * np.equal.outer(a, b).astype(float))
-
-
-def _theta_bootstrap_stats(
-    a: np.ndarray, b: np.ndarray, n_boot: int, rng: np.random.Generator,
-) -> np.ndarray:
-    """Bootstrap distribution of theta_hat -- resample each arm independently.
-
-    Mirrors what evalstats.core.unpaired._rank_based_pairwise_uncorrected
-    does for the shipped continuous/likert path, but computed in one matrix
-    product rather than a Python loop over replicates.
-
-    theta_hat of a resample depends on that resample only through how many
-    times each ORIGINAL observation was drawn, and those multiplicities are
-    exactly multinomial. So with ca, cb the count vectors,
-
-        theta* = (ca @ C @ cb) / (na * nb)
-
-    which is identical in distribution to resampling values and recomputing
-    -- not an approximation -- and turns 2000 sort-and-searchsorted calls
-    into one BLAS matmul. Measured on likert at n=100: 19.1 ms -> 1.6 ms.
-    """
-    na, nb = a.size, b.size
-    if na == 0 or nb == 0:
-        return np.full(n_boot, 0.5)
-    c = _theta_pair_matrix(a, b)
-    ca = rng.multinomial(na, np.full(na, 1.0 / na), size=n_boot).astype(float)
-    cb = rng.multinomial(nb, np.full(nb, 1.0 / nb), size=n_boot).astype(float)
-    return np.einsum("bi,bi->b", ca @ c, cb) / (na * nb)
-
-
-def _theta_bca_ci(
-    a: np.ndarray, b: np.ndarray, boot_thetas: np.ndarray, alpha: float,
-) -> tuple[float, float]:
-    """BCa applied to theta_hat, with the same pooled jackknife as
-    _two_sample_bca_ci."""
-    observed = _theta_hat(a, b)
-    boot = np.asarray(boot_thetas, dtype=float)
-    prop = float(np.mean(boot < observed))
-    if prop <= 0.0 or prop >= 1.0 or boot.size == 0:
-        return (float(np.percentile(boot, 100 * alpha / 2)),
-                float(np.percentile(boot, 100 * (1 - alpha / 2))))
-    z0 = float(stats.norm.ppf(prop))
-
-    # Leave-one-out values come straight off the comparison matrix: dropping
-    # observation i removes its row (or column) from the sum, so the whole
-    # jackknife is two vector operations rather than na+nb recomputations,
-    # each of which previously also paid for an np.delete array copy.
-    na, nb = a.size, b.size
-    c = _theta_pair_matrix(a, b)
-    total = float(c.sum())
-    jack = np.empty(na + nb, dtype=float)
-    jack[:na] = ((total - c.sum(axis=1)) / ((na - 1) * nb)) if na > 1 else observed
-    jack[na:] = ((total - c.sum(axis=0)) / (na * (nb - 1))) if nb > 1 else observed
-    diffs = float(np.mean(jack)) - jack
-    denom = 6.0 * (float(np.sum(diffs**2)) ** 1.5)
-    acc = float(np.sum(diffs**3)) / denom if denom > 0 else 0.0
-
-    def _adj(q: float) -> float:
-        zq = float(stats.norm.ppf(q))
-        num = z0 + zq
-        den = 1.0 - acc * num
-        if abs(den) < 1e-12:
-            return q
-        return float(stats.norm.cdf(z0 + num / den))
-
-    lo_q = float(np.clip(_adj(alpha / 2), 1e-6, 1 - 1e-6))
-    hi_q = float(np.clip(_adj(1 - alpha / 2), 1e-6, 1 - 1e-6))
-    return float(np.percentile(boot, 100 * lo_q)), float(np.percentile(boot, 100 * hi_q))
-
-
-def _brunner_munzel_pieces(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
-    """Return (theta_hat, se, df) for the Brunner-Munzel estimator of
-    theta = P(A > B) + 0.5 P(A = B).
-
-    Brunner & Munzel (2000), "The nonparametric Behrens-Fisher problem:
-    asymptotic theory and a small-sample approximation", Biometrical Journal
-    42(1):17-25. Unlike Mann-Whitney's usual variance, this does not assume
-    the two groups share a distribution shape, which is the whole point --
-    it is the rank analogue of Welch's t.
-
-    df is the Satterthwaite-style approximation from the same paper.
-    """
-    na, nb = a.size, b.size
-    if na < 2 or nb < 2:
-        return _theta_hat(a, b), float("nan"), float("nan")
-    combined = np.concatenate([b, a])  # b first: theta is oriented as P(b < a)
-    rank_c = stats.rankdata(combined)
-    rc_b, rc_a = rank_c[:nb], rank_c[nb:]
-    r_b, r_a = stats.rankdata(b), stats.rankdata(a)
-    mb_c, ma_c = float(np.mean(rc_b)), float(np.mean(rc_a))
-
-    theta = (ma_c - (na + 1) / 2.0) / nb
-    s_b = float(np.sum((rc_b - r_b - mb_c + (nb + 1) / 2.0) ** 2)) / (nb - 1)
-    s_a = float(np.sum((rc_a - r_a - ma_c + (na + 1) / 2.0) ** 2)) / (na - 1)
-    pooled = nb * s_b + na * s_a
-    if pooled <= 0:
-        return theta, 0.0, float(na + nb - 2)
-    se = float(np.sqrt(pooled)) / (na * nb)
-    num = pooled**2
-    den = (nb * s_b) ** 2 / (nb - 1) + (na * s_a) ** 2 / (na - 1)
-    df = num / den if den > 0 else float(na + nb - 2)
-    return theta, se, float(df)
-
-
-def _brunner_munzel_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Brunner-Munzel interval for theta on the natural (untransformed) scale."""
-    theta, se, df = _brunner_munzel_pieces(a, b)
-    if not np.isfinite(se) or not np.isfinite(df) or se <= 0:
-        return theta, theta
-    t = float(stats.t.ppf(1.0 - alpha / 2.0, df))
-    return max(0.0, theta - t * se), min(1.0, theta + t * se)
-
-
-def _brunner_munzel_logit_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Brunner-Munzel on the logit scale, back-transformed.
-
-    theta is a probability, so the untransformed interval can run past 0 or 1
-    and its sampling distribution is skewed near the boundaries. Building the
-    interval for logit(theta) (delta-method SE = se / (theta(1-theta))) and
-    mapping back keeps it inside [0, 1] by construction and is the usual
-    small-sample recommendation for this estimator.
-    """
-    theta, se, df = _brunner_munzel_pieces(a, b)
-    if not np.isfinite(se) or not np.isfinite(df) or se <= 0:
-        return theta, theta
-    eps = 1e-6
-    th = float(np.clip(theta, eps, 1 - eps))
-    se_logit = se / (th * (1.0 - th))
-    t = float(stats.t.ppf(1.0 - alpha / 2.0, df))
-    lg = np.log(th / (1.0 - th))
-    lo, hi = lg - t * se_logit, lg + t * se_logit
-    return float(1.0 / (1.0 + np.exp(-lo))), float(1.0 / (1.0 + np.exp(-hi)))
-
-
-# ---------------------------------------------------------------------------
-# True theta per source (Monte Carlo)
-# ---------------------------------------------------------------------------
-
-_TRUE_THETA_MC_N = 200_000
-
-
-def _estimate_true_theta(source: CIPairSource, *, seed: int = 0, n_mc: int = _TRUE_THETA_MC_N) -> float:
-    """The population theta for a source under INDEPENDENT arms.
-
-    Unlike true_diff, theta is not a difference of marginals, so in general it
-    cannot be read off the source -- it depends on the two marginal
-    distributions jointly, and is estimated by Monte Carlo from two separate
-    generate_pair calls (independent arms, matching how the simulation itself
-    samples).
-
-    Null sources are the exception and are returned EXACTLY. When both arms
-    share a distribution, P(A>B) = P(B>A) by symmetry, so theta is exactly
-    1/2. Estimating that by Monte Carlo instead was measurably wrong: over
-    the null sources it missed 0.5 by up to 0.0011, and since coverage is
-    scored against this number, that error goes straight into every theta
-    method's coverage on every null row. Both source families qualify --
-    synthetic d=0 draws both arms from one distribution, and
-    real_unpaired's null sources draw both arms from one pool.
-    """
-    if source.is_null:
-        return _THETA_NULL_VALUE
-    rng = np.random.default_rng(seed)
-    a, _ = source.generate_pair(rng, n_mc, 1)
-    _, b = source.generate_pair(rng, n_mc, 1)
-    return _theta_hat(a[:, 0], b[:, 0])
-
-
-# ---------------------------------------------------------------------------
 # Cell runner
 # ---------------------------------------------------------------------------
 
@@ -1046,7 +840,7 @@ def _draw_unpaired(
 
 def _run_cell(
     source: CIPairSource, n_a: int, n_b: int, n_reps: int, n_bootstrap: int, bayes_n: int,
-    alpha: float, estimand: str, seed, true_theta: float,
+    alpha: float, seed,
     method_names: frozenset[str] | None = None,
     agresti_min_max_n: int = _AGRESTI_MIN_MAX_N,
 ) -> list[SimResult]:
@@ -1058,23 +852,16 @@ def _run_cell(
     def _want(m) -> bool:
         return method_names is None or m.name in method_names
 
-    do_mean = estimand in (MEAN_ESTIMAND, "both")
-    do_theta = estimand in (THETA_ESTIMAND, "both")
+    mean_methods = [m for m in BOOTSTRAP_METHODS if _want(m)]
+    mean_methods += [m for m in UNPAIRED_MEAN_EXTRA_METHODS
+                     if _want(m) and not (is_binary and m in _BINARY_INELIGIBLE)]
+    if is_binary:
+        mean_methods += [
+            m for m in UNPAIRED_BINARY_METHODS
+            if _want(m) and not (m is AGRESTI_MIN and max(n_a, n_b) > agresti_min_max_n)
+        ]
 
-    mean_methods = []
-    if do_mean:
-        mean_methods += [m for m in BOOTSTRAP_METHODS if _want(m)]
-        mean_methods += [m for m in UNPAIRED_MEAN_EXTRA_METHODS
-                         if _want(m) and not (is_binary and m in _BINARY_INELIGIBLE)]
-        if is_binary:
-            mean_methods += [
-                m for m in UNPAIRED_BINARY_METHODS
-                if _want(m) and not (m is AGRESTI_MIN
-                                     and max(n_a, n_b) > agresti_min_max_n)
-            ]
-    theta_methods = [m for m in UNPAIRED_THETA_METHODS if _want(m)] if do_theta else []
-
-    all_methods = [(m, MEAN_ESTIMAND) for m in mean_methods] + [(m, THETA_ESTIMAND) for m in theta_methods]
+    all_methods = list(mean_methods)
     covered = {k: 0 for k in all_methods}
     total_w = {k: 0.0 for k in all_methods}
     total_score = {k: 0.0 for k in all_methods}
@@ -1084,12 +871,9 @@ def _run_cell(
     total_t = {k: 0.0 for k in all_methods}
     total_t_sq = {k: 0.0 for k in all_methods}
 
-    truth = {MEAN_ESTIMAND: float(source.true_diff), THETA_ESTIMAND: float(true_theta)}
-    null_value = {MEAN_ESTIMAND: 0.0, THETA_ESTIMAND: _THETA_NULL_VALUE}
+    target = float(source.true_diff)
 
     def _record(key, lo: float, hi: float, elapsed: float) -> None:
-        _, est = key
-        target, null_v = truth[est], null_value[est]
         if lo <= target <= hi:
             covered[key] += 1
         total_w[key] += hi - lo
@@ -1098,7 +882,7 @@ def _run_cell(
             pen_under[key] += (2.0 / alpha) * (lo - target)
         elif target > hi:
             pen_over[key] += (2.0 / alpha) * (target - hi)
-        if lo > null_v or hi < null_v:
+        if lo > 0.0 or hi < 0.0:
             rejects[key] += 1
         total_t[key] += elapsed
         total_t_sq[key] += elapsed * elapsed
@@ -1122,7 +906,7 @@ def _run_cell(
             shared_boot_t = time.perf_counter() - _t0
 
         for method in mean_methods:
-            key = (method, MEAN_ESTIMAND)
+            key = method
             extra_t = shared_boot_t if method in (BOOTSTRAP, BCA) else 0.0
             t0 = time.perf_counter()
             try:
@@ -1169,45 +953,15 @@ def _run_cell(
                 lo = hi = obs_mean
             _record(key, lo, hi, time.perf_counter() - t0 + extra_t)
 
-        # --- theta family --------------------------------------------------
-        if theta_methods:
-            theta_boot: np.ndarray | None = None
-            theta_boot_t = 0.0
-            if any(m in (THETA_BOOTSTRAP, THETA_BCA) for m in theta_methods):
-                _t0 = time.perf_counter()
-                theta_boot = _theta_bootstrap_stats(a, b, n_bootstrap, rng)
-                theta_boot_t = time.perf_counter() - _t0  # charged to both consumers, as above
-            obs_theta = _theta_hat(a, b)
-            for method in theta_methods:
-                key = (method, THETA_ESTIMAND)
-                extra_t = theta_boot_t if method in (THETA_BOOTSTRAP, THETA_BCA) else 0.0
-                t0 = time.perf_counter()
-                try:
-                    if method is THETA_BOOTSTRAP:
-                        lo = float(np.percentile(theta_boot, 100 * alpha / 2))
-                        hi = float(np.percentile(theta_boot, 100 * (1 - alpha / 2)))
-                    elif method is THETA_BCA:
-                        lo, hi = _theta_bca_ci(a, b, theta_boot, alpha)
-                    elif method is BRUNNER_MUNZEL:
-                        lo, hi = _brunner_munzel_ci(a, b, alpha)
-                    elif method is BRUNNER_MUNZEL_LOGIT:
-                        lo, hi = _brunner_munzel_logit_ci(a, b, alpha)
-                    else:
-                        raise AssertionError(f"unhandled theta method {method.name!r}")
-                except Exception:
-                    lo = hi = obs_theta
-                _record(key, lo, hi, time.perf_counter() - t0 + extra_t)
-
     out: list[SimResult] = []
-    for key in all_methods:
-        method, est = key
+    for method in all_methods:
         out.append(SimResult(
             source=source.source, label=source.label, eval_type=source.eval_type,
-            estimand=est, n_a=n_a, n_b=n_b, method=method.name, n_reps=n_reps,
-            covered=covered[key], total_width=total_w[key], total_score=total_score[key],
-            total_pen_under=pen_under[key], total_pen_over=pen_over[key],
-            rejects=rejects[key], total_time=total_t[key], total_time_sq=total_t_sq[key],
-            is_null=source.is_null, true_value=truth[est],
+            n_a=n_a, n_b=n_b, method=method.name, n_reps=n_reps,
+            covered=covered[method], total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=pen_under[method], total_pen_over=pen_over[method],
+            rejects=rejects[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            is_null=source.is_null, true_value=target,
             icc=source.icc, cohens_d=source.cohens_d,
         ))
     return out
@@ -1255,28 +1009,26 @@ class _ProgressReporter:
 
 
 _CELL_SOURCES: list = []
-_CELL_TRUE_THETAS: list = []
 
 
 def _run_cell_worker(args: tuple) -> list[SimResult]:
-    (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, seed,
+    (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, seed,
      method_names, agresti_min_max_n) = args
     return _run_cell(
-        _CELL_SOURCES[sc_idx], n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand,
-        seed, _CELL_TRUE_THETAS[sc_idx], method_names, agresti_min_max_n,
+        _CELL_SOURCES[sc_idx], n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha,
+        seed, method_names, agresti_min_max_n,
     )
 
 
 def run_simulation(
     sources: list[CIPairSource], sample_sizes: list[int], size_ratios: list[float],
-    n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float, estimand: str,
-    true_thetas: list[float], progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
+    n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float,
+    progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
     method_names: frozenset[str] | None = None,
     agresti_min_max_n: int = _AGRESTI_MIN_MAX_N,
 ) -> list[SimResult]:
-    global _CELL_SOURCES, _CELL_TRUE_THETAS
+    global _CELL_SOURCES
     _CELL_SOURCES = list(sources)
-    _CELL_TRUE_THETAS = list(true_thetas)
 
     cells = [
         (i, n, max(2, int(round(n * ratio))))
@@ -1287,7 +1039,7 @@ def run_simulation(
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
     args_list = [
-        (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, cseed,
+        (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, cseed,
          method_names, agresti_min_max_n)
         for (sc_idx, n_a, n_b), cseed in zip(cells, child_seeds)
     ]
@@ -1473,15 +1225,15 @@ def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]
     target = 1.0 - alpha
     by_est_type: dict = defaultdict(list)
     for r in results:
-        by_est_type[(r.estimand, r.eval_type)].append(r)
+        by_est_type[r.eval_type].append(r)
 
-    for (estimand, eval_type) in sorted(by_est_type):
-        rows = by_est_type[(estimand, eval_type)]
+    for eval_type in sorted(by_est_type):
+        rows = by_est_type[eval_type]
         non_null = [r for r in rows if not r.is_null]
         nulls = [r for r in rows if r.is_null]
         print()
         print("=" * 100)
-        print(f"estimand={estimand}  eval_type={eval_type}   "
+        print(f"eval_type={eval_type}   "
               f"({len(rows)} rows, {len(nulls)} null / {len(non_null)} non-null)")
         print("=" * 100)
         print(f"{'method':<22s} {'meanCov':>8s} {'minCov':>8s} {'p05Cov':>8s} "
@@ -1547,19 +1299,16 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
     return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
 
 
-def latex_summary(results: list[SimResult], alpha: float, estimand: str) -> str:
-    r"""Booktabs summary for ONE estimand, mirroring ci_paired.latex_overall_summary.
+def latex_summary(results: list[SimResult], alpha: float) -> str:
+    """Booktabs summary, mirroring ci_paired.latex_overall_summary.
 
-    One table per estimand rather than a combined one: a mean difference and a
-    dominance probability live on different scales, so a Width or Score column
-    spanning both would invite exactly the comparison that is not meaningful.
-    Within a table, rows are blocked by eval type (bin/cont/lik) with a midrule
-    between blocks, and per-n coverage columns are appended on the right
-    because the aggregate column can hide miscalibration that only shows up at
-    one end of the size range.
+    Rows are blocked by eval type (bin/cont/lik) with a midrule between
+    blocks, and per-n coverage columns are appended on the right because the
+    aggregate column can hide miscalibration that only shows up at one end of
+    the size range.
     """
     target = 1.0 - alpha
-    rows_in = [r for r in results if r.estimand == estimand and not r.is_null]
+    rows_in = [r for r in results if not r.is_null]
     if not rows_in:
         return ""
     method_labels = [m.name for m in order_present_methods({r.method for r in rows_in})]
@@ -1583,7 +1332,7 @@ def latex_summary(results: list[SimResult], alpha: float, estimand: str) -> str:
     # Type-I error lives on the null rows, which are excluded from `rows_in`.
     null_rate: dict = defaultdict(lambda: (0, 0))
     for r in results:
-        if r.estimand != estimand or not r.is_null:
+        if not r.is_null:
             continue
         g = report_eval_type_group(r.eval_type)
         c, t = null_rate[(g, r.method)]
@@ -1629,14 +1378,13 @@ def latex_summary(results: list[SimResult], alpha: float, estimand: str) -> str:
         for i, cell in enumerate(marked):
             rows[block_start + i][4] = cell
 
-    est_desc = (r"mean difference $\bar{A}-\bar{B}$" if estimand == MEAN_ESTIMAND
-                else r"$\theta = P(A{>}B) + \tfrac12 P(A{=}B)$")
     return booktabs_table(
-        caption=(f"Between-subjects (unpaired) pairwise CI calibration, estimand: {est_desc}. "
+        caption=(r"Between-subjects (unpaired) pairwise CI calibration for the mean "
+                 r"difference $\bar{A}-\bar{B}$. "
                  f"Non-null cells only; TypeI is the rejection rate on null cells. "
                  f"Coverage cells are shaded when they fall outside the acceptable band "
                  f"around {target:.2f}. Best Score per block in bold, runner-up underlined."),
-        label=f"tab:ci-unpaired-{estimand.replace('_', '-')}",
+        label="tab:ci-unpaired-mean-diff",
         columns=columns, rows=rows, rule_before=rule_before,
     )
 
@@ -1705,8 +1453,7 @@ def save_results_artifacts(
     text = buf.getvalue()
     if latex:
         text += "\n% --- LaTeX tables (--latex) ---\n"
-        for est in (MEAN_ESTIMAND, THETA_ESTIMAND):
-            text += latex_summary(results, alpha=alpha, estimand=est)
+        text += latex_summary(results, alpha=alpha)
     summary_path.write_text(text, encoding="utf-8")
     print(f"\nSaved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -1722,13 +1469,13 @@ def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: st
     eq = [r for r in results if r.n_a == r.n_b and not r.is_null]
     if not eq:
         eq = [r for r in results if not r.is_null]
-    keys = sorted({(r.estimand, r.eval_type) for r in eq})
+    keys = sorted({r.eval_type for r in eq})
     if not keys:
         raise ValueError("no non-null results to plot")
     fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.8), squeeze=False)
     target = 1.0 - alpha
-    for ax, (estimand, eval_type) in zip(axes[0], keys):
-        rows = [r for r in eq if r.estimand == estimand and r.eval_type == eval_type]
+    for ax, eval_type in zip(axes[0], keys):
+        rows = [r for r in eq if r.eval_type == eval_type]
         by_m: dict = defaultdict(lambda: defaultdict(list))
         for r in rows:
             by_m[r.method][r.n_a].append(r.covered / r.n_reps)
@@ -1738,7 +1485,7 @@ def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: st
             ax.plot(ns, ys, marker="o", ms=3, lw=1.3, label=method.name,
                     color=get_method_color(method.name))
         ax.axhline(target, color="k", ls="--", lw=1)
-        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_title(eval_type, fontsize=10)
         ax.set_xlabel("n per group")
         ax.set_ylabel("coverage")
         ax.set_ylim(min(0.80, target - 0.12), 1.005)
@@ -1750,9 +1497,9 @@ def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: st
     return out_path
 
 
-def _plot_panels(results: list[SimResult]) -> list[tuple[str, str]]:
-    """(estimand, eval_type) panels present in the non-null results."""
-    return sorted({(r.estimand, r.eval_type) for r in results if not r.is_null})
+def _plot_panels(results: list[SimResult]) -> list[str]:
+    """Eval types present in the non-null results."""
+    return sorted({r.eval_type for r in results if not r.is_null})
 
 
 def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
@@ -1767,8 +1514,8 @@ def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) 
     eq = [r for r in results if r.n_a == r.n_b and not r.is_null]
     keys = _plot_panels(eq)
     fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.8), squeeze=False)
-    for ax, (estimand, eval_type) in zip(axes[0], keys):
-        rows = [r for r in eq if r.estimand == estimand and r.eval_type == eval_type]
+    for ax, eval_type in zip(axes[0], keys):
+        rows = [r for r in eq if r.eval_type == eval_type]
         by_m: dict = defaultdict(lambda: defaultdict(list))
         for r in rows:
             by_m[r.method][r.n_a].append(r.total_width / max(r.n_reps, 1))
@@ -1777,7 +1524,7 @@ def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) 
             ax.plot(ns, [float(np.mean(by_m[method.name][n])) for n in ns],
                     marker="o", ms=3, lw=1.3, label=method.name,
                     color=get_method_color(method.name))
-        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_title(eval_type, fontsize=10)
         ax.set_xlabel("n per group")
         ax.set_ylabel("mean CI width")
         ax.legend(fontsize=6, ncol=2)
@@ -1802,8 +1549,8 @@ def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str
     keys = _plot_panels(non_null)
     target = 1.0 - alpha
     fig, axes = plt.subplots(1, len(keys), figsize=(4.4 * len(keys), 3.8), squeeze=False)
-    for ax, (estimand, eval_type) in zip(axes[0], keys):
-        rows = [r for r in non_null if r.estimand == estimand and r.eval_type == eval_type]
+    for ax, eval_type in zip(axes[0], keys):
+        rows = [r for r in non_null if r.eval_type == eval_type]
         by_m: dict = defaultdict(list)
         for r in rows:
             by_m[r.method].append(r)
@@ -1815,7 +1562,7 @@ def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str
                        label=method.name, zorder=3)
         ax.axhline(target, color="k", ls="--", lw=1)
         ax.set_xscale("log")
-        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_title(eval_type, fontsize=10)
         ax.set_xlabel("mean time per interval (ms, log)")
         ax.set_ylabel("mean coverage")
         ax.legend(fontsize=6, ncol=2)
@@ -1842,8 +1589,8 @@ def save_reliability_violin_plot(results: list[SimResult], alpha: float, out_pat
     keys = _plot_panels(non_null)
     target = 1.0 - alpha
     fig, axes = plt.subplots(len(keys), 1, figsize=(11, 3.1 * len(keys)), squeeze=False)
-    for ax, (estimand, eval_type) in zip(axes[:, 0], keys):
-        rows = [r for r in non_null if r.estimand == estimand and r.eval_type == eval_type]
+    for ax, eval_type in zip(axes[:, 0], keys):
+        rows = [r for r in non_null if r.eval_type == eval_type]
         by_m: dict = defaultdict(list)
         for r in rows:
             by_m[r.method].append(r.covered / max(r.n_reps, 1))
@@ -1857,7 +1604,7 @@ def save_reliability_violin_plot(results: list[SimResult], alpha: float, out_pat
         ax.set_xticks(range(1, len(methods) + 1))
         ax.set_xticklabels([m.name for m in methods], rotation=30, ha="right", fontsize=7)
         ax.set_ylabel("coverage")
-        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_title(eval_type, fontsize=10)
     fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -1883,11 +1630,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES,
                         default=list(DEFAULT_EVAL_TYPES), metavar="TYPE")
-    parser.add_argument("--estimand", choices=ESTIMANDS, default="both",
-                        help="'mean_diff' (mean(A)-mean(B)), 'theta' (P(A>B)+.5P(A=B)), "
-                             "or 'both' (default). The shipped unpaired path uses mean_diff "
-                             "for binary and theta for continuous/likert, so 'both' is what "
-                             "actually covers compare(design='unpaired').")
     parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
                         help="Restrict computation to these method names.")
     parser.add_argument("--sizes", type=int, nargs="+", default=[10, 20, 50], metavar="N",
@@ -1903,8 +1645,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--icc-values", type=float, nargs="+", default=None, metavar="ICC")
     parser.add_argument("--cohens-d-values", type=float, nargs="+", default=[0.3], metavar="D")
     parser.add_argument("--include-null", action="store_true", default=False)
-    parser.add_argument("--theta-mc-n", type=int, default=_TRUE_THETA_MC_N, metavar="N",
-                        help="Monte Carlo draws for the per-source true theta.")
     parser.add_argument("--progress", choices=PROGRESS_MODES, default="bar")
     parser.add_argument("--plots", choices=PLOT_MODES, default="save")
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
@@ -1918,7 +1658,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              f"larger n. Set very high to disable the limit.")
     parser.add_argument("--latex", action="store_true", default=False,
                         help="Append booktabs LaTeX tables to the saved summary .log "
-                             "(one per estimand), and write a .tex for --exact-coverage.")
+                             "and write a .tex for --exact-coverage.")
     parser.add_argument("--exact-coverage", action="store_true", default=False,
                         help="Binary only: compute coverage EXACTLY by enumerating every "
                              "possible pair of success counts, instead of estimating it by "
@@ -1938,12 +1678,12 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical preset -- mirrors ci_paired.official_args' breadth."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded",
-        eval_types=["binary", "continuous", "likert"], estimand="both", methods=None,
+        eval_types=["binary", "continuous", "likert"], methods=None,
         real_datasets=None, data_dir=REAL_DEFAULT_DATA_DIR,
         sizes=[10, 15, 20, 30, 40, 50, 60, 80, 100], size_ratios=[1.0, 2.0],
         reps=300, bootstrap_n=2000, bayes_n=10000, alpha=0.05, seed=base_seed,
         icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4],
-        include_null=True, theta_mc_n=_TRUE_THETA_MC_N,
+        include_null=True,
         exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
         agresti_min_max_n=_AGRESTI_MIN_MAX_N, latex=True,
         progress="bar", plots="save", save_results="save",
@@ -1967,13 +1707,12 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
                                  # shape/icc/effect sweep does not apply to them.
                                  "icc_values": None, "cohens_d_values": [0.3]})
     return [
-        ("PROVISIONAL: between-subjects pairwise CIs, synthetic (mean diff + theta)",
+        ("PROVISIONAL: between-subjects pairwise CIs, synthetic (mean difference)",
          official_args(base_seed)),
-        ("PROVISIONAL: between-subjects pairwise CIs, real human labels (mean diff + theta)",
+        ("PROVISIONAL: between-subjects pairwise CIs, real human labels (mean difference)",
          real),
         ("PROVISIONAL: between-subjects binary CIs, EXACT coverage (no Monte Carlo)",
-         argparse.Namespace(**{**vars(official_args(base_seed)),
-                               "exact_coverage": True, "estimand": MEAN_ESTIMAND})),
+         argparse.Namespace(**{**vars(official_args(base_seed)), "exact_coverage": True})),
     ]
 
 
@@ -1986,11 +1725,11 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     """
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="standard",
-        eval_types=["binary", "continuous", "likert"], estimand="both", methods=None,
+        eval_types=["binary", "continuous", "likert"], methods=None,
         real_datasets=None, data_dir=REAL_DEFAULT_DATA_DIR,
         sizes=[10, 30], size_ratios=[1.0], reps=40, bootstrap_n=200, bayes_n=800,
         alpha=0.05, seed=base_seed, icc_values=[0.5], cohens_d_values=[0.3],
-        include_null=True, theta_mc_n=40_000,
+        include_null=True,
         exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
         agresti_min_max_n=_AGRESTI_MIN_MAX_N, latex=True,
         progress="bar", plots="off", save_results="off",
@@ -2032,7 +1771,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             )
 
         print(f"\nci_unpaired simulation -- data_source={args.data_source}, "
-              f"estimand={args.estimand}, sizes={args.sizes}, size_ratios={args.size_ratios}")
+              f"sizes={args.sizes}, size_ratios={args.size_ratios}")
 
         if args.data_source == "real":
             sources = build_real_unpaired_sources(
@@ -2052,17 +1791,6 @@ def run(args: argparse.Namespace) -> CaseResult:
         if not sources:
             raise ValueError("No CIPairSources left after filtering.")
 
-        need_theta = args.estimand in (THETA_ESTIMAND, "both")
-        if need_theta:
-            print(f"  estimating true theta for {len(sources)} sources "
-                  f"({args.theta_mc_n:,} MC draws each) ...")
-            true_thetas = [
-                _estimate_true_theta(s, seed=1000 + i, n_mc=args.theta_mc_n)
-                for i, s in enumerate(sources)
-            ]
-        else:
-            true_thetas = [float("nan")] * len(sources)
-
         method_names = frozenset(args.methods) if getattr(args, "methods", None) else None
         n_cells = len(sources) * len(args.sizes) * len(args.size_ratios)
         print(f"  {len(sources)} sources, {n_cells} cells, reps={args.reps}, alpha={args.alpha}")
@@ -2070,8 +1798,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         results = run_simulation(
             sources, sample_sizes=args.sizes, size_ratios=list(args.size_ratios),
             n_reps=args.reps, n_bootstrap=args.bootstrap_n, bayes_n=args.bayes_n,
-            alpha=args.alpha, estimand=args.estimand, true_thetas=true_thetas,
-            progress_mode=args.progress, seed=args.seed,
+            alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
             n_workers=getattr(args, "workers", 1), method_names=method_names,
             agresti_min_max_n=getattr(args, "agresti_min_max_n", _AGRESTI_MIN_MAX_N),
         )
@@ -2079,7 +1806,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         print_report(results, alpha=args.alpha, sample_sizes=args.sizes)
 
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        run_stem = f"ci_unpaired_{args.data_source}_{args.estimand}_reps{args.reps}_{stamp}"
+        run_stem = f"ci_unpaired_{args.data_source}_reps{args.reps}_{stamp}"
         output_paths: list[str] = []
         if args.save_results == "save":
             output_paths += save_results_artifacts(
