@@ -71,11 +71,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import multiprocessing as _mp
 import os
 import time
 import warnings
 from collections import defaultdict
+from contextlib import redirect_stdout
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -100,6 +102,10 @@ from ..scenarios.synthetic import SCENARIO_SUITES, build_pair_sources
 from ..scenarios.real_unpaired import (
     REAL_UNPAIRED_DATASETS, DEFAULT_DATA_DIR as REAL_DEFAULT_DATA_DIR,
     build_real_unpaired_sources,
+)
+from ..latex_tables import (
+    booktabs_table, coverage_cell, escape_latex,
+    mark_best_and_runnerup, report_eval_type_group,
 )
 from ..methods import (
     BOOTSTRAP_METHODS,
@@ -1450,23 +1456,189 @@ def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]
                 print("  " + f"{method.name:<22s}" + cells)
 
 
-def save_results_csv(results: list[SimResult], out_dir: str, run_stem: str) -> str:
+def _mc_proportion_stats(successes: int, total: int, z: float = 1.96) -> tuple[float, float, float, float]:
+    if total <= 0:
+        return (float("nan"),) * 4
+    p_hat = successes / total
+    mcse = float(np.sqrt(max(p_hat * (1.0 - p_hat), 0.0) / total))
+    return float(p_hat), mcse, max(0.0, p_hat - z * mcse), min(1.0, p_hat + z * mcse)
+
+
+def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
+    total_reps = sum(r.n_reps for r in subset)
+    if total_reps <= 0:
+        return float("nan"), float("nan")
+    sum_t = sum(r.total_time for r in subset)
+    sum_t2 = sum(r.total_time_sq for r in subset)
+    avg = sum_t / total_reps
+    var = max(0.0, sum_t2 / total_reps - avg * avg)
+    return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
+
+
+def latex_summary(results: list[SimResult], alpha: float, estimand: str) -> str:
+    r"""Booktabs summary for ONE estimand, mirroring ci_paired.latex_overall_summary.
+
+    One table per estimand rather than a combined one: a mean difference and a
+    dominance probability live on different scales, so a Width or Score column
+    spanning both would invite exactly the comparison that is not meaningful.
+    Within a table, rows are blocked by eval type (bin/cont/lik) with a midrule
+    between blocks, and per-n coverage columns are appended on the right
+    because the aggregate column can hide miscalibration that only shows up at
+    one end of the size range.
+    """
+    target = 1.0 - alpha
+    rows_in = [r for r in results if r.estimand == estimand and not r.is_null]
+    if not rows_in:
+        return ""
+    method_labels = [m.name for m in order_present_methods({r.method for r in rows_in})]
+    sizes_present = sorted({r.n_a for r in rows_in})
+
+    agg: dict = defaultdict(list)
+    counts: dict = defaultdict(lambda: (0, 0))
+    per_n: dict = defaultdict(lambda: (0, 0))
+    for r in rows_in:
+        g = report_eval_type_group(r.eval_type)
+        n = max(r.n_reps, 1)
+        agg[(g, r.method)].append((
+            r.covered / n, r.total_width / n, r.total_score / n,
+            (r.total_pen_under + r.total_pen_over) / n,
+        ))
+        c, t = counts[(g, r.method)]
+        counts[(g, r.method)] = (c + r.covered, t + r.n_reps)
+        c2, t2 = per_n[(g, r.method, r.n_a)]
+        per_n[(g, r.method, r.n_a)] = (c2 + r.covered, t2 + r.n_reps)
+
+    # Type-I error lives on the null rows, which are excluded from `rows_in`.
+    null_rate: dict = defaultdict(lambda: (0, 0))
+    for r in results:
+        if r.estimand != estimand or not r.is_null:
+            continue
+        g = report_eval_type_group(r.eval_type)
+        c, t = null_rate[(g, r.method)]
+        null_rate[(g, r.method)] = (c + r.rejects, t + r.n_reps)
+
+    groups_present = [g for g in ("bin", "cont", "lik", "grades")
+                      if any(k[0] == g for k in agg)]
+    columns = (["Method", "Coverage", "MinCov", "Width", "Score", "Penalty", "TypeI"]
+               + [f"$n{{=}}{n}$" for n in sizes_present])
+    rows: list[list[str]] = []
+    rule_before: set[int] = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        block_start = len(rows)
+        score_vals: list[float] = []
+        for m in method_labels:
+            if (g, m) not in agg:
+                continue
+            vals = agg[(g, m)]
+            covs = np.array([v[0] for v in vals])
+            width = float(np.mean([v[1] for v in vals]))
+            score = float(np.mean([v[2] for v in vals]))
+            pen = float(np.mean([v[3] for v in vals]))
+            c, t = counts[(g, m)]
+            pooled = c / t if t else float("nan")
+            rc, rt = null_rate[(g, m)]
+            t1 = rc / rt if rt else float("nan")
+            cells = [
+                f"{escape_latex(m)} ({g})",
+                coverage_cell(pooled, target),
+                coverage_cell(float(covs.min()), target),
+                f"{width:.3f}", f"{score:.3f}", f"{pen:.3f}",
+                f"{t1:.3f}" if np.isfinite(t1) else "--",
+            ]
+            for n in sizes_present:
+                c2, t2 = per_n[(g, m, n)]
+                cells.append(coverage_cell(c2 / t2, target) if t2 else "--")
+            rows.append(cells)
+            score_vals.append(score)
+        block = [row[4] for row in rows[block_start:]]
+        marked = mark_best_and_runnerup(block, score_vals, higher_is_better=False)
+        for i, cell in enumerate(marked):
+            rows[block_start + i][4] = cell
+
+    est_desc = (r"mean difference $\bar{A}-\bar{B}$" if estimand == MEAN_ESTIMAND
+                else r"$\theta = P(A{>}B) + \tfrac12 P(A{=}B)$")
+    return booktabs_table(
+        caption=(f"Between-subjects (unpaired) pairwise CI calibration, estimand: {est_desc}. "
+                 f"Non-null cells only; TypeI is the rejection rate on null cells. "
+                 f"Coverage cells are shaded when they fall outside the acceptable band "
+                 f"around {target:.2f}. Best Score per block in bold, runner-up underlined."),
+        label=f"tab:ci-unpaired-{estimand.replace('_', '-')}",
+        columns=columns, rows=rows, rule_before=rule_before,
+    )
+
+
+def latex_exact_summary(results: list, alpha: float) -> str:
+    """Booktabs table for the exact binary coverage mode."""
+    if not results:
+        return ""
+    target = 1.0 - alpha
+    by_size = sorted({(r.n_a, r.n_b) for r in results})
+    methods = [m.name for m in order_present_methods({r.method for r in results})]
+    lookup = {(r.method, r.n_a, r.n_b): r for r in results}
+    columns = ["Method"] + [f"$n{{=}}{a}/{b}$" for a, b in by_size] + ["Width"]
+    rows = []
+    for m in methods:
+        cells = [escape_latex(m)]
+        widths = []
+        for a, b in by_size:
+            r = lookup.get((m, a, b))
+            cells.append(coverage_cell(r.min_coverage, target) if r else "--")
+            if r:
+                widths.append(r.mean_width)
+        cells.append(f"{np.mean(widths):.3f}" if widths else "--")
+        rows.append(cells)
+    return booktabs_table(
+        caption=(f"Exact MINIMUM coverage for a difference of two independent proportions, "
+                 f"enumerated over every $(k_A, k_B)$ table and a grid of $(p_A, p_B)$. "
+                 f"No Monte Carlo, so these are exact values rather than estimates with a "
+                 f"simulation band, and directly comparable to the published coverage curves "
+                 f"in the two-independent-proportions literature. Target {target:.2f}."),
+        label="tab:ci-unpaired-exact",
+        columns=columns, rows=rows,
+    )
+
+
+def save_results_artifacts(
+    results: list[SimResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False,
+) -> list[str]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{run_stem}.csv"
-    rows = [asdict(r) for r in results]
-    for row, r in zip(rows, results):
+    csv_path = out / f"{run_stem}_results.csv"
+    rows = []
+    for r in results:
         n = max(r.n_reps, 1)
-        row["coverage"] = r.covered / n
-        row["mean_width"] = r.total_width / n
-        row["mean_score"] = r.total_score / n
-        row["reject_rate"] = r.rejects / n
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"\nSaved results CSV: {path}")
-    return str(path)
+        _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
+        avg_ms, se_ms = _time_stats([r])
+        d = asdict(r)
+        d.update({
+            "coverage": r.covered / n, "mean_width": r.total_width / n,
+            "mean_score": r.total_score / n,
+            "mean_penalty": (r.total_pen_under + r.total_pen_over) / n,
+            "reject_rate": r.rejects / n, "mcse": mcse,
+            "band95_low": lo, "band95_high": hi,
+            "avg_time_ms": avg_ms, "se_time_ms": se_ms,
+        })
+        rows.append(d)
+    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+
+    summary_path = out / f"{run_stem}_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_report(results, alpha=alpha, sample_sizes=sorted({r.n_a for r in results}))
+    text = buf.getvalue()
+    if latex:
+        text += "\n% --- LaTeX tables (--latex) ---\n"
+        for est in (MEAN_ESTIMAND, THETA_ESTIMAND):
+            text += latex_summary(results, alpha=alpha, estimand=est)
+    summary_path.write_text(text, encoding="utf-8")
+    print(f"\nSaved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
 
 
 def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
@@ -1499,6 +1671,121 @@ def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: st
         ax.set_ylabel("coverage")
         ax.set_ylim(min(0.80, target - 0.12), 1.005)
         ax.legend(fontsize=6, ncol=2)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def _plot_panels(results: list[SimResult]) -> list[tuple[str, str]]:
+    """(estimand, eval_type) panels present in the non-null results."""
+    return sorted({(r.estimand, r.eval_type) for r in results if not r.is_null})
+
+
+def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
+    """Mean interval width vs. n -- the sharpness half of the tradeoff the
+    coverage plot shows the validity half of. A method that covers by being
+    wide is visible only here."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from ..methods import get_method_color
+
+    eq = [r for r in results if r.n_a == r.n_b and not r.is_null]
+    keys = _plot_panels(eq)
+    fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.8), squeeze=False)
+    for ax, (estimand, eval_type) in zip(axes[0], keys):
+        rows = [r for r in eq if r.estimand == estimand and r.eval_type == eval_type]
+        by_m: dict = defaultdict(lambda: defaultdict(list))
+        for r in rows:
+            by_m[r.method][r.n_a].append(r.total_width / max(r.n_reps, 1))
+        for method in order_present_methods(set(by_m)):
+            ns = sorted(by_m[method.name])
+            ax.plot(ns, [float(np.mean(by_m[method.name][n])) for n in ns],
+                    marker="o", ms=3, lw=1.3, label=method.name,
+                    color=get_method_color(method.name))
+        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_xlabel("n per group")
+        ax.set_ylabel("mean CI width")
+        ax.legend(fontsize=6, ncol=2)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
+    """Coverage against compute cost. Some of these methods differ by three
+    orders of magnitude in runtime (agresti_min's exact enumeration vs. a
+    closed-form Wald), so "is the extra coverage worth the wait" is a real
+    question a reader will ask."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from ..methods import get_method_color
+
+    non_null = [r for r in results if not r.is_null]
+    keys = _plot_panels(non_null)
+    target = 1.0 - alpha
+    fig, axes = plt.subplots(1, len(keys), figsize=(4.4 * len(keys), 3.8), squeeze=False)
+    for ax, (estimand, eval_type) in zip(axes[0], keys):
+        rows = [r for r in non_null if r.estimand == estimand and r.eval_type == eval_type]
+        by_m: dict = defaultdict(list)
+        for r in rows:
+            by_m[r.method].append(r)
+        for method in order_present_methods(set(by_m)):
+            sub = by_m[method.name]
+            cov = float(np.mean([r.covered / max(r.n_reps, 1) for r in sub]))
+            ms, _ = _time_stats(sub)
+            ax.scatter(max(ms, 1e-4), cov, s=34, color=get_method_color(method.name),
+                       label=method.name, zorder=3)
+        ax.axhline(target, color="k", ls="--", lw=1)
+        ax.set_xscale("log")
+        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
+        ax.set_xlabel("mean time per interval (ms, log)")
+        ax.set_ylabel("mean coverage")
+        ax.legend(fontsize=6, ncol=2)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+def save_reliability_violin_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
+    """Distribution of per-scenario coverage, one violin per method.
+
+    The mean coverage column hides the shape: a method averaging 0.95 by
+    over-covering on easy scenarios and under-covering badly on hard ones is
+    not the same as one sitting at 0.95 everywhere, and only the spread
+    distinguishes them."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from ..methods import get_method_color
+
+    non_null = [r for r in results if not r.is_null]
+    keys = _plot_panels(non_null)
+    target = 1.0 - alpha
+    fig, axes = plt.subplots(len(keys), 1, figsize=(11, 3.1 * len(keys)), squeeze=False)
+    for ax, (estimand, eval_type) in zip(axes[:, 0], keys):
+        rows = [r for r in non_null if r.estimand == estimand and r.eval_type == eval_type]
+        by_m: dict = defaultdict(list)
+        for r in rows:
+            by_m[r.method].append(r.covered / max(r.n_reps, 1))
+        methods = order_present_methods(set(by_m))
+        data = [by_m[m.name] for m in methods]
+        parts = ax.violinplot(data, showmeans=True, showextrema=False, widths=0.85)
+        for body, m in zip(parts["bodies"], methods):
+            body.set_facecolor(get_method_color(m.name))
+            body.set_alpha(0.65)
+        ax.axhline(target, color="k", ls="--", lw=1)
+        ax.set_xticks(range(1, len(methods) + 1))
+        ax.set_xticklabels([m.name for m in methods], rotation=30, ha="right", fontsize=7)
+        ax.set_ylabel("coverage")
+        ax.set_title(f"{estimand} / {eval_type}", fontsize=10)
     fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
@@ -1551,6 +1838,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
     parser.add_argument("--out-dir", default="simulations/out")
     parser.add_argument("--plots-dir", default=None)
+    parser.add_argument("--latex", action="store_true", default=False,
+                        help="Append booktabs LaTeX tables to the saved summary .log "
+                             "(one per estimand), and write a .tex for --exact-coverage.")
     parser.add_argument("--exact-coverage", action="store_true", default=False,
                         help="Binary only: compute coverage EXACTLY by enumerating every "
                              "possible pair of success counts, instead of estimating it by "
@@ -1576,7 +1866,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         reps=300, bootstrap_n=2000, bayes_n=10000, alpha=0.05, seed=base_seed,
         icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4],
         include_null=True, theta_mc_n=_TRUE_THETA_MC_N,
-        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
+        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19, latex=True,
         progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         workers=max(1, (os.cpu_count() or 2) - 1),
@@ -1592,8 +1882,20 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
     costs nothing and keeps the case reachable through the same path as
     every other case.
     """
-    return [("PROVISIONAL: between-subjects pairwise CIs (mean diff + theta)",
-             official_args(base_seed))]
+    real = argparse.Namespace(**{**vars(official_args(base_seed + 1)),
+                                 "data_source": "real",
+                                 # Real pools are fixed corpora, so the synthetic
+                                 # shape/icc/effect sweep does not apply to them.
+                                 "icc_values": None, "cohens_d_values": [0.3]})
+    return [
+        ("PROVISIONAL: between-subjects pairwise CIs, synthetic (mean diff + theta)",
+         official_args(base_seed)),
+        ("PROVISIONAL: between-subjects pairwise CIs, real human labels (mean diff + theta)",
+         real),
+        ("PROVISIONAL: between-subjects binary CIs, EXACT coverage (no Monte Carlo)",
+         argparse.Namespace(**{**vars(official_args(base_seed)),
+                               "exact_coverage": True, "estimand": MEAN_ESTIMAND})),
+    ]
 
 
 def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
@@ -1610,7 +1912,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         sizes=[10, 30], size_ratios=[1.0], reps=40, bootstrap_n=200, bayes_n=800,
         alpha=0.05, seed=base_seed, icc_values=[0.5], cohens_d_values=[0.3],
         include_null=True, theta_mc_n=40_000,
-        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
+        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19, latex=True,
         progress="bar", plots="off", save_results="off",
         out_dir="simulations/out", plots_dir=None,
         workers=max(1, (os.cpu_count() or 2) - 1),
@@ -1637,6 +1939,11 @@ def run(args: argparse.Namespace) -> CaseResult:
             paths = []
             if args.save_results == "save":
                 paths.append(save_exact_csv(ex, args.out_dir, f"ci_unpaired_exact_{stamp}"))
+                if getattr(args, "latex", False):
+                    tex = Path(args.out_dir) / f"ci_unpaired_exact_{stamp}.tex"
+                    tex.write_text(latex_exact_summary(ex, alpha=args.alpha), encoding="utf-8")
+                    paths.append(str(tex))
+                    print(f"Saved LaTeX table: {tex}")
             return CaseResult(
                 case_name=CASE_NAME, status="ok", output_paths=paths,
                 key_metrics={"n_results": len(ex),
@@ -1694,13 +2001,22 @@ def run(args: argparse.Namespace) -> CaseResult:
         run_stem = f"ci_unpaired_{args.data_source}_{args.estimand}_reps{args.reps}_{stamp}"
         output_paths: list[str] = []
         if args.save_results == "save":
-            output_paths.append(save_results_csv(results, args.out_dir, run_stem))
+            output_paths += save_results_artifacts(
+                results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem,
+                latex=getattr(args, "latex", False),
+            )
         if args.plots == "save":
-            output_paths.append(save_coverage_vs_n_plot(
-                results, alpha=args.alpha,
-                out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_n.png"),
-            ))
-            print(f"Saved plot: {output_paths[-1]}")
+            for suffix, fn in (
+                ("coverage_vs_n", save_coverage_vs_n_plot),
+                ("width_vs_n", save_width_vs_n_plot),
+                ("cost_coverage", save_cost_plot),
+                ("reliability_violin", save_reliability_violin_plot),
+            ):
+                output_paths.append(fn(
+                    results, alpha=args.alpha,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_{suffix}.png"),
+                ))
+            print(f"Saved plots: {output_paths[-4:]}")
 
         non_null = [r for r in results if not r.is_null]
         overall_cov = float(np.mean([r.covered / r.n_reps for r in non_null])) if non_null else float("nan")
