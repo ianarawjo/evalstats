@@ -92,7 +92,6 @@ with warnings.catch_warnings():
         smooth_bootstrap_means_1d,
         logit_t_ci_1d,
         nig_ci_1d,
-        el_ci_1d,
         t_interval_ci_1d,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
@@ -110,7 +109,7 @@ from ..latex_tables import (
 from ..methods import (
     BOOTSTRAP_METHODS,
     BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
-    WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG, MOVER_EL,
+    WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG,
     WALD_UNPAIRED, AGRESTI_CAFFO, NEWCOMBE_HYBRID, MIETTINEN_NURMINEN, BAYES_BETA_INDEP,
     AGRESTI_MIN,
     THETA_BOOTSTRAP, THETA_BCA, BRUNNER_MUNZEL, BRUNNER_MUNZEL_LOGIT,
@@ -130,17 +129,13 @@ RESULTS_MODES = ["save", "off"]
 MEAN_ESTIMAND = "mean_diff"
 THETA_ESTIMAND = "theta"
 
-_BINARY_INELIGIBLE = (MOVER_NIG, MOVER_EL)
+_BINARY_INELIGIBLE = (MOVER_NIG,)
 """MOVER arms that are not valid on binary data, so they are not run there --
-matching ci_paired, which gates its own nig/el off binary for the same reason.
+matching ci_paired, which gates its own nig off binary for the same reason.
 
 Not a convention but a validity failure, verified directly on 0/1 samples at
-n=10: empirical likelihood collapses to the degenerate point interval [1, 1]
-on an all-ones sample (the empirical distribution has all its mass on one
-value, so no reweighting can move the mean), and NIG returns [0.852, 1.0571]
--- an upper limit above 1 for a proportion. Left in, mover_el posted 0.51
-exact minimum coverage on binary, which reads as a harness bug rather than as
-a method being applied outside its domain.
+n=10: NIG returns [0.852, 1.0571] for a 10/10 sample -- an upper limit above
+1 for a proportion.
 
 mover_logit_t is deliberately NOT gated: the logit transform respects [0, 1]
 by construction, and on binary it is the strongest method in the exact table
@@ -379,23 +374,6 @@ def _mover_t_ci(
     """
     ci_a = t_interval_ci_1d(a, alpha)
     ci_b = t_interval_ci_1d(b, alpha)
-    return _mover_combine(float(np.mean(a)), float(np.mean(b)), ci_a, ci_b)
-
-
-def _mover_el_ci(
-    a: np.ndarray, b: np.ndarray, alpha: float, bounds: tuple[float, float],
-) -> tuple[float, float]:
-    """MOVER with empirical-likelihood arms.
-
-    EL intervals are nonparametric and not constrained to be symmetric about
-    the mean, so they track skew in each arm -- which is exactly the input
-    MOVER is designed to exploit. ``el_ci_1d`` is the same shipped function
-    ci_paired already evaluates, so this is another straight transfer of a
-    paired-path candidate. Needs no rescaling (EL is scale-equivariant), so
-    ``bounds`` is accepted and unused.
-    """
-    ci_a = el_ci_1d(a, alpha)
-    ci_b = el_ci_1d(b, alpha)
     return _mover_combine(float(np.mean(a)), float(np.mean(b)), ci_a, ci_b)
 
 
@@ -1124,8 +1102,6 @@ def _run_cell(
                     lo, hi = _student_t_ci(a, b, alpha)
                 elif method is MOVER_T:
                     lo, hi = _mover_t_ci(a, b, alpha, scale_bounds)
-                elif method is MOVER_EL:
-                    lo, hi = _mover_el_ci(a, b, alpha, scale_bounds)
                 elif method is MOVER_LOGIT_T:
                     lo, hi = _mover_logit_t_ci(a, b, alpha, scale_bounds)
                 elif method is MOVER_NIG:
@@ -1342,7 +1318,7 @@ def _exact_binary_ci_table(method, n_a: int, n_b: int, alpha: float) -> dict:
             b = np.r_[np.ones(kb), np.zeros(n_b - kb)]
             try:
                 mover = {MOVER_T: _mover_t_ci, MOVER_LOGIT_T: _mover_logit_t_ci,
-                         MOVER_NIG: _mover_nig_ci, MOVER_EL: _mover_el_ci}.get(method)
+                         MOVER_NIG: _mover_nig_ci}.get(method)
                 if mover is not None:
                     out[(ka, kb)] = mover(a, b, alpha, (0.0, 1.0))
                 else:

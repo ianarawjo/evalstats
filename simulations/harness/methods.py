@@ -681,9 +681,8 @@ BAYES_BETA_INDEP = Method("bayes_beta_indep", "#f7b6d2")
 MOVER_T = Method("mover_t", "#969696")
 MOVER_LOGIT_T = Method("mover_logit_t", "#31a354")
 MOVER_NIG = Method("mover_nig", "#756bb1")
-MOVER_EL = Method("mover_el", "#e6550d")
 
-UNPAIRED_MEAN_EXTRA_METHODS = [WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG, MOVER_EL]
+UNPAIRED_MEAN_EXTRA_METHODS = [WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG]
 """Applies to every eval type (binary included -- Welch's t on 0/1 is exactly
 what the shipped unpaired binary path does today).
 
@@ -694,7 +693,14 @@ holds the arm fixed at a t-interval and varies only the combination rule, so
 the two comparisons together separate the effects. It also covers the paired
 table's fourth row (unbounded -> t_interval).
 
-mover_logit_t / mover_nig / mover_el are the unpaired siblings of the PAIRED path's own
+A mover_el (empirical-likelihood arms) variant was tried and removed, noted
+here so it is not re-added: it is invalid on binary (EL collapses to the
+degenerate interval [1, 1] on a constant sample), and on continuous/likert it
+was mid-pack on coverage while costing ~30x its MOVER siblings per call
+(2.2 ms vs 0.07-0.10 ms). It never won a column, so it bought nothing for the
+runtime.
+
+mover_logit_t / mover_nig are the unpaired siblings of the PAIRED path's own
 recommendations (config.AUTO_ANALYZE_METHOD_TABLE routes bounded_01 -> logit_t
 and likert -> nig): the same shipped one-sample interval is built per arm and
 the two are combined by MOVER. Included so the unpaired recommendation can be
