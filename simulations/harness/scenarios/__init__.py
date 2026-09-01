@@ -93,6 +93,17 @@ class CIPairSource:
     """Set (alongside ``icc``) by ``scenarios.synthetic.build_pair_sources``'s
     ``run_noise_fracs`` param, used by ``cases/ci_paired.py``'s
     ``--nested-mode``; 0.0 for ordinary sources."""
+    scale_bounds: tuple[float, float] | None = None
+    """The (lo, hi) range this source's scores actually live on, when it is
+    NOT the eval type's canonical range (``EVAL_TYPE_SCALE_BOUNDS``).
+
+    Needed by ``cases/ci_unpaired.py``'s bounded-scale methods (mover_logit_t,
+    mover_nig), which have to map an arm onto [0, 1] before applying a
+    logit/NIG interval. Real corpora do not respect the synthetic ranges --
+    e.g. the privacy_judge human labels are continuous but live on ~[1, 5],
+    not the synthetic "continuous" [0, 1] -- and rescaling one of those with
+    the wrong bounds silently produces garbage rather than an error.
+    ``None`` means "use the eval type's canonical range"."""
 
 
 @dataclass

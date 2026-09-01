@@ -652,6 +652,77 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Between-subjects (unpaired) pairwise methods -- cases/ci_unpaired.py
+# ---------------------------------------------------------------------------
+# Two DIFFERENT estimands live here, and they are not interchangeable:
+#
+#   Delta-mean / Delta-p  : mean(A) - mean(B). What compare(design="unpaired")
+#                           reports today for BINARY score types (via Welch's
+#                           t on the 0/1 values -- the linear-probability-model
+#                           patch documented in config.AUTO_UNPAIRED_METHOD_TABLE).
+#   theta = P(A > B) + .5 P(A = B) : stochastic dominance. What
+#                           compare(design="unpaired") reports today for
+#                           CONTINUOUS/LIKERT/GRADE, via the Mann-Whitney /
+#                           Kruskal-Wallis path.
+#
+# A method's coverage target therefore differs by family: mean-family methods
+# are scored against the source's true_diff, theta-family methods against a
+# Monte-Carlo-estimated true theta. cases/ci_unpaired.py records which
+# estimand each row belongs to so the two are never averaged together.
+WELCH_T = Method("welch_t", "#17becf")
+STUDENT_T = Method("student_t", "#bcbd22")
+WALD_UNPAIRED = Method("wald_unpaired", "#7f7f7f")  # grey: the naive baseline, as elsewhere in this file
+AGRESTI_CAFFO = Method("agresti_caffo", "#98df8a")
+NEWCOMBE_HYBRID = Method("newcombe_hybrid", "#c5b0d5")
+MIETTINEN_NURMINEN = Method("miettinen_nurminen", "#ff9896")
+BAYES_BETA_INDEP = Method("bayes_beta_indep", "#f7b6d2")
+
+MOVER_T = Method("mover_t", "#969696")
+MOVER_LOGIT_T = Method("mover_logit_t", "#31a354")
+MOVER_NIG = Method("mover_nig", "#756bb1")
+MOVER_EL = Method("mover_el", "#e6550d")
+
+UNPAIRED_MEAN_EXTRA_METHODS = [WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG, MOVER_EL]
+"""Applies to every eval type (binary included -- Welch's t on 0/1 is exactly
+what the shipped unpaired binary path does today).
+
+mover_t is the CONTROL, not a candidate: MOVER with plain t-interval arms.
+Without it a win for mover_logit_t over welch_t is uninterpretable, because
+those two differ in BOTH the combination rule and the arm interval. mover_t
+holds the arm fixed at a t-interval and varies only the combination rule, so
+the two comparisons together separate the effects. It also covers the paired
+table's fourth row (unbounded -> t_interval).
+
+mover_logit_t / mover_nig / mover_el are the unpaired siblings of the PAIRED path's own
+recommendations (config.AUTO_ANALYZE_METHOD_TABLE routes bounded_01 -> logit_t
+and likert -> nig): the same shipped one-sample interval is built per arm and
+the two are combined by MOVER. Included so the unpaired recommendation can be
+consistent with the paired one rather than an unrelated method family."""
+
+AGRESTI_MIN = Method("agresti_min", "#d6616b")
+
+UNPAIRED_BINARY_METHODS = [
+    WALD_UNPAIRED, AGRESTI_CAFFO, NEWCOMBE_HYBRID, MIETTINEN_NURMINEN, BAYES_BETA_INDEP,
+    AGRESTI_MIN,
+]
+"""Binary-only Delta-p intervals from the two-independent-proportions
+literature. None of these are shipped by evalstats today; this is the
+candidate slate the ci_unpaired sweep exists to adjudicate."""
+
+THETA_BOOTSTRAP = Method("theta_bootstrap", "#393b79")
+THETA_BCA = Method("theta_bca", "#5254a3")
+BRUNNER_MUNZEL = Method("brunner_munzel", "#637939")
+BRUNNER_MUNZEL_LOGIT = Method("brunner_munzel_logit", "#8c6d31")
+
+UNPAIRED_THETA_METHODS = [THETA_BOOTSTRAP, THETA_BCA, BRUNNER_MUNZEL, BRUNNER_MUNZEL_LOGIT]
+"""Intervals for theta = P(A>B) + .5 P(A=B). theta_bootstrap is the shipped
+behavior (evalstats.core.unpaired._rank_based_pairwise_uncorrected); the rest
+are candidates."""
+
+UNPAIRED_METHODS = UNPAIRED_MEAN_EXTRA_METHODS + UNPAIRED_BINARY_METHODS + UNPAIRED_THETA_METHODS
+
+
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE_MOVER, MJ_FLOOR, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
@@ -666,7 +737,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
-]
+] + UNPAIRED_METHODS
 
 METHODS_BY_NAME: dict[str, Method] = {m.name: m for m in REPORT_METHOD_ORDER}
 
