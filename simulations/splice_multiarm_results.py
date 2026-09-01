@@ -41,8 +41,13 @@ def main() -> None:
                          "the NEW file contains")
     a = ap.parse_args()
 
-    old = pd.read_csv(a.old)
-    new = pd.read_csv(a.new)
+    # keep_default_na=False: the `condition` column's values are the literal
+    # strings "null" and "alt", and pandas' default NA handling silently turns
+    # "null" into NaN -- which then round-trips back out as an empty field,
+    # destroying half the rows' condition labels.
+    rd = lambda f: pd.read_csv(f, keep_default_na=False, na_values=[""])
+    old = rd(a.old)
+    new = rd(a.new)
     if list(old.columns) != list(new.columns):
         raise SystemExit(
             f"column mismatch -- these are not the same schema.\n  old: {list(old.columns)}\n"
