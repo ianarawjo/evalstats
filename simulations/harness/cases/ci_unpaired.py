@@ -129,6 +129,20 @@ RESULTS_MODES = ["save", "off"]
 MEAN_ESTIMAND = "mean_diff"
 THETA_ESTIMAND = "theta"
 
+_AGRESTI_MIN_MAX_N = 30
+"""Largest group size at which agresti_min is run in the Monte Carlo sweep.
+
+Not an arbitrary budget cap. Fagerland, Lydersen & Laake recommend the
+Agresti-Min exact unconditional interval specifically "for small sample sizes
+(less than 30 in each sample)"; above that they prefer the Newcombe hybrid
+score, and note the asymptotic intervals all behave well there. So running the
+exact interval at n=100 measures it outside the range anyone recommends it
+for, and it is not cheap: 192 ms per interval at n=100 against 0.1 ms for
+Welch, which made it 85% of the entire binary sweep. Exact-coverage mode
+(--exact-coverage) has no such limit and is the right tool if you want its
+behaviour at larger n -- it is both faster and free of Monte Carlo error.
+Raise with --agresti-min-max-n."""
+
 _BINARY_INELIGIBLE = (MOVER_NIG,)
 """MOVER arms that are not valid on binary data, so they are not run there --
 matching ci_paired, which gates its own nig off binary for the same reason.
@@ -834,21 +848,43 @@ def _theta_hat(a: np.ndarray, b: np.ndarray) -> float:
     return float((wins.sum() + 0.5 * ties.sum()) / (na * nb))
 
 
+def _theta_pair_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """C[i, j] = 1 if a_i > b_j, 0.5 if equal, 0 otherwise.
+
+    theta_hat is mean(C), and -- the point of building it -- every bootstrap
+    replicate and every leave-one-out value is a weighted sum of the SAME
+    matrix, so it is built once per rep instead of once per replicate.
+    """
+    return (np.greater.outer(a, b).astype(float)
+            + 0.5 * np.equal.outer(a, b).astype(float))
+
+
 def _theta_bootstrap_stats(
     a: np.ndarray, b: np.ndarray, n_boot: int, rng: np.random.Generator,
 ) -> np.ndarray:
     """Bootstrap distribution of theta_hat -- resample each arm independently.
 
     Mirrors what evalstats.core.unpaired._rank_based_pairwise_uncorrected
-    does for the shipped continuous/likert path.
+    does for the shipped continuous/likert path, but computed in one matrix
+    product rather than a Python loop over replicates.
+
+    theta_hat of a resample depends on that resample only through how many
+    times each ORIGINAL observation was drawn, and those multiplicities are
+    exactly multinomial. So with ca, cb the count vectors,
+
+        theta* = (ca @ C @ cb) / (na * nb)
+
+    which is identical in distribution to resampling values and recomputing
+    -- not an approximation -- and turns 2000 sort-and-searchsorted calls
+    into one BLAS matmul. Measured on likert at n=100: 19.1 ms -> 1.6 ms.
     """
     na, nb = a.size, b.size
-    out = np.empty(n_boot, dtype=float)
-    idx_a = rng.integers(0, na, size=(n_boot, na))
-    idx_b = rng.integers(0, nb, size=(n_boot, nb))
-    for i in range(n_boot):
-        out[i] = _theta_hat(a[idx_a[i]], b[idx_b[i]])
-    return out
+    if na == 0 or nb == 0:
+        return np.full(n_boot, 0.5)
+    c = _theta_pair_matrix(a, b)
+    ca = rng.multinomial(na, np.full(na, 1.0 / na), size=n_boot).astype(float)
+    cb = rng.multinomial(nb, np.full(nb, 1.0 / nb), size=n_boot).astype(float)
+    return np.einsum("bi,bi->b", ca @ c, cb) / (na * nb)
 
 
 def _theta_bca_ci(
@@ -864,12 +900,16 @@ def _theta_bca_ci(
                 float(np.percentile(boot, 100 * (1 - alpha / 2))))
     z0 = float(stats.norm.ppf(prop))
 
+    # Leave-one-out values come straight off the comparison matrix: dropping
+    # observation i removes its row (or column) from the sum, so the whole
+    # jackknife is two vector operations rather than na+nb recomputations,
+    # each of which previously also paid for an np.delete array copy.
     na, nb = a.size, b.size
+    c = _theta_pair_matrix(a, b)
+    total = float(c.sum())
     jack = np.empty(na + nb, dtype=float)
-    for i in range(na):
-        jack[i] = _theta_hat(np.delete(a, i), b) if na > 1 else observed
-    for j in range(nb):
-        jack[na + j] = _theta_hat(a, np.delete(b, j)) if nb > 1 else observed
+    jack[:na] = ((total - c.sum(axis=1)) / ((na - 1) * nb)) if na > 1 else observed
+    jack[na:] = ((total - c.sum(axis=0)) / (na * (nb - 1))) if nb > 1 else observed
     diffs = float(np.mean(jack)) - jack
     denom = 6.0 * (float(np.sum(diffs**2)) ** 1.5)
     acc = float(np.sum(diffs**3)) / denom if denom > 0 else 0.0
@@ -1008,6 +1048,7 @@ def _run_cell(
     source: CIPairSource, n_a: int, n_b: int, n_reps: int, n_bootstrap: int, bayes_n: int,
     alpha: float, estimand: str, seed, true_theta: float,
     method_names: frozenset[str] | None = None,
+    agresti_min_max_n: int = _AGRESTI_MIN_MAX_N,
 ) -> list[SimResult]:
     """Run all reps for one (source, n_a, n_b) cell."""
     rng = np.random.default_rng(seed)
@@ -1026,7 +1067,11 @@ def _run_cell(
         mean_methods += [m for m in UNPAIRED_MEAN_EXTRA_METHODS
                          if _want(m) and not (is_binary and m in _BINARY_INELIGIBLE)]
         if is_binary:
-            mean_methods += [m for m in UNPAIRED_BINARY_METHODS if _want(m)]
+            mean_methods += [
+                m for m in UNPAIRED_BINARY_METHODS
+                if _want(m) and not (m is AGRESTI_MIN
+                                     and max(n_a, n_b) > agresti_min_max_n)
+            ]
     theta_methods = [m for m in UNPAIRED_THETA_METHODS if _want(m)] if do_theta else []
 
     all_methods = [(m, MEAN_ESTIMAND) for m in mean_methods] + [(m, THETA_ESTIMAND) for m in theta_methods]
@@ -1214,10 +1259,11 @@ _CELL_TRUE_THETAS: list = []
 
 
 def _run_cell_worker(args: tuple) -> list[SimResult]:
-    (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, seed, method_names) = args
+    (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, seed,
+     method_names, agresti_min_max_n) = args
     return _run_cell(
         _CELL_SOURCES[sc_idx], n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand,
-        seed, _CELL_TRUE_THETAS[sc_idx], method_names,
+        seed, _CELL_TRUE_THETAS[sc_idx], method_names, agresti_min_max_n,
     )
 
 
@@ -1226,6 +1272,7 @@ def run_simulation(
     n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float, estimand: str,
     true_thetas: list[float], progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
     method_names: frozenset[str] | None = None,
+    agresti_min_max_n: int = _AGRESTI_MIN_MAX_N,
 ) -> list[SimResult]:
     global _CELL_SOURCES, _CELL_TRUE_THETAS
     _CELL_SOURCES = list(sources)
@@ -1240,9 +1287,17 @@ def run_simulation(
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
     args_list = [
-        (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, cseed, method_names)
+        (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, estimand, cseed,
+         method_names, agresti_min_max_n)
         for (sc_idx, n_a, n_b), cseed in zip(cells, child_seeds)
     ]
+    # Shuffle the EXECUTION order (seeds are already bound to their cell above,
+    # so results are unchanged and still reproducible). build_pair_sources emits
+    # all binary sources first, and binary is by far the most expensive eval
+    # type, so running in natural order makes every early ETA an extrapolation
+    # from the worst case -- a 1.7 h run reported itself as 15 h. A shuffled
+    # order makes the completed prefix a representative sample of the whole.
+    np.random.default_rng(seed).shuffle(args_list)
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="ci_unpaired")
     results: list[SimResult] = []
@@ -1855,6 +1910,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
     parser.add_argument("--out-dir", default="simulations/out")
     parser.add_argument("--plots-dir", default=None)
+    parser.add_argument("--agresti-min-max-n", type=int, default=_AGRESTI_MIN_MAX_N, metavar="N",
+                        help=f"Largest group size at which agresti_min runs in the Monte Carlo "
+                             f"sweep (default {_AGRESTI_MIN_MAX_N}). It is a small-sample "
+                             f"recommendation and costs ~190 ms per interval at n=100, so above "
+                             f"this it is skipped; use --exact-coverage for its behaviour at "
+                             f"larger n. Set very high to disable the limit.")
     parser.add_argument("--latex", action="store_true", default=False,
                         help="Append booktabs LaTeX tables to the saved summary .log "
                              "(one per estimand), and write a .tex for --exact-coverage.")
@@ -1883,7 +1944,8 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         reps=300, bootstrap_n=2000, bayes_n=10000, alpha=0.05, seed=base_seed,
         icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4],
         include_null=True, theta_mc_n=_TRUE_THETA_MC_N,
-        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19, latex=True,
+        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
+        agresti_min_max_n=_AGRESTI_MIN_MAX_N, latex=True,
         progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         workers=max(1, (os.cpu_count() or 2) - 1),
@@ -1929,7 +1991,8 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         sizes=[10, 30], size_ratios=[1.0], reps=40, bootstrap_n=200, bayes_n=800,
         alpha=0.05, seed=base_seed, icc_values=[0.5], cohens_d_values=[0.3],
         include_null=True, theta_mc_n=40_000,
-        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19, latex=True,
+        exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
+        agresti_min_max_n=_AGRESTI_MIN_MAX_N, latex=True,
         progress="bar", plots="off", save_results="off",
         out_dir="simulations/out", plots_dir=None,
         workers=max(1, (os.cpu_count() or 2) - 1),
@@ -2010,6 +2073,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             alpha=args.alpha, estimand=args.estimand, true_thetas=true_thetas,
             progress_mode=args.progress, seed=args.seed,
             n_workers=getattr(args, "workers", 1), method_names=method_names,
+            agresti_min_max_n=getattr(args, "agresti_min_max_n", _AGRESTI_MIN_MAX_N),
         )
 
         print_report(results, alpha=args.alpha, sample_sizes=args.sizes)
