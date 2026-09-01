@@ -15000,6 +15000,16 @@ def run(args: argparse.Namespace) -> CaseResult:
                                             str(Path(plots_dir) / f"{label_eff_stem}_plot_lookup_grid.png"))
                                         output_paths.append(_lg)
                                         print(f"Saved plot: {_lg}")
+                                        # compact 1x4 row -- the variant the paper prints
+                                        # (media/simulations/labeleff_lookup_row.png). Emitted
+                                        # here so a run produces it directly, rather than only
+                                        # via replot_label_efficiency.py after the fact.
+                                        _lr = save_ppi_label_efficiency_lookup_grid(
+                                            pm_points,
+                                            str(Path(plots_dir) / f"{label_eff_stem}_plot_lookup_row.png"),
+                                            compact=True)
+                                        output_paths.append(_lr)
+                                        print(f"Saved plot: {_lr}")
                                     except Exception as exc:
                                         print(f"  (lookup grid skipped: {type(exc).__name__}: {exc})")
                                     try:
@@ -15008,6 +15018,17 @@ def run(args: argparse.Namespace) -> CaseResult:
                                             str(Path(plots_dir) / f"{label_eff_stem}_plot_noisefamily.png"))
                                         output_paths.append(_nf)
                                         print(f"Saved plot: {_nf}")
+                                        # compact variant -- the one the paper prints
+                                        # (media/simulations/labeleff_noisefamily_compact.png).
+                                        # Both need >=2 noise families in the sweep, so a
+                                        # single-family run skips them with the reason below
+                                        # rather than emitting a misleading one-family figure.
+                                        _nfc = save_ppi_label_efficiency_noise_family_plot(
+                                            pm_points,
+                                            str(Path(plots_dir) / f"{label_eff_stem}_plot_noisefamily_compact.png"),
+                                            compact=True)
+                                        output_paths.append(_nfc)
+                                        print(f"Saved plot: {_nfc}")
                                     except Exception as exc:
                                         print(f"  (noise-family figure skipped: "
                                               f"{type(exc).__name__}: {exc})")
