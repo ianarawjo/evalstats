@@ -77,31 +77,31 @@ def load(path, family="gaussian"):
     return out
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("csv")
-    ap.add_argument("-o", "--out", default="labeleff_compact.png")
-    ap.add_argument("--design", choices=("equiv", "multiplier"), default="multiplier")
-    ap.add_argument("--family", default="gaussian")
-    ap.add_argument("--width", type=float, default=7.0)
-    ap.add_argument("--height", type=float, default=None)
-    a = ap.parse_args()
+#: The exact settings the paper's Figure for label efficiency is rendered at.
+#: Kept here, not in the caller, so the harness and a manual re-run cannot
+#: drift apart -- the committed media/simulations/labeleff_compact.png
+#: reproduces byte-for-byte from these.
+PAPER_KWARGS = dict(design="equiv", family="gaussian", width=7.0, height=1.9)
 
-    data = load(a.csv, a.family)
+
+def render(csv, out, *, design="multiplier", family="gaussian", width=7.0, height=None):
+    """Draw the compact 1x3 label-efficiency figure. Returns `out`, or None
+    when the CSV has no usable rows for `family`."""
+    data = load(csv, family)
     if not data:
-        print("no rows", file=sys.stderr)
-        return 1
+        print(f"replot_labeleff_compact: no rows for family={family!r} in {csv}", file=sys.stderr)
+        return None
     cmap = plt.get_cmap("viridis")
     colors = {t: cmap(i / (len(TIERS) - 1)) for i, t in enumerate(TIERS)}
 
     rc = {"font.size": 7.0, "axes.labelsize": 7.0, "axes.titlesize": 7.5,
           "xtick.labelsize": 6.5, "ytick.labelsize": 6.5, "legend.fontsize": 6.5,
           "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6}
-    mult = a.design == "multiplier"
-    h = a.height or (1.50 if mult else 1.90)
+    mult = design == "multiplier"
+    h = height or (1.50 if mult else 1.90)
 
     with plt.rc_context(rc):
-        fig, axes = plt.subplots(1, 3, figsize=(a.width, h), sharey=mult)
+        fig, axes = plt.subplots(1, 3, figsize=(width, h), sharey=mult)
         for j, (et, disp) in enumerate(ETS):
             ax = axes[j]
             for t in TIERS:
@@ -156,9 +156,29 @@ def main() -> int:
         fig.legend(handles, labels, loc="lower center", ncol=8, frameon=False,
                    handlelength=1.5, columnspacing=1.1, handletextpad=0.4,
                    borderaxespad=0.1, bbox_to_anchor=(0.5, 0.0))
-        fig.savefig(a.out, dpi=300, bbox_inches="tight", pad_inches=0.02)
+        fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02)
         plt.close(fig)
-    print(f"wrote {a.out}")
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("csv")
+    ap.add_argument("-o", "--out", default="labeleff_compact.png")
+    ap.add_argument("--design", choices=("equiv", "multiplier"), default="multiplier")
+    ap.add_argument("--family", default="gaussian")
+    ap.add_argument("--width", type=float, default=7.0)
+    ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--paper", action="store_true",
+                    help="render exactly as the paper does (PAPER_KWARGS), ignoring "
+                         "--design/--family/--width/--height")
+    a = ap.parse_args()
+    kw = dict(PAPER_KWARGS) if a.paper else dict(
+        design=a.design, family=a.family, width=a.width, height=a.height)
+    got = render(a.csv, a.out, **kw)
+    if got is None:
+        return 1
+    print(f"wrote {got}")
     return 0
 
 

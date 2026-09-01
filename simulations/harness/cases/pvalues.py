@@ -14916,6 +14916,26 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 out_dir=args.out_dir, run_stem=label_eff_stem,
                             )
                         if args.plots == "save":
+                            # The paper's compact 1x3 figure, rendered at the
+                            # settings the paper uses (replot_labeleff_compact
+                            # .PAPER_KWARGS) so a run reproduces it without
+                            # anyone having to remember --design equiv
+                            # --height 1.9. Reads the results CSV this run just
+                            # wrote, so it is skipped when --save-results is off.
+                            _le_csv = Path(args.out_dir) / f"{label_eff_stem}_ppi_label_efficiency_results.csv"
+                            if _le_csv.exists():
+                                try:
+                                    from simulations.replot_labeleff_compact import (
+                                        PAPER_KWARGS as _LE_PAPER, render as _render_le)
+                                    _got = _render_le(str(_le_csv),
+                                                      str(Path(plots_dir) / f"{label_eff_stem}_compact.png"),
+                                                      **_LE_PAPER)
+                                    if _got:
+                                        output_paths.append(_got)
+                                except Exception as _e:  # never fail a finished sweep on a plot
+                                    print(f"  (compact label-efficiency figure skipped: {_e})")
+                            else:
+                                print("  (compact label-efficiency figure needs --save-results save)")
                             # One pooled figure + one per effect-size arm -- see
                             # save_ppi_label_efficiency_plots' docstring for why
                             # the per-es views are kept rather than only pooled.
