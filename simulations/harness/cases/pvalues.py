@@ -369,12 +369,55 @@ SIMULTANEOUS_CI_PLOT_METHODS = [m for m in ALL_SIMULTANEOUS_CI_METHODS if m.name
 
 
 class _ProgressReporter:
+    """One bar per phase. A check that runs several phases can declare how many
+    up front (phase_plan), and each bar then says which phase it is and roughly
+    how far through the whole check it is.
+
+    Without that, a bar reading "24%" is 24% of one phase, and a check like
+    run_ppi_label_efficiency_check -- which runs one phase per (eval type,
+    noise family) -- looks nearly done when it has barely started. The overall
+    figure assumes phases cost the same, which they do not exactly, so it is
+    printed as an approximation ("~") and the per-phase bar stays the precise
+    one.
+    """
+
+    _phase_i = 0
+    _phase_n = 0
+
+    @classmethod
+    def phase_plan(cls, n_phases: int, *, resume: bool = False) -> None:
+        """Declare how many phases the current check will run.
+
+        resume=True keeps an already-declared plan of the same size counting
+        instead of restarting it, for a phase loop that itself sits inside an
+        outer loop -- the label-efficiency check runs its (eval type x noise
+        family) groups once per effect-size arm, and without this each arm
+        restarted the counter at 1, which is the same "this bar is the whole
+        run" misreading the phase counter exists to prevent.
+        """
+        n = max(int(n_phases), 0)
+        if resume and cls._phase_n == n and cls._phase_i:
+            return
+        cls._phase_n = n
+        cls._phase_i = 0
+
+    @classmethod
+    def clear_phase_plan(cls) -> None:
+        cls._phase_n = 0
+        cls._phase_i = 0
+
     def __init__(self, total: int, *, mode: str = "bar", label: str = "") -> None:
         self.total = max(int(total), 1)
         self.mode = mode
         self.label = label
         self.start = time.time()
         self.last_print = 0.0
+        cls = type(self)
+        if cls._phase_n:
+            cls._phase_i += 1
+            self.phase = (min(cls._phase_i, cls._phase_n), cls._phase_n)
+        else:
+            self.phase = None
 
     def update(self, step: int, detail: str = "") -> None:
         if self.mode == "off":
@@ -399,9 +442,14 @@ class _ProgressReporter:
         eta_m, eta_s = divmod(int(round(eta_sec)), 60)
         eta_h, eta_m = divmod(eta_m, 60)
         prefix = f"{self.label}: " if self.label else ""
+        overall = ""
+        if self.phase:
+            i, n = self.phase
+            prefix = f"{self.label} [phase {i}/{n}]: " if self.label else f"[phase {i}/{n}] "
+            overall = f"  ~{100.0 * ((i - 1) + frac) / n:5.1f}% overall"
         print(
             f"\r  {prefix}[{bar}] {100.0*frac:6.2f}%  {step:>7d}/{self.total:<7d}  "
-            f"ETA {eta_h:02d}:{eta_m:02d}:{eta_s:02d}  {detail[:40]:<40s}",
+            f"ETA {eta_h:02d}:{eta_m:02d}:{eta_s:02d}{overall}  {detail[:32]:<32s}",
             end="", flush=True,
         )
         if is_final:
@@ -7461,6 +7509,13 @@ def run_ppi_label_efficiency_check(
                        if x.eval_type == et and x.noise_family == fam]
                 groups.append((et, fam, src, methods,
                                rf"labeleff\.{et}\.fam={fam}\.noise=([\d.]+)\.lab=[\d.]+"))
+        # One phase per non-empty group, per effect-size arm (this loop sits
+        # inside `for effect_frac in PPI_LABEL_EFF_EFFECT_FRACS`), declared so
+        # each bar says which phase it is -- a single bar here reads as the
+        # whole check otherwise. resume=True so the count carries across arms.
+        _ProgressReporter.phase_plan(
+            sum(1 for g in groups if g[2]) * len(PPI_LABEL_EFF_EFFECT_FRACS),
+            resume=True)
         for eval_type, noise_family, sources, methods, name_re in groups:
             if not sources:
                 continue
@@ -7554,6 +7609,7 @@ def run_ppi_label_efficiency_check(
                                          if getattr(r, "var_ppi", 0)
                                          and np.isfinite(r.var_ppi) else float("nan")),
                 ))
+    _ProgressReporter.clear_phase_plan()
     return results, all_raw, calib_rows
 
 
