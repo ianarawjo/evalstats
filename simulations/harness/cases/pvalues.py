@@ -13728,7 +13728,7 @@ def official_args_ppi_label_efficiency(base_seed: int = 42) -> argparse.Namespac
     consumes no other check's results, so this is a real subset of
     official_args_ppi's work rather than an approximation.
 
-    Runs at label_efficiency_reps=1000, above official_args_ppi's 300. Being
+    Runs at label_efficiency_reps=500, above official_args_ppi's 300. Being
     a preset rather than a documented flag combination is the point: the CLI's
     own default is lower still, so a hand-rolled `--mode ppi --no-*-check`
     invocation silently produces a lower-precision sweep that is NOT
@@ -13758,13 +13758,15 @@ def official_args_ppi_label_efficiency(base_seed: int = 42) -> argparse.Namespac
     # not "everything except Type-I", it is the label-efficiency sweep alone.
     args.factorial_check = False
     args.factorial_check_binary = False
-    # 1000, not official_args_ppi's 300: dropping the other checks makes this
-    # sweep cheap enough (~9 min at 300) that the reps can go where they
-    # settle a claim instead. At 300 the multiplier's bootstrap CIs are wide
-    # enough that "by rho^2~0.6 it reaches 2.0-2.8x" flipped between two runs
-    # on Likert's minimum (2.01 vs 1.92); 1000 narrows the interval by ~1.8x,
-    # which is the difference between reporting that range and hedging it.
-    args.label_efficiency_reps = 1000
+    # 500, not official_args_ppi's 300. At 300 the multiplier's bootstrap CIs
+    # are wide enough that "by rho^2~0.6 it reaches 2.0-2.8x" flipped between
+    # two runs on Likert's minimum (2.01 vs 1.92); 500 narrows the interval by
+    # ~1.3x, enough to make that call while staying a sweep someone will
+    # actually re-run. Not higher: this check runs several progress phases
+    # (per eval type x noise family), each with its own bar, so its wall clock
+    # is a multiple of what one bar's ETA suggests -- 1000 was chosen off a
+    # reading of one phase as if it were the whole run.
+    args.label_efficiency_reps = 500
     return args
 
 
