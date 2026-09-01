@@ -7084,6 +7084,11 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
 
 _LABEL_EFF_ALIGNMENT_TARGETS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
 _LABEL_EFF_FIGURE_TITLES = os.environ.get("PPI_NO_FIGURE_TITLES", "") != "1"
+#: Set at import from PPI_NO_FIGURE_TITLES, and overridable per run via
+#: --no-figure-titles (applied in run()). The env var alone cannot serve
+#: the harness: it is read once at import, so a preset that wants
+#: publication figures has no way to ask for them -- which left the
+#: figures a run emits subtly taller than the ones the paper prints.
 """Whether label-efficiency figures draw their own headline title.
 
 Set PPI_NO_FIGURE_TITLES=1 for publication figures. Journal and conference
@@ -13408,6 +13413,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "feed a published rule of thumb and want more precision than the power/"
                               "comparison stages that also read --effect-reps; the official presets pin "
                               "this to 300.")
+    parser.add_argument("--no-figure-titles", action="store_true", default=False,
+                        help="ppi mode: draw label-efficiency figures without their in-figure "
+                             "title and footnote strip, i.e. as the paper prints them "
+                             "(equivalent to PPI_NO_FIGURE_TITLES=1, but settable per run). "
+                             "Implied by the label-efficiency-only official preset.")
     parser.add_argument("--no-label-efficiency-check", action="store_true", default=False,
                          help="ppi mode: skip the label-efficiency check (run_ppi_label_efficiency_check) -- "
                               "for a fixed labeling budget, how many labels would a human-only classical test "
@@ -13814,6 +13824,9 @@ def official_args_ppi_label_efficiency(base_seed: int = 42) -> argparse.Namespac
     # not "everything except Type-I", it is the label-efficiency sweep alone.
     args.factorial_check = False
     args.factorial_check_binary = False
+    # This preset exists to produce the paper's figures, so it draws them the
+    # way the paper prints them -- caption-only, no in-figure title.
+    args.no_figure_titles = True
     # 500, not official_args_ppi's 300. At 300 the multiplier's bootstrap CIs
     # are wide enough that "by rho^2~0.6 it reaches 2.0-2.8x" flipped between
     # two runs on Likert's minimum (2.01 vs 1.92); 500 narrows the interval by
@@ -14157,6 +14170,12 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
 
 
 def run(args: argparse.Namespace) -> CaseResult:
+    # Publication figures: drop the in-figure title and footnote strip that
+    # the LaTeX caption already carries. Mutates the module global rather
+    # than the environment because PPI_NO_FIGURE_TITLES is read at import,
+    # long before args exist; the plot helpers read this global at call time.
+    if getattr(args, "no_figure_titles", False):
+        globals()["_LABEL_EFF_FIGURE_TITLES"] = False
     t0 = time.time()
     try:
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
