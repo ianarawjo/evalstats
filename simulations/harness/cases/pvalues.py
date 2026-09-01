@@ -13714,6 +13714,52 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def official_args_ppi_label_efficiency(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for JUST the label-efficiency sweep.
+
+    Split out from official_args_ppi the same way official_args_ppi_factorial
+    is, and for the same reason: the label-efficiency check is what the
+    paper's rho^2 rule of thumb, its multiplier table (tab:le-mult) and four
+    of its figures rest on, but reaching it through official_args_ppi means
+    also paying for the Type-I sweep (build_judge_bias_sources' ~85 scenarios
+    x ~11 tests x reps -- by far the slowest piece of --mode ppi), the
+    effect/power/comparison checks, and the 7-factor factorial sweep. None of
+    those feed it: the label-efficiency check builds its own sources and
+    consumes no other check's results, so this is a real subset of
+    official_args_ppi's work rather than an approximation.
+
+    Keeps official_args_ppi's label_efficiency_reps=300. That matters, because
+    the CLI's own default is lower -- a hand-rolled `--mode ppi
+    --no-*-check` invocation silently produces a lower-precision sweep whose
+    output is NOT comparable with the paper's, and its filename records only
+    the rep count, not that it was reduced. The runs behind the current table
+    show exactly this split: the paper's is reps300, while two later
+    diagnostic runs are reps200.
+
+    One --mode ppi run at this preset writes all four figures the paper
+    prints, under <stem>:
+        _compact.png                  -> labeleff_compact (main text)
+        _plot_lookup_row.png          -> labeleff_lookup_row
+        _plot_threshold_pooled.png    -> labeleff_threshold_pooled
+        _plot_noisefamily_compact.png -> labeleff_noisefamily_compact
+    The noise-family pair needs >=2 noise families, so it is absent from a
+    binary-only sweep (binary is deliberately gaussian-only, not being
+    shape-sensitive); all three eval types are kept here, so it renders.
+
+    Regenerate the multiplier table from the same run with
+    simulations/make_appendix_tables.py --run <stem>."""
+    args = official_args_ppi(base_seed)
+    args.no_typeI_check = True
+    args.no_effect_check = True
+    args.no_power_check = True
+    args.no_comparison_check = True
+    # factorial is opt-in and official_args_ppi turns it on; this preset is
+    # not "everything except Type-I", it is the label-efficiency sweep alone.
+    args.factorial_check = False
+    args.factorial_check_binary = False
+    return args
+
+
 def official_args_ppi_nformula(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for JUST the label-efficiency N-formula check
     (run_ppi_nformula_check) -- split out from official_args_ppi the same
@@ -13990,6 +14036,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (ppi factorial only, binary)", official_args_ppi_factorial_binary(base_seed)),
         ("synthetic (ppi, LIKERT ONLY -- judge-rounding re-run)", official_args_ppi_likert(base_seed)),
         ("synthetic (ppi factorial only, LIKERT ONLY)", official_args_ppi_factorial_likert(base_seed)),
+        ("synthetic (ppi label-efficiency only)", official_args_ppi_label_efficiency(base_seed)),
         ("synthetic (ppi n-formula check only)", official_args_ppi_nformula(base_seed)),
         ("synthetic (ppi rho effect-size drift check only)", official_args_ppi_rho_drift(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
@@ -14925,6 +14972,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                             _le_csv = Path(args.out_dir) / f"{label_eff_stem}_ppi_label_efficiency_results.csv"
                             if _le_csv.exists():
                                 try:
+                                    # First plot written when every other check
+                                    # is disabled (--official-tests' label-
+                                    # efficiency-only preset), so plots_dir may
+                                    # not exist yet -- the other plotters create
+                                    # it themselves, render() does not.
+                                    Path(plots_dir).mkdir(parents=True, exist_ok=True)
                                     from simulations.replot_labeleff_compact import (
                                         PAPER_KWARGS as _LE_PAPER, render as _render_le)
                                     _got = _render_le(str(_le_csv),
