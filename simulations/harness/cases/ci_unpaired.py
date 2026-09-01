@@ -130,6 +130,23 @@ RESULTS_MODES = ["save", "off"]
 MEAN_ESTIMAND = "mean_diff"
 THETA_ESTIMAND = "theta"
 
+_BINARY_INELIGIBLE = (MOVER_NIG, MOVER_EL)
+"""MOVER arms that are not valid on binary data, so they are not run there --
+matching ci_paired, which gates its own nig/el off binary for the same reason.
+
+Not a convention but a validity failure, verified directly on 0/1 samples at
+n=10: empirical likelihood collapses to the degenerate point interval [1, 1]
+on an all-ones sample (the empirical distribution has all its mass on one
+value, so no reweighting can move the mean), and NIG returns [0.852, 1.0571]
+-- an upper limit above 1 for a proportion. Left in, mover_el posted 0.51
+exact minimum coverage on binary, which reads as a harness bug rather than as
+a method being applied outside its domain.
+
+mover_logit_t is deliberately NOT gated: the logit transform respects [0, 1]
+by construction, and on binary it is the strongest method in the exact table
+(0.954 minimum coverage, holding nominal), so excluding it would discard a
+real result rather than avoid a spurious one."""
+
 _THETA_NULL_VALUE = 0.5
 """theta's "no difference" point -- the analogue of 0 for a mean difference.
 Used for the Type I error / power counter, not for coverage."""
@@ -184,6 +201,14 @@ def _welch_t_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, floa
     se2 = va / na + vb / nb
     d = float(np.mean(a) - np.mean(b))
     if se2 <= 0.0:
+        # Both arms constant -- no variance to estimate from, so a
+        # variance-based interval has nothing to say and collapses to a
+        # point. NOT a harness bug: on binary data at small n and extreme p
+        # this is common and real (measured: 17% of draws at n=5, 4.7% at
+        # n=10, 1.25% at n=20, none by n=30), and it is a genuine part of
+        # why the t-based methods bottom out near 0.64 exact coverage while
+        # the dedicated binary intervals -- which handle a degenerate sample
+        # rather than dividing by its variance -- never do this at all.
         return d, d
     se = float(np.sqrt(se2))
     # Welch-Satterthwaite degrees of freedom.
@@ -956,13 +981,25 @@ _TRUE_THETA_MC_N = 200_000
 
 
 def _estimate_true_theta(source: CIPairSource, *, seed: int = 0, n_mc: int = _TRUE_THETA_MC_N) -> float:
-    """Monte-Carlo the population theta for a source under INDEPENDENT arms.
+    """The population theta for a source under INDEPENDENT arms.
 
-    Unlike true_diff, theta is not a difference of marginals, so it cannot be
-    read off the source -- it genuinely depends on the two marginal
-    distributions jointly. Drawn from two separate generate_pair calls so the
-    arms are independent, matching how the simulation itself samples.
+    Unlike true_diff, theta is not a difference of marginals, so in general it
+    cannot be read off the source -- it depends on the two marginal
+    distributions jointly, and is estimated by Monte Carlo from two separate
+    generate_pair calls (independent arms, matching how the simulation itself
+    samples).
+
+    Null sources are the exception and are returned EXACTLY. When both arms
+    share a distribution, P(A>B) = P(B>A) by symmetry, so theta is exactly
+    1/2. Estimating that by Monte Carlo instead was measurably wrong: over
+    the null sources it missed 0.5 by up to 0.0011, and since coverage is
+    scored against this number, that error goes straight into every theta
+    method's coverage on every null row. Both source families qualify --
+    synthetic d=0 draws both arms from one distribution, and
+    real_unpaired's null sources draw both arms from one pool.
     """
+    if source.is_null:
+        return _THETA_NULL_VALUE
     rng = np.random.default_rng(seed)
     a, _ = source.generate_pair(rng, n_mc, 1)
     _, b = source.generate_pair(rng, n_mc, 1)
@@ -1008,7 +1045,8 @@ def _run_cell(
     mean_methods = []
     if do_mean:
         mean_methods += [m for m in BOOTSTRAP_METHODS if _want(m)]
-        mean_methods += [m for m in UNPAIRED_MEAN_EXTRA_METHODS if _want(m)]
+        mean_methods += [m for m in UNPAIRED_MEAN_EXTRA_METHODS
+                         if _want(m) and not (is_binary and m in _BINARY_INELIGIBLE)]
         if is_binary:
             mean_methods += [m for m in UNPAIRED_BINARY_METHODS if _want(m)]
     theta_methods = [m for m in UNPAIRED_THETA_METHODS if _want(m)] if do_theta else []
@@ -1281,9 +1319,11 @@ _EXACT_BINARY_METHODS = (
     WALD_UNPAIRED, AGRESTI_CAFFO, NEWCOMBE_HYBRID, MIETTINEN_NURMINEN,
     AGRESTI_MIN, WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T,
 )
-"""Deterministic, closed-form binary methods only. bayes_beta_indep and the
-bootstrap family are excluded because they are randomised -- their interval
-is not a function of (k_A, k_B) alone, so exact enumeration does not apply."""
+"""Deterministic binary methods only, i.e. every method whose interval is a
+function of (k_A, k_B) alone -- verified deterministic across repeated calls,
+which is what enumeration requires. bayes_beta_indep and the bootstrap family
+are excluded because they are randomised, so no finite table of intervals
+represents them and exact enumeration does not apply to them at all."""
 
 
 def _exact_binary_ci_table(method, n_a: int, n_b: int, alpha: float) -> dict:
@@ -1301,9 +1341,10 @@ def _exact_binary_ci_table(method, n_a: int, n_b: int, alpha: float) -> dict:
         for kb in range(n_b + 1):
             b = np.r_[np.ones(kb), np.zeros(n_b - kb)]
             try:
-                if method in (MOVER_T, MOVER_LOGIT_T):
-                    fn = _mover_t_ci if method is MOVER_T else _mover_logit_t_ci
-                    out[(ka, kb)] = fn(a, b, alpha, (0.0, 1.0))
+                mover = {MOVER_T: _mover_t_ci, MOVER_LOGIT_T: _mover_logit_t_ci,
+                         MOVER_NIG: _mover_nig_ci, MOVER_EL: _mover_el_ci}.get(method)
+                if mover is not None:
+                    out[(ka, kb)] = mover(a, b, alpha, (0.0, 1.0))
                 else:
                     out[(ka, kb)] = fns[method](a, b, alpha)
             except Exception:
