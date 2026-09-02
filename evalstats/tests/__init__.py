@@ -827,9 +827,31 @@ def _kw_pairwise_thetas(
     the same quantity already used by ``mannwhitney`` for two groups, so it
     is well-defined identically on the full data or any subsample.
     """
-    return np.array([
-        _p_x_gt_y_midrank(group_arrays[a], group_arrays[b]) for a, b in pairs
-    ])
+    # Bit-for-bit identical to calling _p_x_gt_y_midrank per pair, but each
+    # group is sorted ONCE instead of once per pair it appears in (k-1 times),
+    # and searchsorted is called as a bound method to skip numpy's
+    # fromnumeric/_wrapfunc dispatch frames. Both matter here only because of
+    # volume: this is the inner loop of _ppi_kruskal_wallis_pairwise's
+    # bootstrap, which at k=5, n_boot=600 makes ~72,000 searchsorted passes per
+    # call (profiled: 50% of total runtime, sorting another 8%).
+    #
+    # The arithmetic below is deliberately NOT algebraically simplified --
+    # (n_lt.sum() + 0.5*(n_le-n_lt).sum()) is kept in that exact form, rather
+    # than the equivalent 0.5*(n_lt.sum()+n_le.sum()), so the floating-point
+    # rounding is identical to the per-pair helper and every calibration
+    # number in simulations/kw_rowsum/ stays reproducible.
+    sorted_groups = [np.sort(g) for g in group_arrays]
+    out = np.empty(len(pairs), dtype=float)
+    for idx, (a, b) in enumerate(pairs):
+        x = group_arrays[a]
+        y_sorted = sorted_groups[b]
+        if len(x) == 0 or len(y_sorted) == 0:
+            out[idx] = 0.5
+            continue
+        n_lt = y_sorted.searchsorted(x, side="left")
+        n_le = y_sorted.searchsorted(x, side="right")
+        out[idx] = (n_lt.sum() + 0.5 * (n_le - n_lt).sum()) / (len(x) * len(y_sorted))
+    return out
 
 
 def _kw_mean_sq_deviation_from_labeled(Y: np.ndarray, X: np.ndarray, k: int) -> float:
