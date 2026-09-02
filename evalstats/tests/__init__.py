@@ -1084,6 +1084,7 @@ def _ppi_kruskal_wallis_pairwise(
     # valid for disjoint samples. See _ppi_two_sample and
     # evalstats.ppi.correct's docstring.
     groups_unlab = [g[~m] for g, m in zip(groups, masks)]
+    _ppi_require_unlabeled_per_group([len(g) for g in groups_unlab])
     Y_lab_groups = [lab_arr[m] for lab_arr, m in zip(groups_lab, masks)]
     Yhat_lab_groups = [g[m] for g, m in zip(groups, masks)]
 
@@ -1471,6 +1472,7 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
     masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
 
     groups_unlab = [g[~m] for g, m in zip(groups, masks)]
+    _ppi_require_unlabeled_per_group([len(g) for g in groups_unlab])
     Y_lab_groups = [lab_arr[m] for lab_arr, m in zip(groups_lab, masks)]
     Yhat_lab_groups = [g[m] for g, m in zip(groups, masks)]
 
@@ -1778,6 +1780,47 @@ def _ppi_require_unlabeled(n_all: int) -> None:
             "unlabeled residual for the LLM-only term). If every item is "
             "labeled, use the human labels directly instead of PPI correction."
         )
+
+
+def _ppi_require_unlabeled_per_group(n_unlab_per_group) -> None:
+    """Per-group counterpart of :func:`_ppi_require_unlabeled`, for the
+    independent k-group pairwise-dominance tests.
+
+    Not the same condition one level up. :func:`_ppi_require_unlabeled`
+    guards a single pooled unlabeled sample, so it only fires when EVERY
+    item is labeled. The pairwise dominance estimand is computed group by
+    group, so ONE exhaustively-labeled arm is already fatal: every pair
+    touching that arm takes its ``theta_unlab`` from
+    :func:`_p_x_gt_y_midrank`'s empty-sample 0.5 sentinel -- a placeholder,
+    not a measurement -- so that pair's rectifier
+    ``theta_unlab - theta_lab_llm`` stops being a mean-zero correction and
+    becomes a large systematic offset.
+
+    Measured on a true null (k=3, n=300/group, differential judge bias, 400
+    replicates): with one group fully labeled the omnibus Type-I rate goes
+    from 0.028 to 1.000 -- silently, no error and no warning, just a
+    guaranteed false positive. See
+    ``simulations/kw_rowsum/step3b_empty_unlabeled.py``.
+
+    Raised as a ``ValueError`` in the same voice as
+    :func:`_ppi_require_unlabeled`, but naming the offending groups: "every
+    item in this comparison is human-labeled" is not what happened when only
+    one arm is full, and the caller needs to know which arm to fix.
+    """
+    empty = [i + 1 for i, n in enumerate(n_unlab_per_group) if int(n) == 0]
+    if not empty:
+        return
+    if len(empty) == 1:
+        which, those = f"group {empty[0]}", "that group"
+    else:
+        which, those = "groups " + ", ".join(str(i) for i in empty), "those groups"
+    raise ValueError(
+        f"PPI correction requires at least one unlabeled item in every group, "
+        f"got 0 for {which} (every item in {those} is human-labeled, leaving "
+        f"no unlabeled residual for the LLM-only term in any pair involving "
+        f"it). If a group is fully labeled, use the human labels directly "
+        f"instead of PPI correction."
+    )
 
 
 def _ppi_paired_bootstrap_t(

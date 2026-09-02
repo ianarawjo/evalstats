@@ -54,7 +54,9 @@ from evalstats.tests import (
     _ppi_friedman_p_value,
     _friedman_rank_variance,
     _ppi_kruskal_wallis_pairwise,
+    _ppi_kruskal_wallis_pairwise_mnar_experimental,
     _ppi_kruskal_wallis_rowsum,
+    _ppi_require_unlabeled_per_group,
     _kw_mean_sq_deviation_from_labeled,
     _kw_pairwise_thetas,
     _kw_rowsum_from_pairwise,
@@ -3041,3 +3043,85 @@ class TestKwWaldFromVector:
         _s, _df, p_small = _kw_wald_from_vector(diff, cov, 30)
         assert p_big == pytest.approx(chi2_p, rel=1e-3)
         assert p_small > p_big          # finite-sample correction is conservative
+
+
+class TestKruskalEmptyUnlabeledGuard:
+    """A fully-labeled GROUP silently poisoned the pairwise dominance
+    rectifier: every pair touching it took theta_unlab from
+    _p_x_gt_y_midrank's empty-sample 0.5 sentinel, driving Type-I from 0.028
+    to 1.000 with no error (simulations/kw_rowsum/step3b_empty_unlabeled.py).
+    _ppi_require_unlabeled_per_group makes it a clean ValueError, mirroring
+    _ppi_require_unlabeled one level up.
+    """
+
+    @staticmethod
+    def _data(rng, n=120, k=3, full=(), n_lab=40):
+        truth = [rng.normal(3.0, 1.0, n) for _ in range(k)]
+        biases = [0.0, 0.4, -0.3, 0.2, -0.1][:k]
+        groups = [t + b + rng.normal(0, 0.3, n) for t, b in zip(truth, biases)]
+        groups_lab = []
+        for j, t in enumerate(truth):
+            m = n if j in full else n_lab
+            lab = np.full(n, np.nan)
+            idx = rng.choice(n, m, replace=False)
+            lab[idx] = t[idx]
+            groups_lab.append(lab)
+        return groups, groups_lab
+
+    def test_helper_names_the_offending_groups(self):
+        _ppi_require_unlabeled_per_group([5, 1, 12])          # no-op
+        with pytest.raises(ValueError, match=r"group 2\b"):
+            _ppi_require_unlabeled_per_group([5, 0, 12])
+        with pytest.raises(ValueError, match=r"groups 1, 3\b"):
+            _ppi_require_unlabeled_per_group([0, 7, 0])
+
+    def test_one_group_fully_labeled_raises(self):
+        rng = np.random.default_rng(8200)
+        groups, groups_lab = self._data(rng, full={1})
+        for fn in (_ppi_kruskal_wallis_pairwise,
+                   _ppi_kruskal_wallis_pairwise_mnar_experimental,
+                   _ppi_kruskal_wallis_rowsum):
+            with pytest.raises(ValueError, match="at least one unlabeled item in every group"):
+                fn(groups, groups_lab, 0.05, 150, 1)
+
+    def test_all_groups_fully_labeled_raises(self):
+        rng = np.random.default_rng(8201)
+        groups, groups_lab = self._data(rng, full={0, 1, 2})
+        with pytest.raises(ValueError, match=r"groups 1, 2, 3"):
+            _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 150, 1)
+
+    def test_public_wrapper_raises(self):
+        rng = np.random.default_rng(8202)
+        groups, groups_lab = self._data(rng, full={2})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ValueError, match="at least one unlabeled item in every group"):
+                kruskalwallis(*groups, groups_lab=groups_lab, n_boot=150, rng=1,
+                              print_result=False)
+
+    @pytest.mark.parametrize("n_unlabeled", [1, 2])
+    def test_near_boundary_still_runs(self, n_unlabeled):
+        """One or two unlabeled items is degenerate but not undefined -- the
+        guard must not swallow it."""
+        rng = np.random.default_rng(8203 + n_unlabeled)
+        n = 120
+        groups, groups_lab = self._data(rng, n=n)
+        # rebuild group 1's labels leaving exactly n_unlabeled items unlabeled
+        truth_like = groups[1] - 0.4
+        lab = np.full(n, np.nan)
+        idx = rng.choice(n, n - n_unlabeled, replace=False)
+        lab[idx] = truth_like[idx]
+        groups_lab[1] = lab
+        for fn in (_ppi_kruskal_wallis_pairwise, _ppi_kruskal_wallis_rowsum):
+            out = fn(groups, groups_lab, 0.05, 150, 1)
+            assert 0.0 <= out["wald_p"] <= 1.0
+
+    def test_no_effect_when_every_group_has_unlabeled_items(self):
+        """The guard is a pure precondition -- identical results on data that
+        was always valid."""
+        rng = np.random.default_rng(8205)
+        groups, groups_lab = self._data(rng, k=4, n_lab=45)
+        a = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 200, 12)
+        b = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 200, 12)
+        assert a["wald_p"] == b["wald_p"]
+        assert np.array_equal(a["theta_hat"], b["theta_hat"])
