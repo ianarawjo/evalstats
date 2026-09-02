@@ -1416,6 +1416,210 @@ def _kw_rowsum_from_pairwise(pw: dict, weights: str = "full") -> dict:
     return out
 
 
+def _kw_contrast_basis(k: int, pairs) -> np.ndarray:
+    """Orthonormal basis (k-1 rows) of the THEORETICAL contrast subspace of
+    R^C(k,2): the span of every vector of the form ``delta_ab = u_a - u_b``
+    for ``u`` in R^k.
+
+    This is where the pairwise dominance vector lives under H0, and the
+    reason is not numerical. When every group shares one distribution F,
+    each pair's mid-rank U-statistic has the SAME Hajek score function, so
+
+        theta_ab - 1/2  ~=  U_a - U_b,   U_j := mean of F(X) over group j
+
+    -- a contrast of k per-group scalars, hence a rank-(k-1) object whatever
+    C(k,2) is (the O(1/n) remainder is measured in
+    ``simulations/kw_rowsum/step6b_hajek_rank.py``). Away from H0 the F's
+    differ per pair and the vector leaves this subspace, which is exactly
+    what makes the residual direction informative -- see
+    :func:`_kw_twopart_from_pairwise`.
+
+    Built from the incidence map M (m x k, ``M[(a,b), a] = +1``,
+    ``M[(a,b), b] = -1``) whose column space this is. Note it is defined by
+    the DESIGN alone, with no weights and no data -- unlike
+    :func:`_kw_rowsum_matrix`'s row space, which it coincides with exactly
+    when group sizes are equal (``L = w * M.T`` then) and differs from under
+    unbalanced n.
+    """
+    M = np.zeros((len(pairs), k))
+    for c, (a, b) in enumerate(pairs):
+        M[c, a] = 1.0
+        M[c, b] = -1.0
+    u, sv, _vt = np.linalg.svd(M, full_matrices=False)
+    r = int(np.sum(sv > 1e-8 * (sv[0] if sv.size else 1.0)))
+    return u[:, :r].T
+
+
+def _kw_wald_truncated(diff: np.ndarray, cov: np.ndarray, nu: int, rank: int):
+    """:func:`_kw_wald_from_vector` with the pseudo-inverse truncated to a
+    GIVEN rank rather than to whatever ``rcond`` implies.
+
+    Same reference recipe (rank-derived df, Hotelling-T2-style F, zero-
+    covariance guard); only the rank is supplied from outside, so a caller
+    can act on knowledge the covariance's own spectrum does not carry.
+    """
+    diff = np.asarray(diff, dtype=float)
+    cov = np.atleast_2d(np.asarray(cov, dtype=float))
+    cov = 0.5 * (cov + cov.T)
+    w, v = np.linalg.eigh(cov)
+    order = np.argsort(w)[::-1]
+    w, v = w[order], v[:, order]
+    max_eig = float(w[0]) if w.size else 0.0
+    if max_eig <= 1e-12:
+        return 0.0, 0, (0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0)
+
+    rank = int(max(0, min(rank, int(np.sum(w > 1e-12 * max_eig)))))
+    if rank == 0:
+        return 0.0, 0, 1.0
+    z = v[:, :rank].T @ diff
+    wald_stat = float(np.sum(z * z / w[:rank]))
+    df = rank
+    if nu > df:
+        f_stat = wald_stat * (nu - df + 1) / (nu * df)
+        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    else:
+        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+    return wald_stat, df, wald_p
+
+
+def _kw_eigengap_rank(cov: np.ndarray) -> int:
+    """Retained rank under the PRE-REGISTERED largest-relative-eigengap rule.
+
+    Fixed in advance of any calibration run, and deliberately free of any
+    dependence on k, n_lab, eval type or anything but the spectrum itself --
+    a rule tuned per cell would prove nothing:
+
+      1. symmetrise Sigma_hat, take eigenvalues lam_1 >= ... >= lam_m,
+         clipped at 0;
+      2. drop lam_i <= 1e-12 * lam_1 as numerically zero, leaving m' of them;
+      3. if m' <= 1, retain m';
+      4. otherwise retain r = argmax_i (lam_i / lam_{i+1}) over
+         i = 1..m'-1, ties resolved to the smallest i.
+
+    The open question this exists to answer: under H0 the spectrum has a
+    k-1 / rest cliff, so this should land on k-1 -- but under an alternative
+    that lives OUTSIDE the contrast space the residual directions carry real
+    variance, the cliff should close, and the retained rank should grow on
+    its own. Whether it actually does is measured, not assumed.
+    """
+    cov = np.atleast_2d(np.asarray(cov, dtype=float))
+    cov = 0.5 * (cov + cov.T)
+    w = np.clip(np.linalg.eigvalsh(cov), 0.0, None)[::-1]
+    if w.size == 0 or w[0] <= 0:
+        return 0
+    keep = w[w > 1e-12 * w[0]]
+    if keep.size <= 1:
+        return int(keep.size)
+    ratios = keep[:-1] / np.maximum(keep[1:], np.finfo(float).tiny)
+    return int(np.argmax(ratios)) + 1
+
+
+def _kw_contrast_from_pairwise(pw: dict) -> dict:
+    """C1 -- Wald on the contrast-space component of delta_hat, df = k-1.
+
+    The "corrected classical Kruskal-Wallis" answer stated in its own terms:
+    project onto the THEORETICAL contrast subspace (:func:`_kw_contrast_basis`),
+    not onto an estimated eigenspace, so the tested contrast is fixed by the
+    design rather than by this dataset's covariance. Calibrated by
+    construction under H0; blind to non-transitive alternatives by
+    construction too, since those live entirely in the discarded complement.
+    """
+    k = len(pw["n_per_group"])
+    B = _kw_contrast_basis(k, pw["pairs"])
+    delta = pw["theta_hat"] - 0.5
+    cov_b = B @ np.atleast_2d(pw["cov"]) @ B.T
+    cov_b = 0.5 * (cov_b + cov_b.T)
+    nu = int(sum(pw["n_lab_per_group"]))
+    stat, df, p = _kw_wald_from_vector(B @ delta, cov_b, nu)
+    return {"wald_stat": stat, "wald_p": p, "df": df,
+            "contrast_basis": B, "contrast_s": B @ delta, "contrast_cov": cov_b}
+
+
+def _kw_twopart_from_pairwise(pw: dict, alpha: float = 0.05) -> dict:
+    """C2 -- split delta_hat into its contrast component and its residual and
+    test both, so the omnibus keeps sensitivity to non-transitive alternatives
+    that the contrast test cannot see.
+
+    Part 1 is exactly C1 (df = k-1). Part 2 is a Wald on the orthogonal
+    complement (df = C(k,2)-(k-1), rank-guarded), which is where a cyclic
+    alternative puts ALL of its signal: for a symmetric 3-cycle the whole of
+    delta lies in the 1-dimensional complement.
+
+    Combination is Bonferroni -- ``min(1, 2*min(p1, p2))``, i.e. each part at
+    alpha/2 -- because the two components are orthogonal but their estimated
+    covariances are not independent, so nothing stronger is justified without
+    a joint null distribution. Fisher's combination is reported alongside for
+    comparison ONLY; it assumes independence, which is not established here.
+    """
+    part1 = _kw_contrast_from_pairwise(pw)
+    k = len(pw["n_per_group"])
+    m = len(pw["pairs"])
+    B = part1["contrast_basis"]
+    P = np.eye(m) - B.T @ B
+    w, v = np.linalg.eigh(0.5 * (P + P.T))
+    B_perp = v[:, w > 0.5].T
+    delta = pw["theta_hat"] - 0.5
+    nu = int(sum(pw["n_lab_per_group"]))
+    if B_perp.size == 0:
+        stat2, df2, p2 = 0.0, 0, 1.0
+        s2 = np.zeros(0)
+    else:
+        cov_p = B_perp @ np.atleast_2d(pw["cov"]) @ B_perp.T
+        cov_p = 0.5 * (cov_p + cov_p.T)
+        s2 = B_perp @ delta
+        stat2, df2, p2 = _kw_wald_from_vector(s2, cov_p, nu)
+    p1 = part1["wald_p"]
+    p_bonf = float(min(1.0, 2.0 * min(p1, p2)))
+    lp = -2.0 * (np.log(max(p1, 1e-300)) + np.log(max(p2, 1e-300)))
+    p_fisher = float(_scipy_stats.chi2.sf(lp, df=4))
+    return {
+        "wald_stat": part1["wald_stat"] + stat2,
+        "wald_p": p_bonf,
+        "df": part1["df"] + df2,
+        "twopart_p_contrast": p1, "twopart_p_residual": p2,
+        "twopart_df_contrast": part1["df"], "twopart_df_residual": df2,
+        "twopart_stat_contrast": part1["wald_stat"], "twopart_stat_residual": stat2,
+        "twopart_p_fisher": p_fisher,
+        "residual_s": s2,
+    }
+
+
+def _kw_eigengap_from_pairwise(pw: dict) -> dict:
+    """C3 -- full-vector Wald with Sigma_hat truncated at the largest relative
+    eigengap (:func:`_kw_eigengap_rank`), df = the retained rank."""
+    delta = pw["theta_hat"] - 0.5
+    cov = np.atleast_2d(pw["cov"])
+    rank = _kw_eigengap_rank(cov)
+    nu = int(sum(pw["n_lab_per_group"]))
+    stat, df, p = _kw_wald_truncated(delta, cov, nu, rank)
+    return {"wald_stat": stat, "wald_p": p, "df": df, "eigengap_rank": rank}
+
+
+def _kw_candidate_from_pairwise(pw: dict, method: str, alpha: float = 0.05) -> dict:
+    """Dispatch for the EXPERIMENTAL k>=5-conservatism candidates, all of
+    which reuse one pairwise bootstrap unchanged. See
+    ``simulations/kw_rowsum/REPORT.md`` section B for the race between them.
+    """
+    if method == "contrast":
+        extra = _kw_contrast_from_pairwise(pw)
+    elif method == "twopart":
+        extra = _kw_twopart_from_pairwise(pw, alpha)
+    elif method == "eigengap":
+        extra = _kw_eigengap_from_pairwise(pw)
+    else:
+        raise ValueError(
+            f'method must be "contrast", "twopart" or "eigengap"; got {method!r}.')
+    out = dict(pw)
+    out.update({
+        "pairwise_wald_stat": pw["wald_stat"],
+        "pairwise_wald_p": pw["wald_p"],
+        "pairwise_df": pw["df"],
+        "kw_candidate": method,
+    })
+    out.update(extra)
+    return out
+
+
 def _ppi_kruskal_wallis_pairwise_mnar_experimental(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
@@ -5129,7 +5333,8 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, print_result=False)          # silent
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
-    _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled")
+    _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled",
+                   "contrast", "twopart", "eigengap")
     if method not in _KW_METHODS:
         raise ValueError(
             f"method must be one of {_KW_METHODS}; got {method!r}."
@@ -5188,6 +5393,11 @@ def kruskalwallis(
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
         if method == "mnar_experimental":
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
+        elif method in ("contrast", "twopart", "eigengap"):
+            pw = _kw_candidate_from_pairwise(
+                _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng),
+                method, alpha,
+            )
         elif method in ("rowsum", "rowsum_labeled"):
             pw = _ppi_kruskal_wallis_rowsum(
                 groups, groups_lab, alpha, n_boot, rng,
@@ -5206,12 +5416,17 @@ def kruskalwallis(
         extra["corrected_effect_size"] = corrected_estimate
         extra["corrected_effect_size_name"] = "Mean (P(a>b)−0.5)²"
         extra["wald_stat"] = pw["wald_stat"]
+        # Every non-default method reports the shipped full-pairwise omnibus
+        # alongside its own, so both are readable from one run.
+        for _key in ("pairwise_wald_stat", "pairwise_wald_p", "pairwise_df",
+                     "twopart_p_contrast", "twopart_p_residual", "twopart_p_fisher",
+                     "twopart_df_contrast", "twopart_df_residual", "eigengap_rank"):
+            if _key in pw:
+                extra[_key] = pw[_key]
         if "rowsum_s" in pw:
             extra["rowsum_s"] = pw["rowsum_s"]
             extra["rowsum_weights"] = pw["rowsum_weights"]
             extra["rowsum_df"] = pw["df"]
-            extra["pairwise_wald_stat"] = pw["pairwise_wald_stat"]
-            extra["pairwise_wald_p"] = pw["pairwise_wald_p"]
         extra["pairwise_effects"] = {
             pw["pairs"][i]: {
                 "theta": float(pw["theta_hat"][i]),
