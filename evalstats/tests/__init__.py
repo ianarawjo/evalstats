@@ -1199,16 +1199,34 @@ def _ppi_kruskal_wallis_pairwise(
     #     hardcoded k-1. k-1 is the correct contrast-space dimension for
     #     pairwise MEAN differences (k group means have exactly k-1
     #     independent linear contrasts among them), which is where the
-    #     "rank-deficient, use k-1" convention comes from -- but pairwise
-    #     DOMINANCE probabilities theta_ab = P_mid(a>b) are not linear
+    #     "rank-deficient, use k-1" convention comes from -- and pairwise
+    #     DOMINANCE probabilities theta_ab = P_mid(a>b) are NOT linear
     #     combinations of k per-group "effects" the way mean differences
-    #     are, so nothing forces theta_23 to be determined by
-    #     theta_12/theta_13: this covariance is generically full rank
-    #     C(k,2). Testing a Wald statistic built from a higher-rank
-    #     covariance against chi-square(df=k-1) systematically
-    #     over-rejects. (The row-sum projection is the opposite case: it
-    #     really is rank k-1 by construction, and the same rank-derived df
-    #     lands on k-1 without being told.)
+    #     are, so in general nothing forces theta_23 to be determined by
+    #     theta_12/theta_13 and this covariance is full rank C(k,2).
+    #
+    #     KNOWN DEFECT (measured 2026-09-02, see
+    #     simulations/kw_rowsum/REPORT.md addendum). That "in general" is
+    #     doing too much work: it is false in exactly the regime that
+    #     governs calibration. UNDER H0 all groups share one F, so every
+    #     pair's Hajek projection uses the SAME functional and
+    #     theta_ab - 1/2 ~= U_a - U_b with U_j = mean of F(X) over group j
+    #     -- a contrast of k scalars, hence rank k-1 plus an O(1/n)
+    #     remainder. Measured: the empirical Cov(theta_hat) across 800
+    #     replicates has exactly k-1 large eigenvalues and a 20-800x gap
+    #     before the rest, and its top-(k-1) eigenspace IS the row-sum row
+    #     space (subspace overlap 0.9996-1.0000). matrix_rank cannot see
+    #     that degeneracy, because the bootstrap covariance does not
+    #     reproduce it -- it assigns those near-null directions 1.3-3.5x
+    #     MORE variance than they have. So df counts C(k,2) dimensions
+    #     when ~k-1 carry signal, each junk direction contributes well
+    #     under 1 to W, and the test under-rejects: E[W]/df falls to
+    #     0.52-0.70 at k=5 and Type-I to 0.005 against a nominal 0.05.
+    #     Raising this rcond until df collapses to k-1 restores
+    #     E[W]/df ~ 1 and a nominal rate without touching the covariance,
+    #     but a fixed rcond is not the right fix (the needed value moves
+    #     with n_lab); see the addendum's recommendation. Left as-is here
+    #     deliberately -- this comment is the record, not the fix.
     #
     #   * an F rather than chi-square reference (Hotelling's T2-style
     #     finite-sample correction, nu = total labeled observations across
