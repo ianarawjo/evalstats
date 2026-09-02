@@ -85,6 +85,8 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 import numpy as np
 import scipy.stats as stats
 
@@ -1460,156 +1462,224 @@ def save_results_artifacts(
     return [str(csv_path), str(summary_path)]
 
 
-def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from ..methods import get_method_color
+def _plot_frame(results: list[SimResult]) -> "pd.DataFrame":
+    """Per-cell frame for the plot helpers, one row per (scenario, method, n)."""
+    import pandas as pd
+    return pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "method": r.method,
+            "n": r.n_a, "coverage": r.covered / max(r.n_reps, 1),
+            "width": r.total_width / max(r.n_reps, 1),
+            "score": r.total_score / max(r.n_reps, 1),
+        }
+        for r in results if not r.is_null
+    ])
 
-    eq = [r for r in results if r.n_a == r.n_b and not r.is_null]
-    if not eq:
-        eq = [r for r in results if not r.is_null]
-    keys = sorted({r.eval_type for r in eq})
-    if not keys:
-        raise ValueError("no non-null results to plot")
-    fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.8), squeeze=False)
-    target = 1.0 - alpha
-    for ax, eval_type in zip(axes[0], keys):
-        rows = [r for r in eq if r.eval_type == eval_type]
-        by_m: dict = defaultdict(lambda: defaultdict(list))
-        for r in rows:
-            by_m[r.method][r.n_a].append(r.covered / r.n_reps)
-        for method in order_present_methods(set(by_m)):
-            ns = sorted(by_m[method.name])
-            ys = [float(np.mean(by_m[method.name][n])) for n in ns]
-            ax.plot(ns, ys, marker="o", ms=3, lw=1.3, label=method.name,
-                    color=get_method_color(method.name))
-        ax.axhline(target, color="k", ls="--", lw=1)
-        ax.set_title(eval_type, fontsize=10)
-        ax.set_xlabel("n per group")
-        ax.set_ylabel("coverage")
-        ax.set_ylim(min(0.80, target - 0.12), 1.005)
-        ax.legend(fontsize=6, ncol=2)
-    fig.tight_layout()
+
+def _plot_setup(results: list[SimResult]):
+    """(eval types present, ordered Method objects, name list, colour palette).
+
+    Shared so every plot in this case orders and colours methods the same way
+    ci_paired does -- these figures sit next to each other in the appendix.
+    """
+    non_null = [r for r in results if not r.is_null]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
+    method_objs = order_present_methods({r.method for r in non_null})
+    names = [m.name for m in method_objs]
+    return eval_types_present, method_objs, names, {m.name: m.color for m in method_objs}
+
+
+def _finish(fig, out_path: str, suptitle: str) -> str:
+    fig.suptitle(suptitle, fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    import matplotlib.pyplot as plt
     plt.close(fig)
     return out_path
 
 
-def _plot_panels(results: list[SimResult]) -> list[str]:
-    """Eval types present in the non-null results."""
-    return sorted({r.eval_type for r in results if not r.is_null})
+def _vs_n_plot(
+    results: list[SimResult], alpha: float, out_path: str, *,
+    metric: str, ylabel: str, title: str, n_reps: int, target_line: bool,
+) -> str:
+    """Shared engine for coverage-vs-n and width-vs-n.
+
+    Aggregates to SCENARIO level first (mean within each data-generating
+    scenario) and only then across scenarios, so a shape with many icc/effect
+    variants does not outvote one with few -- same two-step aggregation
+    ci_paired uses. Error bars are the between-scenario standard error, i.e.
+    disagreement across scenarios, not Monte Carlo noise within one.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from ..methods import get_method_color
+
+    eval_types_present, _objs, names, palette = _plot_setup(results)
+    df = _plot_frame(results)
+    df = df[df["method"].isin(names)]
+    label_level = df.groupby(["eval_type", "label", "method", "n"], as_index=False).agg(v=(metric, "mean"))
+    agg = label_level.groupby(["eval_type", "method", "n"], as_index=False).agg(
+        v_mean=("v", "mean"), v_std=("v", "std"), v_count=("v", "count"),
+    )
+    target = 1.0 - alpha
+
+    ncols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(1, ncols, figsize=(5.5 * ncols, 5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        ax = axes[0][col_idx]
+        et_agg = agg[agg["eval_type"] == et].copy()
+        et_methods = [n for n in names if n in et_agg["method"].values]
+        if et_agg.empty:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+            continue
+        sns.lineplot(data=et_agg, x="n", y="v_mean", hue="method", hue_order=et_methods,
+                     palette=palette, marker=None, linewidth=1.0, alpha=0.70, ax=ax)
+        for method, sub in et_agg.groupby("method"):
+            sub = sub.sort_values("n")
+            color = get_method_color(str(method))
+            if not sub["v_std"].isna().all():
+                se = sub["v_std"] / np.sqrt(sub["v_count"])
+                ax.errorbar(sub["n"], sub["v_mean"], yerr=se, fmt="none", color=color,
+                            elinewidth=0.8, capsize=2, alpha=0.45)
+            ax.scatter(sub["n"], sub["v_mean"], s=28, color=color, edgecolors="white",
+                       linewidths=0.6, alpha=0.85, zorder=3)
+        ns = sorted(et_agg["n"].unique())
+        ax.set_xticks(ns)
+        ax.set_xticklabels([str(n) for n in ns])
+        if target_line:
+            ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2)
+        ax.set_xlabel("Group size (n per group)")
+        ax.set_ylabel(ylabel if col_idx == 0 else "")
+        ax.set_title(et.upper())
+        if et_methods:
+            ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+    return _finish(fig, out_path, f"{title}\nci_unpaired | reps={n_reps} | alpha={alpha}")
+
+
+def save_coverage_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
+    """Coverage vs. group size -- one subplot per eval type, all methods overlaid."""
+    n_reps = results[0].n_reps if results else 0
+    return _vs_n_plot(results, alpha, out_path, metric="coverage",
+                      ylabel="Empirical coverage", title="Coverage vs. Group Size",
+                      n_reps=n_reps, target_line=True)
 
 
 def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
-    """Mean interval width vs. n -- the sharpness half of the tradeoff the
-    coverage plot shows the validity half of. A method that covers by being
-    wide is visible only here."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from ..methods import get_method_color
-
-    eq = [r for r in results if r.n_a == r.n_b and not r.is_null]
-    keys = _plot_panels(eq)
-    fig, axes = plt.subplots(1, len(keys), figsize=(4.6 * len(keys), 3.8), squeeze=False)
-    for ax, eval_type in zip(axes[0], keys):
-        rows = [r for r in eq if r.eval_type == eval_type]
-        by_m: dict = defaultdict(lambda: defaultdict(list))
-        for r in rows:
-            by_m[r.method][r.n_a].append(r.total_width / max(r.n_reps, 1))
-        for method in order_present_methods(set(by_m)):
-            ns = sorted(by_m[method.name])
-            ax.plot(ns, [float(np.mean(by_m[method.name][n])) for n in ns],
-                    marker="o", ms=3, lw=1.3, label=method.name,
-                    color=get_method_color(method.name))
-        ax.set_title(eval_type, fontsize=10)
-        ax.set_xlabel("n per group")
-        ax.set_ylabel("mean CI width")
-        ax.legend(fontsize=6, ncol=2)
-    fig.tight_layout()
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return out_path
+    """Mean CI width vs. group size -- the sharpness half of the tradeoff whose
+    validity half the coverage plot shows. A method that covers only by being
+    wide is visible here and nowhere else."""
+    n_reps = results[0].n_reps if results else 0
+    return _vs_n_plot(results, alpha, out_path, metric="width",
+                      ylabel="Mean CI width", title="CI Width vs. Group Size",
+                      n_reps=n_reps, target_line=False)
 
 
 def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
-    """Coverage against compute cost. Some of these methods differ by three
-    orders of magnitude in runtime (agresti_min's exact enumeration vs. a
-    closed-form Wald), so "is the extra coverage worth the wait" is a real
-    question a reader will ask."""
-    import matplotlib
-    matplotlib.use("Agg")
+    """Coverage against compute cost, one row per eval type, one line per method
+    tracing it across group sizes. These methods span four orders of magnitude
+    in runtime -- agresti_min's exact enumeration against a closed-form Wald --
+    so "is the extra coverage worth the wait" is a question a reader will ask."""
     import matplotlib.pyplot as plt
-    from ..methods import get_method_color
 
-    non_null = [r for r in results if not r.is_null]
-    keys = _plot_panels(non_null)
     target = 1.0 - alpha
-    fig, axes = plt.subplots(1, len(keys), figsize=(4.4 * len(keys), 3.8), squeeze=False)
-    for ax, eval_type in zip(axes[0], keys):
-        rows = [r for r in non_null if r.eval_type == eval_type]
-        by_m: dict = defaultdict(list)
-        for r in rows:
-            by_m[r.method].append(r)
-        for method in order_present_methods(set(by_m)):
-            sub = by_m[method.name]
-            cov = float(np.mean([r.covered / max(r.n_reps, 1) for r in sub]))
-            ms, _ = _time_stats(sub)
-            ax.scatter(max(ms, 1e-4), cov, s=34, color=get_method_color(method.name),
-                       label=method.name, zorder=3)
-        ax.axhline(target, color="k", ls="--", lw=1)
+    non_null = [r for r in results if not r.is_null]
+    eval_types_present, method_objs, _names, _pal = _plot_setup(results)
+
+    nrows = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(nrows=nrows, ncols=1, figsize=(11.0, 4.5 * nrows),
+                             squeeze=False, gridspec_kw={"hspace": 0.45})
+    for row_idx, et in enumerate(eval_types_present):
+        ax = axes[row_idx][0]
+        et_results = [r for r in non_null if r.eval_type == et]
+        sizes = sorted({r.n_a for r in et_results})
+        ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04),
+                   color="#DDDDDD", alpha=0.40, zorder=0)
+        ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
+        for m in method_objs:
+            m_results = [r for r in et_results if r.method == m.name]
+            if not m_results:
+                continue
+            pts = []
+            for n in sizes:
+                subset = [r for r in m_results if r.n_a == n]
+                if not subset:
+                    continue
+                avg_ms, _se = _time_stats(subset)
+                if not np.isfinite(avg_ms) or avg_ms <= 0:
+                    continue
+                pts.append((avg_ms, float(np.mean([r.covered / max(r.n_reps, 1) for r in subset]))))
+            if not pts:
+                continue
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            ax.plot(xs, ys, color=m.color, linewidth=1.1, alpha=0.55, zorder=2)
+            ax.scatter(xs, ys, s=30, color=m.color, edgecolors="white",
+                       linewidths=0.6, alpha=0.9, zorder=3, label=m.name)
         ax.set_xscale("log")
-        ax.set_title(eval_type, fontsize=10)
-        ax.set_xlabel("mean time per interval (ms, log)")
-        ax.set_ylabel("mean coverage")
-        ax.legend(fontsize=6, ncol=2)
-    fig.tight_layout()
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return out_path
+        ax.set_xlabel("Mean time per interval (ms, log scale)")
+        ax.set_ylabel("Empirical coverage")
+        ax.set_title(et.upper())
+        ax.legend(title="Method", fontsize=7, title_fontsize=8, ncol=2, loc="lower right")
+    n_reps = results[0].n_reps if results else 0
+    return _finish(fig, out_path,
+                   f"Coverage vs. Compute Cost (one point per group size)\n"
+                   f"ci_unpaired | reps={n_reps} | alpha={alpha}")
 
 
 def save_reliability_violin_plot(results: list[SimResult], alpha: float, out_path: str) -> str:
-    """Distribution of per-scenario coverage, one violin per method.
-
-    The mean coverage column hides the shape: a method averaging 0.95 by
-    over-covering on easy scenarios and under-covering badly on hard ones is
-    not the same as one sitting at 0.95 everywhere, and only the spread
-    distinguishes them."""
-    import matplotlib
-    matplotlib.use("Agg")
+    """Cross-scenario reliability: violin+strip of per-scenario coverage and
+    interval score, one dot per (label, method) -- i.e. per data-generating
+    scenario, averaged over group sizes and reps but NOT over scenarios.
+    Exposes the spread the summary table's mean hides: a method with good
+    average coverage can still have a long undercoverage tail on specific
+    scenarios, which a single mean cannot reveal."""
     import matplotlib.pyplot as plt
-    from ..methods import get_method_color
+    import seaborn as sns
 
-    non_null = [r for r in results if not r.is_null]
-    keys = _plot_panels(non_null)
     target = 1.0 - alpha
-    fig, axes = plt.subplots(len(keys), 1, figsize=(11, 3.1 * len(keys)), squeeze=False)
-    for ax, eval_type in zip(axes[:, 0], keys):
-        rows = [r for r in non_null if r.eval_type == eval_type]
-        by_m: dict = defaultdict(list)
-        for r in rows:
-            by_m[r.method].append(r.covered / max(r.n_reps, 1))
-        methods = order_present_methods(set(by_m))
-        data = [by_m[m.name] for m in methods]
-        parts = ax.violinplot(data, showmeans=True, showextrema=False, widths=0.85)
-        for body, m in zip(parts["bodies"], methods):
-            body.set_facecolor(get_method_color(m.name))
-            body.set_alpha(0.65)
-        ax.axhline(target, color="k", ls="--", lw=1)
-        ax.set_xticks(range(1, len(methods) + 1))
-        ax.set_xticklabels([m.name for m in methods], rotation=30, ha="right", fontsize=7)
-        ax.set_ylabel("coverage")
-        ax.set_title(eval_type, fontsize=10)
-    fig.tight_layout()
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return out_path
+    eval_types_present, _objs, names, palette = _plot_setup(results)
+    df = _plot_frame(results)
+    df = df[df["method"].isin(names)]
+    scenario_level = df.groupby(["eval_type", "label", "method"], as_index=False).agg(
+        coverage=("coverage", "mean"), score=("score", "mean"),
+    )
+
+    n_cols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        et_df = scenario_level[scenario_level["eval_type"] == et]
+        et_methods = [n for n in names if n in et_df["method"].values]
+        for row_idx, (metric, ylabel) in enumerate(
+            [("coverage", "Coverage per scenario"), ("score", "Interval score per scenario")]
+        ):
+            ax = axes[row_idx][col_idx]
+            if et_df.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            sns.violinplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, cut=0, inner=None, linewidth=0.8,
+                alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, size=4, alpha=0.7, jitter=0.25,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+            if metric == "coverage":
+                ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+            ax.tick_params(axis="x", rotation=45)
+            for lab in ax.get_xticklabels():
+                lab.set_ha("right")
+    n_reps = results[0].n_reps if results else 0
+    return _finish(fig, out_path,
+                   f"Cross-Scenario Reliability (one dot = one scenario)\n"
+                   f"ci_unpaired | reps={n_reps} | alpha={alpha}")
 
 
 # ---------------------------------------------------------------------------
