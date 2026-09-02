@@ -58,6 +58,7 @@ from evalstats.tests import (
     _ppi_kruskal_wallis_rowsum,
     _kw_candidate_from_pairwise,
     _kw_contrast_basis,
+    _kw_contrast_subspace,
     _kw_eigengap_rank,
     _kw_wald_truncated,
     _ppi_require_unlabeled_per_group,
@@ -3157,23 +3158,25 @@ class TestKruskalConservatismCandidates:
             ones = np.ones(len(pairs))
             assert np.linalg.norm(B.T @ (B @ ones) - ones) > 1e-6
 
-    def test_contrast_equals_rowsum_under_balance(self):
-        """Under equal group sizes L = w * M.T, so the two tests span the same
-        row space and the Wald statistic -- which sees only the row space --
-        must agree exactly. This is a cross-check on BOTH implementations."""
+    def test_contrast_subspace_is_the_weighted_row_space(self):
+        """The tested contrast space is the n-WEIGHTED row space, which is what
+        classical Kruskal-Wallis's mean-rank contrast actually is. It coincides
+        with the unweighted span{u_a - u_b} exactly under balance and differs
+        under unequal n -- both directions checked, because the coincidence is
+        what made every balanced cell in the battery unable to tell them apart.
+        """
         rng = np.random.default_rng(9010)
         for k in (3, 4, 5):
             groups, groups_lab = _multigroup(rng, k=k, n=200, n_lab=50,
                                              mus=[3.0 + 0.1 * j for j in range(k)])
             pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 250, 31)
-            a = _kw_rowsum_from_pairwise(pw, "full")
-            b = _kw_candidate_from_pairwise(pw, "contrast")
-            assert a["df"] == b["df"] == k - 1
-            assert b["wald_p"] == pytest.approx(a["wald_p"], abs=1e-12)
+            B_w = _kw_contrast_subspace(pw)
+            B_u = _kw_contrast_basis(k, pw["pairs"])
+            assert B_w.shape == B_u.shape == (k - 1, k * (k - 1) // 2)
+            ovl = np.mean(np.clip(np.linalg.svd(B_w @ B_u.T, compute_uv=False), 0, 1) ** 2)
+            assert ovl == pytest.approx(1.0, abs=1e-9)   # same subspace under balance
 
-    def test_contrast_differs_from_rowsum_under_unequal_group_sizes(self):
-        rng = np.random.default_rng(9011)
-        k, ns = 4, [80, 160, 240, 400]
+        ns = [80, 160, 240, 400]
         truths = [rng.normal(3.0, 1.0, n) for n in ns]
         groups = [t + b + rng.normal(0, 0.3, len(t))
                   for t, b in zip(truths, [0.0, 0.4, -0.3, 0.2])]
@@ -3184,9 +3187,30 @@ class TestKruskalConservatismCandidates:
             lab[idx] = t[idx]
             groups_lab.append(lab)
         pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 250, 32)
-        a = _kw_rowsum_from_pairwise(pw, "full")
-        b = _kw_candidate_from_pairwise(pw, "contrast")
-        assert a["wald_p"] != b["wald_p"]
+        ovl = np.mean(np.clip(np.linalg.svd(
+            _kw_contrast_subspace(pw) @ _kw_contrast_basis(4, pw["pairs"]).T,
+            compute_uv=False), 0, 1) ** 2)
+        assert ovl < 0.99            # genuinely different under unequal n
+
+    def test_twopart_part1_is_exactly_rowsum(self):
+        """C2's contrast half must BE the row-sum test, balanced or not --
+        otherwise the library carries two almost-identical omnibus tests."""
+        rng = np.random.default_rng(9011)
+        for ns in ([200, 200, 200, 200], [80, 160, 240, 400]):
+            truths = [rng.normal(3.0, 1.0, n) for n in ns]
+            groups = [t + b + rng.normal(0, 0.3, len(t))
+                      for t, b in zip(truths, [0.0, 0.4, -0.3, 0.2])]
+            groups_lab = []
+            for j, t in enumerate(truths):
+                lab = np.full(len(t), np.nan)
+                idx = rng.choice(len(t), 50, replace=False)
+                lab[idx] = t[idx]
+                groups_lab.append(lab)
+            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 250, 33)
+            a = _kw_rowsum_from_pairwise(pw, "full")
+            c2 = _kw_candidate_from_pairwise(pw, "twopart")
+            assert c2["twopart_df_contrast"] == a["df"] == 3
+            assert c2["twopart_p_contrast"] == pytest.approx(a["wald_p"], abs=1e-12)
 
     def test_twopart_splits_the_degrees_of_freedom(self):
         rng = np.random.default_rng(9020)
@@ -3217,9 +3241,8 @@ class TestKruskalConservatismCandidates:
             lab[idx] = t[idx]
             groups_lab.append(lab)
         pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 400, 42)
-        c1 = _kw_candidate_from_pairwise(pw, "contrast")
         c2 = _kw_candidate_from_pairwise(pw, "twopart")
-        assert c1["wald_p"] > 0.05                      # contrast space: blind
+        assert c2["twopart_p_contrast"] > 0.05          # contrast space: blind
         assert c2["twopart_p_residual"] < 1e-3          # residual: sees it
         assert c2["wald_p"] < 0.05                      # so the combination fires
 
@@ -3263,7 +3286,7 @@ class TestKruskalConservatismCandidates:
                                          mus=[3.0, 3.2, 3.4, 3.6])
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            for method in ("contrast", "twopart", "eigengap"):
+            for method in ("twopart", "eigengap"):
                 r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=250, rng=7,
                                   print_result=False, method=method)
                 assert r.extra["ppi_method"] == method
@@ -3289,7 +3312,7 @@ class TestKruskalConservatismCandidates:
         ia = rng.choice(n, 60, replace=False); la[ia] = ta[ia]
         ib = rng.choice(n, 60, replace=False); lb[ib] = tb[ib]
         pw = _ppi_kruskal_wallis_pairwise([ga, gb], [la, lb], 0.05, 250, 61)
-        for method in ("contrast", "eigengap"):
+        for method in ("eigengap",):
             c = _kw_candidate_from_pairwise(pw, method)
             assert c["df"] == 1
             assert c["wald_p"] == pytest.approx(pw["wald_p"], abs=1e-12)
@@ -3301,5 +3324,5 @@ class TestKruskalConservatismCandidates:
         rng = np.random.default_rng(9070)
         groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=40)
         pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 150, 71)
-        with pytest.raises(ValueError, match="contrast"):
+        with pytest.raises(ValueError, match="twopart"):
             _kw_candidate_from_pairwise(pw, "nope")

@@ -183,7 +183,7 @@ from ..methods import (
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     KRUSKAL_ROWSUM,
     KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
     PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
@@ -555,7 +555,7 @@ def _run_real_omnibus_independent_cell(
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                                                KRUSKAL_CONTRAST, KRUSKAL_TWOPART,
+                                                KRUSKAL_TWOPART,
                                                 KRUSKAL_EIGENGAP)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
@@ -568,8 +568,7 @@ def _run_real_omnibus_independent_cell(
                     # The k>=5-conservatism candidates share pw_r too -- same
                     # bootstrap, different test form, so the comparison between
                     # them carries no Monte Carlo difference of its own.
-                    for _m, _c in ((KRUSKAL_CONTRAST, "contrast"),
-                                   (KRUSKAL_TWOPART, "twopart"),
+                    for _m, _c in ((KRUSKAL_TWOPART, "twopart"),
                                    (KRUSKAL_EIGENGAP, "eigengap")):
                         if _m.name in methods:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -739,7 +738,7 @@ def _run_real_omnibus_independent_power_cell(
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                                                KRUSKAL_CONTRAST, KRUSKAL_TWOPART,
+                                                KRUSKAL_TWOPART,
                                                 KRUSKAL_EIGENGAP)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
@@ -752,8 +751,7 @@ def _run_real_omnibus_independent_power_cell(
                     # The k>=5-conservatism candidates share pw_r too -- same
                     # bootstrap, different test form, so the comparison between
                     # them carries no Monte Carlo difference of its own.
-                    for _m, _c in ((KRUSKAL_CONTRAST, "contrast"),
-                                   (KRUSKAL_TWOPART, "twopart"),
+                    for _m, _c in ((KRUSKAL_TWOPART, "twopart"),
                                    (KRUSKAL_EIGENGAP, "eigengap")):
                         if _m.name in methods:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -1178,7 +1176,7 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     if eval_type == "binary":
         return []
     return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name,
-            KRUSKAL_CONTRAST.name, KRUSKAL_TWOPART.name, KRUSKAL_EIGENGAP.name]
+            KRUSKAL_TWOPART.name, KRUSKAL_EIGENGAP.name]
 
 
 def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:

@@ -1514,25 +1514,26 @@ def _kw_eigengap_rank(cov: np.ndarray) -> int:
     return int(np.argmax(ratios)) + 1
 
 
-def _kw_contrast_from_pairwise(pw: dict) -> dict:
-    """C1 -- Wald on the contrast-space component of delta_hat, df = k-1.
+def _kw_contrast_subspace(pw: dict) -> np.ndarray:
+    """Orthonormal basis of the subspace the CORRECTED CLASSICAL Kruskal-Wallis
+    tests: the row space of the n-weighted row-sum matrix
+    :func:`_kw_rowsum_matrix`, weights = full group sizes.
 
-    The "corrected classical Kruskal-Wallis" answer stated in its own terms:
-    project onto the THEORETICAL contrast subspace (:func:`_kw_contrast_basis`),
-    not onto an estimated eigenspace, so the tested contrast is fixed by the
-    design rather than by this dataset's covariance. Calibrated by
-    construction under H0; blind to non-transitive alternatives by
-    construction too, since those live entirely in the discarded complement.
+    Not :func:`_kw_contrast_basis`'s unweighted span{u_a - u_b}. The two
+    coincide exactly under equal group sizes (there ``L = w * M.T``) and
+    diverge under unequal n, where the classical KW contrast is the WEIGHTED
+    one -- that is the section 2.1 identity,
+    ``Rbar_j - (N+1)/2 = sum_l n_l * delta_jl``. Measured: the two calibrate
+    identically under unbalanced designs (Type-I agreeing to within Monte
+    Carlo noise across 40 cells) despite per-replicate p-value differences up
+    to 0.26, so the choice is settled by which estimand is meant, not by
+    calibration. See simulations/kw_rowsum/step12_unequal_n.py.
     """
     k = len(pw["n_per_group"])
-    B = _kw_contrast_basis(k, pw["pairs"])
-    delta = pw["theta_hat"] - 0.5
-    cov_b = B @ np.atleast_2d(pw["cov"]) @ B.T
-    cov_b = 0.5 * (cov_b + cov_b.T)
-    nu = int(sum(pw["n_lab_per_group"]))
-    stat, df, p = _kw_wald_from_vector(B @ delta, cov_b, nu)
-    return {"wald_stat": stat, "wald_p": p, "df": df,
-            "contrast_basis": B, "contrast_s": B @ delta, "contrast_cov": cov_b}
+    L = _kw_rowsum_matrix(k, pw["pairs"], np.asarray(pw["n_per_group"], dtype=float))
+    _u, sv, vt = np.linalg.svd(L, full_matrices=False)
+    r = int(np.sum(sv > 1e-8 * (sv[0] if sv.size else 1.0)))
+    return vt[:r]
 
 
 def _kw_twopart_from_pairwise(pw: dict, alpha: float = 0.05) -> dict:
@@ -1551,10 +1552,14 @@ def _kw_twopart_from_pairwise(pw: dict, alpha: float = 0.05) -> dict:
     a joint null distribution. Fisher's combination is reported alongside for
     comparison ONLY; it assumes independence, which is not established here.
     """
-    part1 = _kw_contrast_from_pairwise(pw)
-    k = len(pw["n_per_group"])
     m = len(pw["pairs"])
-    B = part1["contrast_basis"]
+    B = _kw_contrast_subspace(pw)
+    delta_all = pw["theta_hat"] - 0.5
+    cov_all = np.atleast_2d(pw["cov"])
+    cov_b = 0.5 * (B @ cov_all @ B.T + (B @ cov_all @ B.T).T)
+    nu_1 = int(sum(pw["n_lab_per_group"]))
+    s1, df1, p1_ = _kw_wald_from_vector(B @ delta_all, cov_b, nu_1)
+    part1 = {"wald_stat": s1, "df": df1, "wald_p": p1_}
     P = np.eye(m) - B.T @ B
     w, v = np.linalg.eigh(0.5 * (P + P.T))
     B_perp = v[:, w > 0.5].T
@@ -1597,18 +1602,21 @@ def _kw_eigengap_from_pairwise(pw: dict) -> dict:
 
 def _kw_candidate_from_pairwise(pw: dict, method: str, alpha: float = 0.05) -> dict:
     """Dispatch for the EXPERIMENTAL k>=5-conservatism candidates, all of
-    which reuse one pairwise bootstrap unchanged. See
+    which reuse one pairwise bootstrap unchanged. The contrast-space Wald
+    (candidate C1) is not here: it IS ``method="rowsum"``, once the contrast
+    space is taken to be the weighted one (:func:`_kw_contrast_subspace`). See
     ``simulations/kw_rowsum/REPORT.md`` section B for the race between them.
     """
-    if method == "contrast":
-        extra = _kw_contrast_from_pairwise(pw)
-    elif method == "twopart":
+    if method == "twopart":
         extra = _kw_twopart_from_pairwise(pw, alpha)
     elif method == "eigengap":
         extra = _kw_eigengap_from_pairwise(pw)
     else:
         raise ValueError(
-            f'method must be "contrast", "twopart" or "eigengap"; got {method!r}.')
+            f'method must be "twopart" or "eigengap"; got {method!r}. '
+            f'The contrast-space Wald is kruskalwallis(method="rowsum") -- see '
+            f'_kw_contrast_subspace for why the weighted row space is the one '
+            f'that means "corrected classical Kruskal-Wallis".')
     out = dict(pw)
     out.update({
         "pairwise_wald_stat": pw["wald_stat"],
@@ -5334,7 +5342,7 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
     _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled",
-                   "contrast", "twopart", "eigengap")
+                   "twopart", "eigengap")
     if method not in _KW_METHODS:
         raise ValueError(
             f"method must be one of {_KW_METHODS}; got {method!r}."
@@ -5393,7 +5401,7 @@ def kruskalwallis(
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
         if method == "mnar_experimental":
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
-        elif method in ("contrast", "twopart", "eigengap"):
+        elif method in ("twopart", "eigengap"):
             pw = _kw_candidate_from_pairwise(
                 _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng),
                 method, alpha,

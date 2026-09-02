@@ -313,7 +313,6 @@ from ..methods import (
     KRUSKAL,
     KRUSKAL_ROWSUM,
     KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_CONTRAST,
     KRUSKAL_TWOPART,
     KRUSKAL_EIGENGAP,
     KRUSKAL_MNAR_EXPERIMENTAL,
@@ -4651,7 +4650,7 @@ def _run_ppi_cell(
             # stream and silently change every existing kruskal number here.
             if any(_m.name in active_tests for _m in (
                     KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                    KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP)):
+                    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP)):
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
@@ -4662,8 +4661,7 @@ def _run_ppi_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
-                    for _m, _c in ((KRUSKAL_CONTRAST, "contrast"),
-                                   (KRUSKAL_TWOPART, "twopart"),
+                    for _m, _c in ((KRUSKAL_TWOPART, "twopart"),
                                    (KRUSKAL_EIGENGAP, "eigengap")):
                         if _m.name in active_tests:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -4671,7 +4669,7 @@ def _run_ppi_cell(
                                 _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
                 except Exception:
                     for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                               KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP):
+                               KRUSKAL_TWOPART, KRUSKAL_EIGENGAP):
                         if _m.name in active_tests:
                             failed[_m.name] += 1
 
@@ -5201,7 +5199,7 @@ def _run_ppi_effect_cell(
             # row for every active test rather than a hole.
             if any(_m.name in active_tests for _m in (
                     KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                    KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP)):
+                    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP)):
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
@@ -5210,7 +5208,7 @@ def _run_ppi_effect_cell(
                     row = (float(np.mean(pw_r["theta_hat"])), float(np.mean(pw_r["ci_lo"])),
                            float(np.mean(pw_r["ci_hi"])), float(np.mean(llm_theta)))
                     for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                               KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP):
+                               KRUSKAL_TWOPART, KRUSKAL_EIGENGAP):
                         if _m.name in active_tests:
                             out[_m.name].append(row)
                 except Exception:
