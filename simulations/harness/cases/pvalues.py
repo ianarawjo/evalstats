@@ -184,6 +184,7 @@ with warnings.catch_warnings():
         _friedman_rank_variance,
         _ppi_kruskal_wallis_pairwise,
         _ppi_kruskal_wallis_pairwise_mnar_experimental,
+        _kw_rowsum_from_pairwise,
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
         _mcnemar_p,
@@ -309,6 +310,8 @@ from ..methods import (
     ANOVA_REP,
     FRIEDMAN,
     KRUSKAL,
+    KRUSKAL_ROWSUM,
+    KRUSKAL_ROWSUM_LABELED,
     KRUSKAL_MNAR_EXPERIMENTAL,
     LMM,
     LMM_FACTORIAL,
@@ -4637,6 +4640,27 @@ def _run_ppi_cell(
                 except Exception:
                     failed[KRUSKAL_MNAR_EXPERIMENTAL.name] += 1
 
+            # Row-sum ("real Kruskal-Wallis") projection of the SAME corrected
+            # pairwise vector KRUSKAL tests -- see
+            # evalstats.tests._ppi_kruskal_wallis_rowsum. Its own bootstrap
+            # draw on purpose: reusing KRUSKAL's would shift that method's rng
+            # stream and silently change every existing kruskal number here.
+            if KRUSKAL_ROWSUM.name in active_tests or KRUSKAL_ROWSUM_LABELED.name in active_tests:
+                try:
+                    groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    p_u = _uncorrected_kruskal_p_value(groups_kw)
+                    pw_r = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
+                        if _m.name in active_tests:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                except Exception:
+                    for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED):
+                        if _m.name in active_tests:
+                            failed[_m.name] += 1
+
             if LMM.name in active_tests:
                 try:
                     groups_lmm = [cell.llm_A, cell.llm_B, cell.llm_C]
@@ -5152,6 +5176,26 @@ def _run_ppi_effect_cell(
                         float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
                         float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
                     ))
+                except Exception:
+                    pass
+
+            # The row-sum projection changes only the omnibus WALD TEST, never
+            # the corrected theta vector or its per-pair CIs -- so its
+            # effect/CI row is the same estimator as KRUSKAL's (recomputed on
+            # its own draw, hence Monte-Carlo-different but not
+            # method-different). Emitted so --mode ppi's effect check has a
+            # row for every active test rather than a hole.
+            if KRUSKAL_ROWSUM.name in active_tests or KRUSKAL_ROWSUM_LABELED.name in active_tests:
+                try:
+                    groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    pw_r = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    llm_theta = _kw_pairwise_thetas(groups_kw, pw_r["pairs"])
+                    row = (float(np.mean(pw_r["theta_hat"])), float(np.mean(pw_r["ci_lo"])),
+                           float(np.mean(pw_r["ci_hi"])), float(np.mean(llm_theta)))
+                    for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED):
+                        if _m.name in active_tests:
+                            out[_m.name].append(row)
                 except Exception:
                     pass
 

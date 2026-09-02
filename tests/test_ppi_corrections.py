@@ -54,7 +54,12 @@ from evalstats.tests import (
     _ppi_friedman_p_value,
     _friedman_rank_variance,
     _ppi_kruskal_wallis_pairwise,
+    _ppi_kruskal_wallis_rowsum,
     _kw_mean_sq_deviation_from_labeled,
+    _kw_pairwise_thetas,
+    _kw_rowsum_from_pairwise,
+    _kw_rowsum_matrix,
+    _kw_wald_from_vector,
 )
 
 
@@ -2807,3 +2812,232 @@ class TestKruskalCorrectedPValueCalibration:
         assert rate <= self.MAX_REJECTION_RATE, (
             f"Kruskal-Wallis biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
         )
+
+
+# ─── Row-sum ("real Kruskal-Wallis") projection ──────────────────────────────
+
+class TestKruskalRowSumIdentity:
+    """The algebraic bridge the projection rests on:
+
+        Rbar_j = (n_j + 1)/2 + sum_{l != j} n_l * theta_jl
+               = (N + 1)/2   + (L @ delta)_j
+
+    exact for ties and unequal group sizes, and classical KW's H is exactly
+    12/(N(N+1)) * sum_j n_j * s_j^2 after the usual tie correction.
+    """
+
+    @staticmethod
+    def _cases(rng, n_cases=8):
+        for c in range(n_cases):
+            k = int(rng.integers(2, 6))
+            ns = [int(rng.integers(5, 40)) for _ in range(k)]
+            kind = c % 4
+            gs = []
+            for j in range(k):
+                if kind == 0:
+                    gs.append(rng.normal(0.3 * j, 1.0, ns[j]))
+                elif kind == 1:                       # Likert: heavy ties
+                    gs.append(rng.integers(1, 6, ns[j]).astype(float))
+                elif kind == 2:                       # binary: extreme ties
+                    gs.append((rng.random(ns[j]) < 0.3 + 0.1 * j).astype(float))
+                else:                                 # coarse grid
+                    gs.append(np.round(rng.normal(0.2 * j, 1.0, ns[j]) * 2) / 2)
+            yield gs
+
+    def test_rowsum_equals_mean_pooled_midrank_deviation(self):
+        rng = np.random.default_rng(8100)
+        for groups in self._cases(rng):
+            k = len(groups)
+            ns = np.array([len(g) for g in groups], float)
+            N = ns.sum()
+            pooled = np.concatenate(groups)
+            ranks = scipy_stats.rankdata(pooled)
+            edges = np.cumsum([0] + [len(g) for g in groups])
+            rbar = np.array([ranks[edges[j]:edges[j + 1]].mean() for j in range(k)])
+
+            pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+            delta = _kw_pairwise_thetas(groups, pairs) - 0.5
+            s = _kw_rowsum_matrix(k, pairs, ns) @ delta
+            assert s == pytest.approx(rbar - (N + 1) / 2, abs=1e-9)
+
+    def test_reconstructs_scipy_kruskal_statistic(self):
+        rng = np.random.default_rng(8101)
+        for groups in self._cases(rng):
+            if len(groups) < 3:
+                continue
+            pooled = np.concatenate(groups)
+            if len(np.unique(pooled)) == 1:
+                continue
+            k = len(groups)
+            ns = np.array([len(g) for g in groups], float)
+            N = ns.sum()
+            pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+            delta = _kw_pairwise_thetas(groups, pairs) - 0.5
+            s = _kw_rowsum_matrix(k, pairs, ns) @ delta
+            _v, cnts = np.unique(pooled, return_counts=True)
+            tie_corr = 1.0 - (cnts ** 3 - cnts).sum() / (N ** 3 - N)
+            h = 12.0 / (N * (N + 1)) * float(ns @ (s ** 2)) / tie_corr
+            assert h == pytest.approx(float(scipy_stats.kruskal(*groups).statistic), rel=1e-9)
+
+    def test_weight_vector_is_in_L_left_null_space(self):
+        """w @ L == 0 identically, so w @ s == 0 and rank(L cov L^T) <= k-1."""
+        rng = np.random.default_rng(8102)
+        for k in (2, 3, 5, 7):
+            pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+            w = rng.uniform(1, 100, k)
+            L = _kw_rowsum_matrix(k, pairs, w)
+            assert np.abs(w @ L).max() == pytest.approx(0.0, abs=1e-9)
+
+
+class TestKruskalRowSumProjection:
+    """_ppi_kruskal_wallis_rowsum / _kw_rowsum_from_pairwise behaviour."""
+
+    def test_matches_pairwise_exactly_at_k2(self):
+        """At k=2 the projection is a rank-1 rescaling of the single pair, so
+        the Wald statistic, df and p-value are unchanged -- for EITHER
+        weighting, and under an unbalanced design."""
+        rng = np.random.default_rng(8110)
+        for i in range(4):
+            n_a, n_b = 220, 90
+            t_a = rng.normal(3.0, 1.0, n_a)
+            t_b = rng.normal(3.3, 1.0, n_b)
+            g_a = t_a + 0.2 + rng.normal(0, 0.2, n_a)
+            g_b = t_b - 0.1 + rng.normal(0, 0.2, n_b)
+            la = np.full(n_a, np.nan); lb = np.full(n_b, np.nan)
+            ia = rng.choice(n_a, 60, replace=False); la[ia] = t_a[ia]
+            ib = rng.choice(n_b, 25, replace=False); lb[ib] = t_b[ib]
+            seed = 400 + i
+            base = _ppi_kruskal_wallis_pairwise([g_a, g_b], [la, lb], 0.05, 250, seed)
+            for w in ("full", "labeled"):
+                proj = _ppi_kruskal_wallis_rowsum([g_a, g_b], [la, lb], 0.05, 250, seed,
+                                                  weights=w)
+                assert proj["df"] == base["df"] == 1
+                assert proj["wald_stat"] == pytest.approx(base["wald_stat"], rel=1e-10)
+                assert proj["wald_p"] == pytest.approx(base["wald_p"], abs=1e-12)
+
+    def test_df_is_k_minus_one_and_pairwise_df_is_full(self):
+        rng = np.random.default_rng(8111)
+        for k in (3, 4, 5):
+            groups, groups_lab = _multigroup(rng, k=k, n=200, n_lab=60,
+                                             mus=[3.0 + 0.15 * j for j in range(k)])
+            r = _ppi_kruskal_wallis_rowsum(groups, groups_lab, 0.05, 300, 55)
+            assert r["df"] == k - 1
+            assert r["pairwise_df"] == k * (k - 1) // 2
+
+    def test_weightings_identical_under_balanced_design(self):
+        """w_labeled = f * w_full under balance, and the Wald statistic is
+        invariant to a common rescaling of L."""
+        rng = np.random.default_rng(8112)
+        groups, groups_lab = _multigroup(rng, k=4, n=200, n_lab=50)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 300, 77)
+        a = _kw_rowsum_from_pairwise(pw, weights="full")
+        b = _kw_rowsum_from_pairwise(pw, weights="labeled")
+        assert a["wald_p"] == pytest.approx(b["wald_p"], abs=1e-12)
+
+    def test_weightings_differ_under_unequal_label_fractions(self):
+        rng = np.random.default_rng(8113)
+        k, n = 3, 300
+        truths = [rng.normal(3.0, 1.0, n) for _ in range(k)]
+        groups = [t + b + rng.normal(0, 0.2, n) for t, b in zip(truths, [0.0, 0.4, -0.3])]
+        groups_lab = []
+        for j, m in enumerate([30, 90, 180]):
+            lab = np.full(n, np.nan)
+            idx = rng.choice(n, m, replace=False)
+            lab[idx] = truths[j][idx]
+            groups_lab.append(lab)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 300, 99)
+        a = _kw_rowsum_from_pairwise(pw, weights="full")
+        b = _kw_rowsum_from_pairwise(pw, weights="labeled")
+        assert not np.allclose(a["rowsum_weights"] / a["rowsum_weights"][0],
+                               b["rowsum_weights"] / b["rowsum_weights"][0])
+        assert a["wald_p"] != b["wald_p"]
+
+    def test_rejects_bad_weights_and_double_projection(self):
+        rng = np.random.default_rng(8114)
+        groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=40)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 150, 5)
+        with pytest.raises(ValueError, match="full"):
+            _kw_rowsum_from_pairwise(pw, weights="nope")
+        proj = _kw_rowsum_from_pairwise(pw)
+        with pytest.raises(ValueError, match="unprojected"):
+            _kw_rowsum_from_pairwise(proj)
+
+    def test_preserves_pairwise_estimate_and_cis(self):
+        """The projection changes only the omnibus test, never the corrected
+        theta vector or its per-pair intervals."""
+        rng = np.random.default_rng(8115)
+        groups, groups_lab = _multigroup(rng, k=4, n=150, n_lab=50)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 250, 11)
+        proj = _kw_rowsum_from_pairwise(pw)
+        assert np.array_equal(proj["theta_hat"], pw["theta_hat"])
+        assert np.array_equal(proj["ci_lo"], pw["ci_lo"])
+        assert np.array_equal(proj["ci_hi"], pw["ci_hi"])
+        assert proj["pairwise_wald_p"] == pw["wald_p"]
+
+    def test_public_method_values(self):
+        rng = np.random.default_rng(8116)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=60,
+                                         mus=[3.0, 3.3, 3.6])
+        for method in ("rowsum", "rowsum_labeled"):
+            r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=250, rng=3,
+                              print_result=False, method=method)
+            assert r.extra["ppi_method"] == method
+            assert r.extra["rowsum_df"] == 2
+            assert len(r.extra["rowsum_s"]) == 3
+            assert 0.0 <= r.corrected_p_value <= 1.0
+            # pairwise omnibus reported alongside, for direct comparison
+            assert 0.0 <= r.extra["pairwise_wald_p"] <= 1.0
+        with pytest.raises(ValueError, match="method must be one of"):
+            kruskalwallis(*groups, groups_lab=groups_lab, print_result=False,
+                          method="not_a_method")
+
+    def test_blind_to_a_cyclic_alternative_by_construction(self):
+        """A perfect 3-cycle (theta_AB = theta_BC = theta_CA) leaves every row
+        sum at exactly zero, so the projection cannot see it -- the same blind
+        spot classical Kruskal-Wallis has.  The full pairwise Wald does."""
+        rng = np.random.default_rng(8117)
+        phi = (np.sqrt(5.0) - 1.0) / 2.0
+        n = 900
+        truth = [
+            rng.choice([0.0, 10.0], n, p=[1 - phi, phi]),
+            np.full(n, 8.0),
+            rng.choice([7.0, 11.0], n, p=[phi, 1 - phi]),
+        ]
+        groups, groups_lab = [], []
+        for t in truth:
+            groups.append(t + rng.normal(0, 0.15, n))
+            lab = np.full(n, np.nan)
+            idx = rng.choice(n, 200, replace=False)
+            lab[idx] = t[idx]
+            groups_lab.append(lab)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 400, 21)
+        proj = _kw_rowsum_from_pairwise(pw)
+        assert pw["wald_p"] < 1e-3                     # cycle is plainly there
+        assert proj["wald_p"] > 0.05                   # projection cannot see it
+        assert np.abs(proj["rowsum_s"]).max() < 0.25 * np.abs(
+            _kw_rowsum_matrix(3, pw["pairs"], np.array([n, n, n], float))
+            @ np.abs(pw["theta_hat"] - 0.5)).max()
+
+
+class TestKwWaldFromVector:
+    """The shared reference-distribution helper."""
+
+    def test_zero_covariance_reports_certainty_not_ignorance(self):
+        stat, df, p = _kw_wald_from_vector(np.array([0.3, -0.2]), np.zeros((2, 2)), 50)
+        assert (stat, df, p) == (0.0, 0, 0.0)
+        stat, df, p = _kw_wald_from_vector(np.zeros(2), np.zeros((2, 2)), 50)
+        assert (stat, df, p) == (0.0, 0, 1.0)
+
+    def test_df_follows_covariance_rank(self):
+        cov = np.diag([1.0, 1.0, 0.0])
+        _stat, df, _p = _kw_wald_from_vector(np.array([0.1, 0.1, 0.0]), cov, 100)
+        assert df == 2
+
+    def test_f_reference_converges_to_chi2_as_nu_grows(self):
+        cov = np.eye(2) * 0.01
+        diff = np.array([0.2, -0.1])
+        chi2_p = float(scipy_stats.chi2.sf(diff @ np.linalg.inv(cov) @ diff, df=2))
+        _s, _df, p_big = _kw_wald_from_vector(diff, cov, 10_000_000)
+        _s, _df, p_small = _kw_wald_from_vector(diff, cov, 30)
+        assert p_big == pytest.approx(chi2_p, rel=1e-3)
+        assert p_small > p_big          # finite-sample correction is conservative

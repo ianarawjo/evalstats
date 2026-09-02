@@ -171,6 +171,7 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
+        _kw_rowsum_from_pairwise,
         _ppi_kruskal_wallis_pairwise,
     )
 
@@ -178,7 +179,9 @@ from ..methods import (
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
     PPI_BONETT_PRICE,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
-    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+    KRUSKAL_ROWSUM,
+    KRUSKAL_ROWSUM_LABELED, PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
@@ -541,6 +544,25 @@ def _run_real_omnibus_independent_cell(
                 except Exception:
                     pass
 
+            # Row-sum ("real Kruskal-Wallis") projection. Deliberately its
+            # OWN bootstrap draw rather than reusing KRUSKAL's: sharing one
+            # would shift KRUSKAL's rng stream and silently change every
+            # existing kruskal number in this case. The uncorrected
+            # comparator is the same classical KW on the judge scores --
+            # this projection is the PPI correction OF that statistic, so it
+            # is the directly matched pair.
+            if KRUSKAL_ROWSUM.name in methods or KRUSKAL_ROWSUM_LABELED.name in methods:
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
     return corrected, uncorrected
 
 
@@ -691,6 +713,25 @@ def _run_real_omnibus_independent_power_cell(
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
                     pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
+            # Row-sum ("real Kruskal-Wallis") projection. Deliberately its
+            # OWN bootstrap draw rather than reusing KRUSKAL's: sharing one
+            # would shift KRUSKAL's rng stream and silently change every
+            # existing kruskal number in this case. The uncorrected
+            # comparator is the same classical KW on the judge scores --
+            # this projection is the PPI correction OF that statistic, so it
+            # is the directly matched pair.
+            if KRUSKAL_ROWSUM.name in methods or KRUSKAL_ROWSUM_LABELED.name in methods:
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -1100,9 +1141,16 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # for MNAR robustness, but this check's real-data labeling is MCAR by
     # construction, so there's no MNAR risk here for its local rectifier to
     # buy anything against.
+    #
+    # KRUSKAL_ROWSUM/KRUSKAL_ROWSUM_LABELED ARE included: unlike the MNAR
+    # variant they are not a different rectifier competing on the same
+    # ground, they are the same correction projected onto classical KW's own
+    # contrasts -- so running them beside KRUSKAL on real data is exactly the
+    # "what does correcting the real KW cost" comparison, and it costs one
+    # extra bootstrap per rep.
     if eval_type == "binary":
         return []
-    return [ANOVA_IND.name, KRUSKAL.name]
+    return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name]
 
 
 def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:

@@ -605,12 +605,24 @@ FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/
 # alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
+# KRUSKAL_ROWSUM/KRUSKAL_ROWSUM_LABELED: EXPERIMENTAL. Not another rectifier
+# -- the SAME corrected pairwise vector and covariance as KRUSKAL, Wald-tested
+# on its (k-1)-dimensional weighted row-sum projection, which is exactly the
+# part classical Kruskal-Wallis's mean pooled ranks are an affine function of
+# (see evalstats.tests._ppi_kruskal_wallis_rowsum). So KRUSKAL *replaces* the
+# classical statistic and these two *correct* it. "_labeled" weights the
+# projection by labeled counts instead of full group sizes; the two are
+# bit-identical under a balanced design and only diverge when per-group label
+# fractions differ. Same colour convention: lighter tints of KRUSKAL's pink.
+KRUSKAL_ROWSUM = Method("kruskal_rowsum", "#c2559c")           # darker pink
+KRUSKAL_ROWSUM_LABELED = Method("kruskal_rowsum_labeled", "#f7d6e8")  # palest tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+    LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
 """Every PPI test method the harness knows how to run -- the full set
@@ -620,6 +632,11 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
+        # Experimental, opt-in via --tests kruskal_rowsum /
+        # kruskal_rowsum_labeled: they answer "what does correcting the REAL
+        # Kruskal-Wallis cost/buy", which is a study question, not part of
+        # the shipped default set.
+        KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via

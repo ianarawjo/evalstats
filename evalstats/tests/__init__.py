@@ -848,6 +848,68 @@ def _kw_mean_sq_deviation_from_labeled(Y: np.ndarray, X: np.ndarray, k: int) -> 
     return float(4.0 * np.mean((thetas - 0.5) ** 2))
 
 
+def _kw_wald_from_vector(diff: np.ndarray, cov: np.ndarray, nu: int):
+    """Wald statistic, df and p-value for a PPI-corrected effect vector.
+
+    Extracted verbatim from :func:`_ppi_kruskal_wallis_pairwise` so that
+    every member of this family (the pairwise omnibus, its MNAR variant,
+    and the row-sum/"real Kruskal-Wallis" projection in
+    :func:`_ppi_kruskal_wallis_rowsum`) shares ONE reference-distribution
+    recipe and cannot drift apart. See that function's docstring for why
+    df comes from the covariance's own rank rather than a hardcoded k-1,
+    why the reference is an F (Hotelling-T2-style finite-sample
+    correction, nu = total labeled observations) rather than a plain
+    chi-square, and why an all-zero covariance is handled by inspecting
+    the point estimate instead of by pinv.
+
+    Returns ``(wald_stat, df, wald_p)``.
+    """
+    diff = np.asarray(diff, dtype=float)
+    cov = np.atleast_2d(np.asarray(cov, dtype=float))
+    rcond = 1e-8
+    eigvals = np.linalg.eigvalsh(cov)
+    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
+
+    if max_eigval <= 1e-12:
+        return 0.0, 0, (0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0)
+
+    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
+    wald_stat = float(diff @ cov_pinv @ diff)
+    df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
+    if nu > df:
+        f_stat = wald_stat * (nu - df + 1) / (nu * df)
+        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    else:
+        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+    return wald_stat, df, wald_p
+
+
+def _kw_rowsum_matrix(k: int, pairs, weights: np.ndarray) -> np.ndarray:
+    """L: the k x C(k,2) map from the pairwise dominance-deviation vector
+    delta (delta_ab = theta_ab - 1/2, stored for a < b) to Kruskal-Wallis's
+    weighted row sums s_j = sum_{l != j} w_l * delta_jl.
+
+    Orientation matters: delta_ba = -delta_ab, so a stored pair (a, b)
+    contributes ``+w_b`` to row a and ``-w_a`` to row b.
+
+    With w = the group sizes n, s_j is EXACTLY the mean-pooled-midrank
+    deviation of group j (verified numerically on continuous, Likert,
+    binary and coarse-grid data with unequal group sizes):
+
+        Rbar_j = (n_j + 1)/2 + sum_{l != j} n_l * theta_jl
+               = (N + 1)/2   + s_j
+
+    and classical Kruskal-Wallis is H = 12/(N(N+1)) * sum_j n_j s_j^2,
+    tie-corrected. ``w @ L == 0`` identically (each column contributes
+    ``w_a*w_b - w_b*w_a``), so ``w @ s == 0`` and rank(L cov L^T) <= k-1.
+    """
+    L = np.zeros((k, len(pairs)))
+    for c, (a, b) in enumerate(pairs):
+        L[a, c] = weights[b]
+        L[b, c] = -weights[a]
+    return L
+
+
 def _ppi_kruskal_wallis(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
@@ -1127,75 +1189,58 @@ def _ppi_kruskal_wallis_pairwise(
         cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
 
     diff = theta_hat - 0.5
-    rcond = 1e-8
-    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
-    wald_stat = float(diff @ cov_pinv @ diff)
-    # df = the pseudo-inverse's own rank (same rcond truncation), not a
-    # hardcoded k-1. k-1 is the correct contrast-space dimension for
-    # pairwise MEAN differences (k group means have exactly k-1 independent
-    # linear contrasts among them), which is where the "rank-deficient, use
-    # k-1" convention comes from -- but pairwise DOMINANCE probabilities
-    # theta_ab = P_mid(a>b) are not linear combinations of k per-group
-    # "effects" the way mean differences are, so there is no general exact
-    # linear dependency forcing theta_23 to be determined by
-    # theta_12/theta_13: the covariance is generically full rank C(k,2), not
-    # k-1. Testing a Wald statistic built from a higher-rank covariance
-    # against a chi-square(df=k-1) reference systematically over-rejects.
-    # Deriving df from cov's own rank (at the same rcond used for the
-    # pseudo-inverse) fixes this while still correctly falling back to a
-    # smaller df in whatever corner the covariance genuinely is
-    # near-singular, rather than assuming it always is.
-    eigvals = np.linalg.eigvalsh(cov)
-    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
-
-    if max_eigval <= 1e-12:
-        # Every pairwise dominance estimate has (numerically) EXACTLY zero
-        # bootstrap variance -- confirmed to happen on real data whenever
-        # the labeled subsample preserves a strict, deterministic group
-        # ordering (e.g. an exact rank-split positive control: the labeled
-        # human-side theta is 1.0/0.0 on every possible resample, since
-        # resampling can't undo a strict ordering), combined with a small
-        # enough power-tuning lambda that the judge-side variance
-        # contribution also rounds to zero. np.linalg.pinv on an all-zero
-        # covariance returns an all-zero pseudo-inverse (it can't represent
-        # "infinite precision"), which silently collapses wald_stat to 0
-        # -- indistinguishable, from the Wald statistic alone, from "no
-        # information", even though zero uncertainty around a nonzero
-        # effect is the most CONFIDENT result a test can report, not an
-        # absent one. df then also collapses to 0, which crashed this
-        # function outright (ZeroDivisionError in the nu>df branch below)
-        # rather than reporting the correct near-certain rejection --
-        # silently swallowed by cases/ppi_real.py's per-rep try/except and
-        # counted as "failed to detect", which is what collapsed real-data
-        # kruskal power from ~0.83 (uncorrected) to ~0.20 (corrected) on
-        # exactly these strong-effect scenarios. Bypasses wald_stat/pinv
-        # entirely here and falls back to the same "check the point
-        # estimate directly" idiom every other closed-form PPI backend
-        # uses for an se<=0 degenerate case (e.g.
-        # evalstats.ppi._analytic_walsh_theta_correct).
-        wald_stat = 0.0
-        df = 0
-        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
-    else:
-        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
-        wald_stat = float(diff @ cov_pinv @ diff)
-        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
-
-        # Finite-sample (Hotelling's T²-style) correction: a chi-square
-        # reference is only the n→∞ limit of the Wald statistic's
-        # distribution, and is known to be mildly anti-conservative (too
-        # many rejections) whenever the covariance is estimated from a
-        # small effective sample — exactly the regime of a sparse labeled
-        # set. ν is the total labeled observations across groups (the
-        # classical Hotelling "n" feeding the covariance estimate); as ν →
-        # ∞ this F-reference converges back to the chi-square one, so it
-        # costs nothing in the well-labeled regime.
-        nu = sum(n_lab_per_group)
-        if nu > df:
-            f_stat = wald_stat * (nu - df + 1) / (nu * df)
-            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
-        else:
-            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+    # The Wald statistic, its df and its reference distribution all come
+    # from _kw_wald_from_vector, shared with the MNAR variant and with the
+    # row-sum ("real Kruskal-Wallis") projection so the three cannot drift
+    # apart. Three choices live in there, each load-bearing:
+    #
+    #   * df = the covariance's OWN rank (at the pinv's rcond), not a
+    #     hardcoded k-1. k-1 is the correct contrast-space dimension for
+    #     pairwise MEAN differences (k group means have exactly k-1
+    #     independent linear contrasts among them), which is where the
+    #     "rank-deficient, use k-1" convention comes from -- but pairwise
+    #     DOMINANCE probabilities theta_ab = P_mid(a>b) are not linear
+    #     combinations of k per-group "effects" the way mean differences
+    #     are, so nothing forces theta_23 to be determined by
+    #     theta_12/theta_13: this covariance is generically full rank
+    #     C(k,2). Testing a Wald statistic built from a higher-rank
+    #     covariance against chi-square(df=k-1) systematically
+    #     over-rejects. (The row-sum projection is the opposite case: it
+    #     really is rank k-1 by construction, and the same rank-derived df
+    #     lands on k-1 without being told.)
+    #
+    #   * an F rather than chi-square reference (Hotelling's T2-style
+    #     finite-sample correction, nu = total labeled observations across
+    #     groups): chi-square is only the n->infinity limit and is mildly
+    #     anti-conservative whenever the covariance is estimated from a
+    #     small effective sample -- exactly the sparse-label regime. As
+    #     nu -> infinity it converges back to chi-square, so it costs
+    #     nothing when labels are plentiful.
+    #
+    #   * an explicit all-zero-covariance guard. Every pairwise dominance
+    #     estimate can have (numerically) EXACTLY zero bootstrap variance
+    #     -- confirmed on real data whenever the labeled subsample
+    #     preserves a strict, deterministic group ordering (an exact
+    #     rank-split positive control: the labeled human-side theta is
+    #     1.0/0.0 on every possible resample, since resampling can't undo a
+    #     strict ordering), combined with a small enough power-tuning
+    #     lambda that the judge-side variance contribution also rounds to
+    #     zero. np.linalg.pinv on an all-zero covariance returns an
+    #     all-zero pseudo-inverse (it can't represent "infinite
+    #     precision"), silently collapsing wald_stat to 0 --
+    #     indistinguishable from "no information", even though zero
+    #     uncertainty around a nonzero effect is the most CONFIDENT result
+    #     a test can report. df then also collapsed to 0 and crashed this
+    #     function (ZeroDivisionError), silently swallowed by
+    #     cases/ppi_real.py's per-rep try/except and counted as "failed to
+    #     detect" -- which is what collapsed real-data kruskal power from
+    #     ~0.83 (uncorrected) to ~0.20 (corrected) on exactly these
+    #     strong-effect scenarios. The guard falls back to the same "check
+    #     the point estimate directly" idiom every other closed-form PPI
+    #     backend uses for an se<=0 degenerate case (e.g.
+    #     evalstats.ppi._analytic_walsh_theta_correct).
+    nu = sum(n_lab_per_group)
+    wald_stat, df, wald_p = _kw_wald_from_vector(diff, cov, nu)
 
     # Per-pair two-sided bootstrap p-values, same convention as
     # TestResult.corrected_p_value's own definition (2*min(P(boot<=0.5),
@@ -1217,7 +1262,139 @@ def _ppi_kruskal_wallis_pairwise(
         "wald_p": wald_p,
         "boots": boots,
         "pair_p": pair_p,
+        # Additive keys (existing callers read only the ones above).
+        # `cov` is the covariance the Wald test actually used -- under
+        # power_tune=True that is NOT np.cov(boots) alone, it also carries
+        # the delta-method lambda-uncertainty inflation, so a caller that
+        # wants to re-test a linear function of theta_hat (e.g.
+        # _ppi_kruskal_wallis_rowsum's Kruskal-Wallis row-sum projection)
+        # must take this matrix rather than rebuild one from `boots`.
+        "cov": cov,
+        "df": df,
+        "n_lab_per_group": list(n_lab_per_group),
+        "n_per_group": [len(g) for g in groups],
     }
+
+
+def _ppi_kruskal_wallis_rowsum(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+    weights: str = "full",
+    power_tune: bool = True,
+) -> dict:
+    """PPI-corrected *classical* Kruskal-Wallis: a Wald test on the weighted
+    row sums of the corrected pairwise dominance vector.
+
+    EXPERIMENTAL / opt-in. ``kruskalwallis()``'s default omnibus
+    (:func:`_ppi_kruskal_wallis_pairwise`) *replaces* the classical KW
+    statistic rather than correcting it: it tests the full C(k,2) vector
+    delta = (theta_ab - 1/2). This function tests only the part of that
+    vector classical KW can see.
+
+    The bridge is an exact algebraic identity (verified numerically on
+    continuous, Likert, binary and coarse-grid data with unequal group
+    sizes and heavy ties -- it holds to floating-point, not just
+    asymptotically). For pooled midranks Rbar_j over N = sum_j n_j
+    observations,
+
+        Rbar_j = (n_j + 1)/2 + sum_{l != j} n_l * theta_jl
+               = (N + 1)/2   + s_j,      s_j := sum_{l != j} n_l * delta_jl
+
+    and classical KW's statistic is exactly
+    H = 12/(N(N+1)) * sum_j n_j * s_j^2, divided by the usual tie
+    correction. So KW's mean-rank contrasts are an exact affine function of
+    the same pairwise theta vector we already correct: **classical KW tests
+    the (k-1)-dimensional weighted row-sum projection s = L @ delta and
+    nothing else.** L is built by :func:`_kw_rowsum_matrix`.
+
+    Construction: take delta_hat and its joint bootstrap covariance Sigma
+    unchanged from :func:`_ppi_kruskal_wallis_pairwise` (including its
+    power-tuned lambda and the delta-method lambda-uncertainty inflation --
+    which is why that function has to hand back the covariance it actually
+    used, not just its bootstrap replicates), then Wald-test s = L @ delta
+    against L @ Sigma @ L.T using the same reference recipe
+    (:func:`_kw_wald_from_vector`). Nothing about the PPI correction itself
+    changes; this is purely a choice of which linear functional of the
+    corrected vector to test.
+
+    The projected covariance is singular BY CONSTRUCTION: w @ L == 0
+    identically, so w @ s == 0 and rank(L Sigma L.T) <= k-1. That is
+    exactly the corner the shared Wald helper's rank-derived df was written
+    for -- it lands on k-1 without being told, and the Moore-Penrose
+    pseudo-inverse handles the null direction.
+
+    ``weights``
+        ``"full"`` (default): w = the FULL per-group sizes (labeled +
+        unlabeled). This targets the Kruskal-Wallis estimand of the whole
+        dataset -- the H you would have computed had every item been
+        human-labeled -- which is the estimand PPI exists to reach.
+
+        ``"labeled"``: w = the labeled counts per group, i.e. the KW
+        estimand of the labeled subsample's design.
+
+        The two differ ONLY when the design is unbalanced. The Wald
+        statistic is invariant to a common rescaling of L (s -> c*s and
+        L Sigma L.T -> c^2 L Sigma L.T leave s.T (L Sigma L.T)^+ s
+        unchanged), so with equal group sizes AND equal per-group label
+        fractions the two weightings give bit-identical p-values.
+    """
+    pw = _ppi_kruskal_wallis_pairwise(
+        groups, groups_lab, alpha, n_boot, rng, power_tune=power_tune
+    )
+    return _kw_rowsum_from_pairwise(pw, weights=weights)
+
+
+def _kw_rowsum_from_pairwise(pw: dict, weights: str = "full") -> dict:
+    """The projection half of :func:`_ppi_kruskal_wallis_rowsum`, split out so
+    a caller that already has a pairwise result can test several weightings
+    from ONE bootstrap (the two weightings must share delta_hat and Sigma for
+    the comparison to be about the weights and nothing else)."""
+    if "rowsum_weighting" in pw:
+        raise ValueError(
+            "pass the unprojected _ppi_kruskal_wallis_pairwise result, not an "
+            "already-projected one (the pairwise_* keys would be overwritten)."
+        )
+    k = len(pw["n_per_group"])
+    pairs = pw["pairs"]
+
+    if weights == "full":
+        w = np.asarray(pw["n_per_group"], dtype=float)
+    elif weights == "labeled":
+        w = np.asarray(pw["n_lab_per_group"], dtype=float)
+    else:
+        raise ValueError(f'weights must be "full" or "labeled"; got {weights!r}.')
+
+    L = _kw_rowsum_matrix(k, pairs, w)
+    delta = pw["theta_hat"] - 0.5
+    s = L @ delta
+    cov_s = L @ np.atleast_2d(pw["cov"]) @ L.T
+    cov_s = 0.5 * (cov_s + cov_s.T)   # kill fp asymmetry before eigvalsh
+
+    nu = int(sum(pw["n_lab_per_group"]))
+    wald_stat, df, wald_p = _kw_wald_from_vector(s, cov_s, nu)
+
+    out = dict(pw)
+    out.update({
+        # The omnibus keys callers read (`wald_stat`/`wald_p`/`df`) now
+        # describe the PROJECTED test; the full-vector ones are kept
+        # alongside under explicit names so both are reportable from one
+        # run.
+        "wald_stat": wald_stat,
+        "wald_p": wald_p,
+        "df": df,
+        "pairwise_wald_stat": pw["wald_stat"],
+        "pairwise_wald_p": pw["wald_p"],
+        "pairwise_df": pw["df"],
+        "rowsum_weights": w,
+        "rowsum_L": L,
+        "rowsum_s": s,
+        "rowsum_cov": cov_s,
+        "rowsum_weighting": weights,
+    })
+    return out
 
 
 def _ppi_kruskal_wallis_pairwise_mnar_experimental(
@@ -1364,36 +1541,10 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
 
     cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
     diff = theta_hat - 0.5
-    rcond = 1e-8
-    # df = the pseudo-inverse's OWN rank, not a hardcoded k-1 -- same fix,
-    # same reasoning as _ppi_kruskal_wallis_pairwise's df (see that
-    # function's docstring): pairwise DOMINANCE probabilities aren't linear
-    # combinations of k group effects the way mean differences are, so
-    # their covariance is generically full rank C(k,2), not k-1.
-    eigvals = np.linalg.eigvalsh(cov)
-    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
-
-    if max_eigval <= 1e-12:
-        # See _ppi_kruskal_wallis_pairwise's identical degenerate-cov guard
-        # for the full mechanism (a real, exact-ordering positive-control
-        # effect can drive bootstrap variance to exactly 0, which pinv
-        # treats as "no information" rather than "perfect certainty" --
-        # crashing on a division by df=0 instead of reporting a confident
-        # rejection).
-        wald_stat = 0.0
-        df = 0
-        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
-    else:
-        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
-        wald_stat = float(diff @ cov_pinv @ diff)
-        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
-
-        nu = sum(n_lab_per_group)
-        if nu > df:
-            f_stat = wald_stat * (nu - df + 1) / (nu * df)
-            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
-        else:
-            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+    # Same rank-derived df, same Hotelling-T2-style F reference and same
+    # zero-covariance guard as _ppi_kruskal_wallis_pairwise -- one shared
+    # implementation so the two cannot drift apart.
+    wald_stat, df, wald_p = _kw_wald_from_vector(diff, cov, sum(n_lab_per_group))
 
     return {
         "pairs": pairs,
@@ -1402,6 +1553,11 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
         "ci_hi": ci_hi,
         "wald_stat": wald_stat,
         "wald_p": wald_p,
+        "cov": cov,
+        "df": df,
+        "boots": boots,
+        "n_lab_per_group": list(n_lab_per_group),
+        "n_per_group": [len(g) for g in groups],
     }
 
 
@@ -4855,10 +5011,15 @@ def kruskalwallis(
     groups_lab : sequence[array-like], optional
         Sparse human labels aligned with each group. Must have one array per
         group, with ``NaN`` for unlabeled items.
-    method : {"global", "mnar_experimental"}
+    method : {"global", "mnar_experimental", "rowsum", "rowsum_labeled"}
         Which PPI correction to use for the pairwise-dominance Wald test
-        (default ``"global"``). Same tradeoff as ``mannwhitney``'s
-        equivalent option, one level up (k independent groups instead of 2).
+        (default ``"global"``). ``"global"``/``"mnar_experimental"`` are the
+        same tradeoff as ``mannwhitney``'s equivalent option, one level up
+        (k independent groups instead of 2); ``"rowsum"``/
+        ``"rowsum_labeled"`` are EXPERIMENTAL and change *which linear
+        functional* of the corrected pairwise vector is tested rather than
+        how it is corrected -- see
+        :func:`_ppi_kruskal_wallis_rowsum`.
 
         ``"global"`` (:func:`_ppi_kruskal_wallis_pairwise`) applies a
         single rectifier per pair -- simple, but can be miscalibrated
@@ -4878,10 +5039,25 @@ def kruskalwallis(
         for anyone deliberately studying the MNAR-robustness question --
         see ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
         ``kruskal`` vs ``kruskal_mnar_experimental``) for the calibration
-        study. Only affects ``corrected_p`` (the Wald test) --
-        ``corrected_estimate`` (the scalar effect size from
-        :func:`_ppi_kruskal_wallis`) always uses the single-global-
-        rectifier estimator regardless of ``method``.
+        study.
+
+        ``"rowsum"`` (:func:`_ppi_kruskal_wallis_rowsum`) is the PPI
+        correction of the *classical* Kruskal-Wallis statistic rather than
+        a replacement for it. It takes the corrected pairwise vector and
+        its covariance from ``"global"`` unchanged and Wald-tests only
+        their (k-1)-dimensional weighted row-sum projection -- exactly the
+        part of the pairwise vector classical KW's mean pooled ranks are an
+        affine function of. Fewer degrees of freedom, so slightly more
+        power on ordered-location alternatives; structurally blind to
+        non-transitive (cyclic) dominance, where the row sums cancel, in
+        precisely the way classical KW is. ``"rowsum_labeled"`` is the same
+        test with the projection weighted by labeled counts instead of full
+        group sizes (identical to ``"rowsum"`` under a balanced design).
+
+        None of these affects ``corrected_estimate`` (the scalar effect size
+        from :func:`_ppi_kruskal_wallis`), which always uses the
+        single-global-rectifier estimator; ``method`` only changes
+        ``corrected_p`` (the Wald test).
     print_result : bool
         Print a summary table to stdout (default True). Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -4892,8 +5068,11 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, print_result=False)          # silent
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
-    if method not in ("global", "mnar_experimental"):
-        raise ValueError(f'method must be "global" or "mnar_experimental"; got {method!r}.')
+    _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled")
+    if method not in _KW_METHODS:
+        raise ValueError(
+            f"method must be one of {_KW_METHODS}; got {method!r}."
+        )
     if len(groups) < 3:
         raise ValueError(
             "kruskalwallis requires at least three groups (k >= 3); "
@@ -4948,6 +5127,11 @@ def kruskalwallis(
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
         if method == "mnar_experimental":
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
+        elif method in ("rowsum", "rowsum_labeled"):
+            pw = _ppi_kruskal_wallis_rowsum(
+                groups, groups_lab, alpha, n_boot, rng,
+                weights="full" if method == "rowsum" else "labeled",
+            )
         else:
             pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
 
@@ -4961,6 +5145,12 @@ def kruskalwallis(
         extra["corrected_effect_size"] = corrected_estimate
         extra["corrected_effect_size_name"] = "Mean (P(a>b)−0.5)²"
         extra["wald_stat"] = pw["wald_stat"]
+        if "rowsum_s" in pw:
+            extra["rowsum_s"] = pw["rowsum_s"]
+            extra["rowsum_weights"] = pw["rowsum_weights"]
+            extra["rowsum_df"] = pw["df"]
+            extra["pairwise_wald_stat"] = pw["pairwise_wald_stat"]
+            extra["pairwise_wald_p"] = pw["pairwise_wald_p"]
         extra["pairwise_effects"] = {
             pw["pairs"][i]: {
                 "theta": float(pw["theta_hat"][i]),
