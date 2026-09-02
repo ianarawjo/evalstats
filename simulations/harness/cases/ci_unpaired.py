@@ -1216,70 +1216,12 @@ def save_exact_csv(results: list[ExactResult], out_dir: str, run_stem: str) -> s
 
 
 def _cov_marker(cov: float, target: float, tol: float = 0.04) -> str:
+    """Same glyphs ci_paired uses, so the two cases' logs read alike."""
     if cov < target - tol:
-        return " !"
+        return "v"
     if cov > target + tol:
-        return " +"
-    return "  "
-
-
-def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]) -> None:
-    target = 1.0 - alpha
-    by_est_type: dict = defaultdict(list)
-    for r in results:
-        by_est_type[r.eval_type].append(r)
-
-    for eval_type in sorted(by_est_type):
-        rows = by_est_type[eval_type]
-        non_null = [r for r in rows if not r.is_null]
-        nulls = [r for r in rows if r.is_null]
-        print()
-        print("=" * 100)
-        print(f"eval_type={eval_type}   "
-              f"({len(rows)} rows, {len(nulls)} null / {len(non_null)} non-null)")
-        print("=" * 100)
-        print(f"{'method':<22s} {'meanCov':>8s} {'minCov':>8s} {'p05Cov':>8s} "
-              f"{'width':>9s} {'score':>9s} {'penalty':>9s} {'TypeI':>8s} {'ms/call':>8s}")
-        print("-" * 100)
-
-        by_method: dict = defaultdict(list)
-        for r in rows:
-            by_method[r.method].append(r)
-        for method in order_present_methods(set(by_method)):
-            sub = by_method[method.name]
-            sub_nn = [r for r in sub if not r.is_null] or sub
-            covs = np.array([r.covered / r.n_reps for r in sub_nn])
-            widths = np.array([r.total_width / r.n_reps for r in sub_nn])
-            scores = np.array([r.total_score / r.n_reps for r in sub_nn])
-            pens = np.array([(r.total_pen_under + r.total_pen_over) / r.n_reps for r in sub_nn])
-            sub_null = [r for r in sub if r.is_null]
-            type1 = (float(np.mean([r.rejects / r.n_reps for r in sub_null]))
-                     if sub_null else float("nan"))
-            n_calls = sum(r.n_reps for r in sub)
-            ms = 1000.0 * sum(r.total_time for r in sub) / max(n_calls, 1)
-            print(f"{method.name:<22s} {covs.mean():8.4f}{_cov_marker(covs.mean(), target)}"
-                  f"{covs.min():7.4f}{_cov_marker(covs.min(), target)}"
-                  f"{np.percentile(covs, 5):7.4f}  "
-                  f"{widths.mean():8.4f} {scores.mean():9.4f} {pens.mean():9.4f} "
-                  f"{type1:8.4f} {ms:8.3f}")
-
-        # Coverage vs n, for the equal-size cells only (n_a == n_b), so the
-        # column headers mean one thing.
-        eq = [r for r in rows if r.n_a == r.n_b and not r.is_null]
-        if eq:
-            ns = sorted({r.n_a for r in eq})
-            print()
-            print(f"  coverage vs n (equal group sizes, non-null; target {target:.2f})")
-            print("  " + f"{'method':<22s}" + "".join(f"{('n=' + str(n)):>9s}" for n in ns))
-            by_m: dict = defaultdict(lambda: defaultdict(list))
-            for r in eq:
-                by_m[r.method][r.n_a].append(r.covered / r.n_reps)
-            for method in order_present_methods(set(by_m)):
-                cells = "".join(
-                    f"{np.mean(by_m[method.name][n]):9.4f}" if by_m[method.name].get(n) else f"{'--':>9s}"
-                    for n in ns
-                )
-                print("  " + f"{method.name:<22s}" + cells)
+        return "^"
+    return " "
 
 
 def _mc_proportion_stats(successes: int, total: int, z: float = 1.96) -> tuple[float, float, float, float]:
@@ -1299,6 +1241,172 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
     avg = sum_t / total_reps
     var = max(0.0, sum_t2 / total_reps - avg * avg)
     return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
+
+
+def _headline_cov_width_score(
+    per_n_vals: dict, m: str, sizes_present: list[int],
+) -> tuple[float, float, float, float]:
+    """Headline (Cov, Width, Score, Penalty) for method `m`: average per n
+    first, then average those across n -- rather than pooling every
+    (scenario, n) cell into one flat list, which implicitly weights each n by
+    how many scenarios have data there. Matters most for Score: a method that
+    under-covers only at small n should have that show up in the headline
+    rather than be diluted by unrelated large-n cells. Same construction as
+    ci_paired's function of the same name."""
+    per_n_means = []
+    for n in sizes_present:
+        vals = per_n_vals.get((m, n))
+        if vals:
+            per_n_means.append(tuple(float(np.mean([v[i] for v in vals])) for i in range(4)))
+    if not per_n_means:
+        return (float("nan"),) * 4
+    return tuple(float(np.mean([pm[i] for pm in per_n_means])) for i in range(4))
+
+
+def _decision_rates(results: list[SimResult]) -> tuple[dict, dict]:
+    """(type1, power) keyed by (eval_type, method).
+
+    Type I is the reject rate on null cells; power is the reject rate on the
+    alternative cells, averaged per scenario first so every effect size and
+    shape weighs equally rather than by how many cells each contributes.
+    """
+    t1_acc: dict = defaultdict(lambda: [0, 0])
+    pw_cells: dict = defaultdict(list)
+    for r in results:
+        key = (r.eval_type, r.method)
+        if r.is_null:
+            acc = t1_acc[key]
+            acc[0] += r.rejects
+            acc[1] += r.n_reps
+        else:
+            pw_cells[(r.eval_type, r.method, r.label)].append((r.rejects, r.n_reps))
+    type1 = {k: (v[0] / v[1]) if v[1] else float("nan") for k, v in t1_acc.items()}
+    by_method: dict = defaultdict(list)
+    for (et, m, _label), cells in pw_cells.items():
+        c = sum(x[0] for x in cells)
+        n = sum(x[1] for x in cells)
+        if n:
+            by_method[(et, m)].append(c / n)
+    power = {k: float(np.mean(v)) for k, v in by_method.items() if v}
+    return type1, power
+
+
+def _print_overall_summary_table(
+    title: str, eval_types: list[str], results: list[SimResult], agg: dict,
+    agg_counts: dict, target: float, sizes_present: list[int],
+    type1: dict | None = None, power: dict | None = None,
+) -> None:
+    """One OVERALL SUMMARY table, aggregated over `eval_types`. No-ops if none
+    of them are present, so callers can request a table unconditionally."""
+    present_methods = {r.method for r in results if r.eval_type in eval_types}
+    if not present_methods:
+        return
+    method_labels = [m.name for m in order_present_methods(present_methods)]
+
+    per_n_vals: dict = defaultdict(list)
+    all_counts: dict = defaultdict(lambda: (0, 0))
+    per_n_counts: dict = defaultdict(lambda: (0, 0))
+    min_cov: dict = defaultdict(lambda: float("inf"))
+    for (et, m, n), vals in agg.items():
+        if et not in eval_types:
+            continue
+        per_n_vals[(m, n)].extend(vals)
+        c, t = agg_counts[(et, m, n)]
+        cp, tp = all_counts[m]
+        all_counts[m] = (cp + c, tp + t)
+        cpn, tpn = per_n_counts[(m, n)]
+        per_n_counts[(m, n)] = (cpn + c, tpn + t)
+        min_cov[m] = min(min_cov[m], min(v[0] for v in vals))
+
+    n_cols_hdr = "".join(f"  {'n=' + str(n):>7}" for n in sizes_present)
+    print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
+    print("  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
+          "  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
+    print("  TypeI = P(CI excludes 0) on null cells (target alpha); Power = the same rate\n"
+          "  on the alternative cells, averaged over scenarios.")
+    print("  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
+          "  so a too-narrow method can post the best Score while under-covering.\n"
+          "  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
+          "  that are too WIDE, Penalty ((2/alpha) x mean miss distance) those that are\n"
+          "  too NARROW. Neither means 'calibration' on its own. Read Width, Penalty\n"
+          "  and Cov/MinCov together.")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  "
+          f"{'Penalty':>8}  {'Score':>8}  {'TypeI':>7}  {'Power':>7}  {'Time(ms)':>14}{n_cols_hdr}")
+    _et_key = eval_types[0] if len(eval_types) == 1 else None
+    for m in method_labels:
+        mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
+        c_tot, t_tot = all_counts[m]
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats(
+            [r for r in results if r.method == m and r.eval_type in eval_types])
+        time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
+        worst = min_cov[m]
+        worst_str = f"{worst:.3f}{_cov_marker(worst, target)}" if np.isfinite(worst) else "-"
+        n_cols_vals = ""
+        for n in sizes_present:
+            c_n, t_n = per_n_counts.get((m, n), (0, 0))
+            cov_n = c_n / t_n if t_n > 0 else float("nan")
+            n_cols_vals += (f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} "
+                            if np.isfinite(cov_n) else f"  {'  -':>7}")
+        t1s = f"{type1[(_et_key, m)]:.3f}" if type1 and (_et_key, m) in type1 else "-"
+        pws = f"{power[(_et_key, m)]:.3f}" if power and (_et_key, m) in power else "-"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  "
+              f"{f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  "
+              f"{t1s:>7}  {pws:>7}  {time_str:>14}{n_cols_vals}")
+
+
+def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]) -> None:
+    target = 1.0 - alpha
+    n_reps = results[0].n_reps if results else 0
+    type1_map, power_map = _decision_rates(results)
+    non_null = [r for r in results if not r.is_null]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
+    method_labels = [m.name for m in order_present_methods({r.method for r in non_null})]
+
+    agg: dict = defaultdict(list)
+    agg_counts: dict = defaultdict(lambda: (0, 0))
+    for r in non_null:
+        n = max(r.n_reps, 1)
+        agg[(r.eval_type, r.method, r.n_a)].append((
+            r.covered / n, r.total_width / n, r.total_score / n,
+            (r.total_pen_under + r.total_pen_over) / n,
+        ))
+        cp, tp = agg_counts[(r.eval_type, r.method, r.n_a)]
+        agg_counts[(r.eval_type, r.method, r.n_a)] = (cp + r.covered, tp + r.n_reps)
+
+    def mean_cov(et, m, n):
+        vals = agg.get((et, m, n), [])
+        return float(np.mean([v[0] for v in vals])) if vals else float("nan")
+
+    sep = "=" * 72
+    print(f"\n{sep}\n  CI_UNPAIRED COVERAGE -- SIMULATION RESULTS\n"
+          f"  Estimand: between-subjects mean difference mean(A) - mean(B)\n"
+          f"  Nominal coverage: {target:.0%}   |   reps/cell: {n_reps}\n"
+          f"  v = under-covered   ^ = over-conservative\n"
+          f"  Score = interval score (width + (2/alpha)*miss-distance; lower is better --\n"
+          f"  see evalstats.core.stats_utils.interval_score)\n{sep}")
+
+    sizes_present = sorted({r.n_a for r in non_null})
+    for et in eval_types_present:
+        print(f"\n  [{et}]")
+        print(f"    {'Method':<20}" + "".join(f"  n={n:<6}" for n in sizes_present))
+        for m in method_labels:
+            row = f"    {m:<20}"
+            for n in sizes_present:
+                cov = mean_cov(et, m, n)
+                row += "  " + (" " * 7 if np.isnan(cov)
+                               else f"{cov:.3f}{_cov_marker(cov, target)}".ljust(8))
+            print(row)
+
+    # One OVERALL SUMMARY per eval type rather than a pooled table: these data
+    # types are answered by different method families on different scales
+    # (a binary Delta-p width and a likert 1-5 width are not comparable), and
+    # only binary runs the dedicated proportion intervals at all.
+    for et in eval_types_present:
+        _print_overall_summary_table(
+            f"OVERALL SUMMARY -- {et.upper()}", [et], non_null, agg, agg_counts,
+            target, sizes_present, type1=type1_map, power=power_map,
+        )
 
 
 def latex_summary(results: list[SimResult], alpha: float) -> str:
@@ -1342,8 +1450,8 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
 
     groups_present = [g for g in ("bin", "cont", "lik", "grades")
                       if any(k[0] == g for k in agg)]
-    columns = (["Method", "Coverage", "MinCov", "Width", "Score", "Penalty", "TypeI"]
-               + [f"$n{{=}}{n}$" for n in sizes_present])
+    columns = (["Method", "Cov", "MinCov", "Width", r"Pen $\downarrow$", r"Score $\downarrow$",
+                "TypeI"] + [f"$n{{=}}{n}$" for n in sizes_present])
     rows: list[list[str]] = []
     rule_before: set[int] = set()
     for g in groups_present:
@@ -1367,7 +1475,7 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
                 f"{escape_latex(m)} ({g})",
                 coverage_cell(pooled, target),
                 coverage_cell(float(covs.min()), target),
-                f"{width:.3f}", f"{score:.3f}", f"{pen:.3f}",
+                f"{width:.4f}", f"{pen:.4f}", f"{score:.4f}",
                 f"{t1:.3f}" if np.isfinite(t1) else "--",
             ]
             for n in sizes_present:
@@ -1375,10 +1483,10 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
                 cells.append(coverage_cell(c2 / t2, target) if t2 else "--")
             rows.append(cells)
             score_vals.append(score)
-        block = [row[4] for row in rows[block_start:]]
+        block = [row[5] for row in rows[block_start:]]
         marked = mark_best_and_runnerup(block, score_vals, higher_is_better=False)
         for i, cell in enumerate(marked):
-            rows[block_start + i][4] = cell
+            rows[block_start + i][5] = cell
 
     return booktabs_table(
         caption=(r"Between-subjects (unpaired) pairwise CI calibration for the mean "
@@ -1386,7 +1494,7 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
                  f"Non-null cells only; TypeI is the rejection rate on null cells. "
                  f"Coverage cells are shaded when they fall outside the acceptable band "
                  f"around {target:.2f}. Best Score per block in bold, runner-up underlined."),
-        label="tab:ci-unpaired-mean-diff",
+        label="tab:ci_unpaired_overall",
         columns=columns, rows=rows, rule_before=rule_before,
     )
 
