@@ -616,12 +616,21 @@ KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # li
 # fractions differ. Same colour convention: lighter tints of KRUSKAL's pink.
 KRUSKAL_ROWSUM = Method("kruskal_rowsum", "#c2559c")           # darker pink
 KRUSKAL_ROWSUM_LABELED = Method("kruskal_rowsum_labeled", "#f7d6e8")  # palest tint
+# KRUSKAL_CONTRAST/KRUSKAL_TWOPART/KRUSKAL_EIGENGAP: EXPERIMENTAL candidates
+# for the k>=5 conservatism of KRUSKAL itself (its df counts C(k,2) directions
+# when Cov(delta_hat) is rank k-1 under H0 -- see
+# evalstats.tests._kw_contrast_basis and REPORT.md section B). Same one
+# bootstrap as KRUSKAL, different test form only. Not in the official set.
+KRUSKAL_CONTRAST = Method("kruskal_contrast", "#9c3f7d")   # deepest pink
+KRUSKAL_TWOPART = Method("kruskal_twopart", "#d98cbb")     # mid tint
+KRUSKAL_EIGENGAP = Method("kruskal_eigengap", "#8c5f7d")   # muted plum
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+    KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
     LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -637,6 +646,7 @@ PPI_OFFICIAL_TEST_METHODS = [
         # Kruskal-Wallis cost/buy", which is a study question, not part of
         # the shipped default set.
         KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+        KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via

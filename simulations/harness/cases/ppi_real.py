@@ -171,6 +171,7 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
+        _kw_candidate_from_pairwise,
         _kw_rowsum_from_pairwise,
         _ppi_kruskal_wallis_pairwise,
     )
@@ -181,7 +182,9 @@ from ..methods import (
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     KRUSKAL_ROWSUM,
-    KRUSKAL_ROWSUM_LABELED, PPI_TEST_METHODS, get_method_color,
+    KRUSKAL_ROWSUM_LABELED,
+    KRUSKAL_CONTRAST, KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+    PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
@@ -551,7 +554,9 @@ def _run_real_omnibus_independent_cell(
             # comparator is the same classical KW on the judge scores --
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
-            if KRUSKAL_ROWSUM.name in methods or KRUSKAL_ROWSUM_LABELED.name in methods:
+            if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+                                                KRUSKAL_CONTRAST, KRUSKAL_TWOPART,
+                                                KRUSKAL_EIGENGAP)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
@@ -560,6 +565,16 @@ def _run_real_omnibus_independent_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                    # The k>=5-conservatism candidates share pw_r too -- same
+                    # bootstrap, different test form, so the comparison between
+                    # them carries no Monte Carlo difference of its own.
+                    for _m, _c in ((KRUSKAL_CONTRAST, "contrast"),
+                                   (KRUSKAL_TWOPART, "twopart"),
+                                   (KRUSKAL_EIGENGAP, "eigengap")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -723,7 +738,9 @@ def _run_real_omnibus_independent_power_cell(
             # comparator is the same classical KW on the judge scores --
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
-            if KRUSKAL_ROWSUM.name in methods or KRUSKAL_ROWSUM_LABELED.name in methods:
+            if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+                                                KRUSKAL_CONTRAST, KRUSKAL_TWOPART,
+                                                KRUSKAL_EIGENGAP)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
@@ -732,6 +749,16 @@ def _run_real_omnibus_independent_power_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                    # The k>=5-conservatism candidates share pw_r too -- same
+                    # bootstrap, different test form, so the comparison between
+                    # them carries no Monte Carlo difference of its own.
+                    for _m, _c in ((KRUSKAL_CONTRAST, "contrast"),
+                                   (KRUSKAL_TWOPART, "twopart"),
+                                   (KRUSKAL_EIGENGAP, "eigengap")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -1150,7 +1177,8 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # extra bootstrap per rep.
     if eval_type == "binary":
         return []
-    return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name]
+    return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name,
+            KRUSKAL_CONTRAST.name, KRUSKAL_TWOPART.name, KRUSKAL_EIGENGAP.name]
 
 
 def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:
