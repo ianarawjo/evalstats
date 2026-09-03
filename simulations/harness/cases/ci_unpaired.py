@@ -315,6 +315,28 @@ def _mover_combine(
     This is the general form of Newcombe's hybrid score interval (which is
     exactly this with Wilson arms), so it lets the unpaired path reuse the
     very same one-sample methods the paired path already recommends.
+
+    KNOWN STRUCTURAL LIMIT -- read before promoting any mover_* method.
+    MOVER assembles the difference interval out of the two MARGINAL
+    intervals, so it inherits whatever miscalibration those marginals carry
+    and can never benefit from error that cancels in the subtraction. On the
+    saturating shape cont-one-inflated-extreme at icc=0.95, both arms' means
+    are severely left-skewed (skew -1.45 and -1.03 at n=15/30) and EVERY
+    one-sample interval covers badly there -- measured at n=15, logit_t
+    reaches 0.55 and t_interval 0.52. But their difference is far milder
+    (skew -0.69) because the two skews partly cancel, so welch_t, which
+    targets the difference directly, covers 0.95 while mover_logit_t
+    inherits both bad marginals and manages only 0.72.
+
+    So MOVER is the right construction exactly when the marginals are
+    well-calibrated -- which is why newcombe_hybrid works so well on binary
+    (Wilson marginals are excellent) and why mover_logit_t is fine on likert
+    and ordinary continuous data but not on ceiling-saturated continuous.
+    This is a property of the construction, not a bug in it: three separate
+    fixes were tried and none helped, because nothing about the combination
+    step is wrong. Handling degenerate arms by interval arithmetic instead of
+    quadrature changed coverage by 0.000; the [0, 1] clamp never fired; and
+    the arm intervals' tail distances track the arms' true sampling spread.
     """
     d = ta - tb
     lo = d - float(np.sqrt((ta - arm_a[0]) ** 2 + (arm_b[1] - tb) ** 2))
