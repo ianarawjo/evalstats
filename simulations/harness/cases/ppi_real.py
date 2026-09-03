@@ -172,6 +172,7 @@ with warnings.catch_warnings():
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
         _kw_candidate_from_pairwise,
+        _ppi_kruskal_wallis_influence,
         _kw_rowsum_from_pairwise,
         _ppi_kruskal_wallis_pairwise,
     )
@@ -183,7 +184,7 @@ from ..methods import (
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     KRUSKAL_ROWSUM,
     KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
     PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
@@ -555,8 +556,8 @@ def _run_real_omnibus_independent_cell(
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                                                KRUSKAL_TWOPART,
-                                                KRUSKAL_EIGENGAP)):
+                                                KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+                                                KRUSKAL_INFLUENCE)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
@@ -574,6 +575,15 @@ def _run_real_omnibus_independent_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE.name in methods:
+                        # Its own draw: it needs the raw groups, and the
+                        # covariance replacement is the whole point, so it does
+                        # not share pw_r.
+                        uncorrected[KRUSKAL_INFLUENCE.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed()
+                            )["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -738,8 +748,8 @@ def _run_real_omnibus_independent_power_cell(
             # this projection is the PPI correction OF that statistic, so it
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-                                                KRUSKAL_TWOPART,
-                                                KRUSKAL_EIGENGAP)):
+                                                KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+                                                KRUSKAL_INFLUENCE)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
@@ -757,6 +767,15 @@ def _run_real_omnibus_independent_power_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE.name in methods:
+                        # Its own draw: it needs the raw groups, and the
+                        # covariance replacement is the whole point, so it does
+                        # not share pw_r.
+                        uncorrected[KRUSKAL_INFLUENCE.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed()
+                            )["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -1154,6 +1173,10 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
+_OMNIBUS_TESTS_OVERRIDE: list[str] = []
+"""Set by --omnibus-tests; empty means the default set."""
+
+
 def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # anova_ind/kruskal/kruskal_mnar_experimental aren't in pvalues.py's
     # _PPI_BINARY_COMPATIBLE_TESTS -- binary's massive ties break these
@@ -1175,6 +1198,12 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # extra bootstrap per rep.
     if eval_type == "binary":
         return []
+    if _OMNIBUS_TESTS_OVERRIDE:
+        # --omnibus-tests: restrict the omnibus-independent checks to a named
+        # subset. Every cell runs every listed method, so isolating one test
+        # cuts the cost of a targeted validation roughly proportionally --
+        # which is the point when re-validating a single method.
+        return list(_OMNIBUS_TESTS_OVERRIDE)
     return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name,
             KRUSKAL_TWOPART.name, KRUSKAL_EIGENGAP.name]
 
@@ -1816,6 +1845,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label-fracs", type=float, nargs="+", default=DEFAULT_LABEL_FRACS)
     parser.add_argument("--sizes", type=int, nargs="+", default=None,
                          help="Sample sizes per rep (default: 3 sizes bounded by each dataset's actual corpus size).")
+    parser.add_argument("--omnibus-tests", nargs="+", default=None,
+                         help="Restrict the omnibus-independent null/power checks to these "
+                              "method names (e.g. 'kruskal kruskal_influence'). Cuts runtime "
+                              "roughly in proportion, for re-validating one method without "
+                              "paying for the others.")
     parser.add_argument("--reps", type=int, default=200)
     parser.add_argument("--ppi-n-boot", type=int, default=2000)
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -1897,6 +1931,15 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
 
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
+    global _OMNIBUS_TESTS_OVERRIDE
+    _OMNIBUS_TESTS_OVERRIDE = list(getattr(args, "omnibus_tests", None) or [])
+    if _OMNIBUS_TESTS_OVERRIDE:
+        _known = {m.name for m in PPI_TEST_METHODS}
+        _bad = [t for t in _OMNIBUS_TESTS_OVERRIDE if t not in _known]
+        if _bad:
+            raise ValueError(f"--omnibus-tests: unknown method name(s) {_bad}")
+        print(f"  omnibus-independent checks restricted to: "
+              f"{', '.join(_OMNIBUS_TESTS_OVERRIDE)}")
     try:
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
         stamp = time.strftime("%Y%m%d_%H%M%S")

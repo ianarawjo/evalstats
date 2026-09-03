@@ -627,13 +627,19 @@ KRUSKAL_ROWSUM_LABELED = Method("kruskal_rowsum_labeled", "#f7d6e8")  # palest t
 # the classical KW contrast (see _kw_contrast_subspace).
 KRUSKAL_TWOPART = Method("kruskal_twopart", "#d98cbb")     # mid tint
 KRUSKAL_EIGENGAP = Method("kruskal_eigengap", "#8c5f7d")   # muted plum
+# KRUSKAL_INFLUENCE: the phase-4 candidate -- the SAME estimator as KRUSKAL,
+# with the Wald covariance replaced by a null-structured influence-function one
+# (evalstats.tests._kw_influence_cov). Fixes the df defect by construction
+# (rank k-1, not by truncation) and the variance-assembly conditioning defect
+# (per-item differencing). Opt-in until validated on ppi_real.
+KRUSKAL_INFLUENCE = Method("kruskal_influence", "#7b3f9c")  # violet
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
     LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -649,7 +655,7 @@ PPI_OFFICIAL_TEST_METHODS = [
         # Kruskal-Wallis cost/buy", which is a study question, not part of
         # the shipped default set.
         KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via

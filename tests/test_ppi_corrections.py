@@ -59,6 +59,8 @@ from evalstats.tests import (
     _kw_candidate_from_pairwise,
     _kw_contrast_basis,
     _kw_contrast_subspace,
+    _kw_influence_cov,
+    _ppi_kruskal_wallis_influence,
     _kw_eigengap_rank,
     _kw_wald_truncated,
     _ppi_require_unlabeled_per_group,
@@ -3326,3 +3328,105 @@ class TestKruskalConservatismCandidates:
         pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 150, 71)
         with pytest.raises(ValueError, match="twopart"):
             _kw_candidate_from_pairwise(pw, "nope")
+
+
+class TestKruskalInfluenceCovariance:
+    """The phase-4 fix: a null-structured influence-function covariance for the
+    omnibus test. Fixes the df defect by CONSTRUCTION (rank k-1, not by
+    truncation) and the variance-assembly conditioning defect (per-item
+    differencing). See simulations/kw_rowsum/step13_influence_cov.py.
+    """
+
+    @staticmethod
+    def _pairs(k):
+        return [(a, b) for a in range(k) for b in range(a + 1, k)]
+
+    def test_covariance_is_exactly_rank_k_minus_one(self):
+        """Not 'numerically close to' -- exactly, because under the pooled ecdf
+        each group's per-item contributions to all its pairs are +/- ONE
+        vector, so each group adds a rank-1 outer product."""
+        rng = np.random.default_rng(9500)
+        for k in (3, 4, 5, 7):
+            groups, groups_lab = _multigroup(rng, k=k, n=200, n_lab=50)
+            pairs = self._pairs(k)
+            cov = _kw_influence_cov(groups, groups_lab, pairs, lam=0.8)
+            assert cov.shape == (len(pairs), len(pairs))
+            w = np.sort(np.linalg.eigvalsh(cov))[::-1]
+            assert int(np.linalg.matrix_rank(cov, tol=1e-8 * w[0])) == k - 1
+            # the gap is structural, not marginal
+            assert w[k - 1] < 1e-10 * w[0]
+
+    def test_symmetric_positive_semidefinite(self):
+        rng = np.random.default_rng(9501)
+        groups, groups_lab = _multigroup(rng, k=5, n=150, n_lab=40)
+        cov = _kw_influence_cov(groups, groups_lab, self._pairs(5), lam=0.6)
+        assert np.allclose(cov, cov.T, atol=1e-15)
+        assert np.linalg.eigvalsh(cov).min() > -1e-12
+
+    def test_lambda_zero_drops_the_judge_side(self):
+        """At lam=0 the estimator is the labeled-human theta alone, so the
+        covariance must lose every judge/unlabeled contribution."""
+        rng = np.random.default_rng(9502)
+        groups, groups_lab = _multigroup(rng, k=4, n=200, n_lab=60)
+        pairs = self._pairs(4)
+        c0 = _kw_influence_cov(groups, groups_lab, pairs, lam=0.0)
+        c1 = _kw_influence_cov(groups, groups_lab, pairs, lam=1.0)
+        assert np.trace(c0) > 0
+        assert not np.allclose(c0, c1)
+        # lam=0 keeps only the labeled term, so it cannot be the larger one
+        # once the unlabeled pool (much bigger than n_lab) is weighted in.
+        assert np.trace(c1) < np.trace(c0)
+
+    def test_scales_like_one_over_n(self):
+        """A first-order influence variance must halve when every sample size
+        doubles -- a sanity check no bootstrap artefact would pass."""
+        rng = np.random.default_rng(9503)
+        tr = []
+        for n, n_lab in ((200, 40), (400, 80), (800, 160)):
+            groups, groups_lab = _multigroup(rng, k=4, n=n, n_lab=n_lab)
+            tr.append(np.trace(_kw_influence_cov(groups, groups_lab,
+                                                 self._pairs(4), lam=0.7)))
+        assert tr[1] / tr[0] == pytest.approx(0.5, abs=0.12)
+        assert tr[2] / tr[1] == pytest.approx(0.5, abs=0.12)
+
+    def test_wrapper_preserves_the_estimate_and_reports_k_minus_one_df(self):
+        rng = np.random.default_rng(9504)
+        for k in (3, 5):
+            groups, groups_lab = _multigroup(rng, k=k, n=250, n_lab=60,
+                                             mus=[3.0 + 0.1 * j for j in range(k)])
+            base = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 300, 21)
+            infl = _ppi_kruskal_wallis_influence(groups, groups_lab, 0.05, 300, 21)
+            # same estimator, different covariance
+            assert np.array_equal(infl["theta_hat"], base["theta_hat"])
+            assert np.array_equal(infl["ci_lo"], base["ci_lo"])
+            assert infl["df"] == k - 1
+            assert infl["pairwise_df"] == base["df"] == k * (k - 1) // 2
+            assert infl["pairwise_wald_p"] == base["wald_p"]
+            assert 0.0 <= infl["wald_p"] <= 1.0
+
+    def test_public_method(self):
+        rng = np.random.default_rng(9505)
+        groups, groups_lab = _multigroup(rng, k=4, n=200, n_lab=60,
+                                         mus=[3.0, 3.2, 3.4, 3.6])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=250, rng=9,
+                              print_result=False, method="influence")
+        assert r.extra["ppi_method"] == "influence"
+        assert 0.0 <= r.corrected_p_value <= 1.0
+        assert 0.0 <= r.extra["pairwise_wald_p"] <= 1.0
+
+    def test_lambda_is_exposed_and_consistent(self):
+        """theta_hat = theta_lab_h + lam*(theta_unlab - theta_lab_l) is an
+        identity, so the reported lam must reproduce theta_hat exactly."""
+        rng = np.random.default_rng(9506)
+        k = 4
+        groups, groups_lab = _multigroup(rng, k=k, n=220, n_lab=55)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, 0.05, 300, 31)
+        pairs = self._pairs(k)
+        masks = [~np.isnan(l) for l in groups_lab]
+        tu = _kw_pairwise_thetas([g[~m] for g, m in zip(groups, masks)], pairs)
+        th = _kw_pairwise_thetas([l[m] for l, m in zip(groups_lab, masks)], pairs)
+        tl = _kw_pairwise_thetas([g[m] for g, m in zip(groups, masks)], pairs)
+        assert 0.0 <= pw["lam"] <= 1.0
+        assert np.allclose(th + pw["lam"] * (tu - tl), pw["theta_hat"], atol=1e-12)

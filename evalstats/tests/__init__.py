@@ -1204,6 +1204,7 @@ def _ppi_kruskal_wallis_pairwise(
         var_lam_hat = float(np.var(lam_replicates, ddof=1))
         cov = cov + np.outer(r_term, r_term) * var_lam_hat
     else:
+        lam = 1.0
         theta_hat = theta_unlab + (theta_lab_human - theta_lab_llm)
         b_unlab, b_lab_h, b_lab_l = _draw_components(n_boot)
         boots = b_unlab + (b_lab_h - b_lab_l)
@@ -1314,7 +1315,123 @@ def _ppi_kruskal_wallis_pairwise(
         "df": df,
         "n_lab_per_group": list(n_lab_per_group),
         "n_per_group": [len(g) for g in groups],
+        # The power-tuning weight actually used. Additive; exposed so a caller
+        # replacing the covariance (see _ppi_kruskal_wallis_influence) can
+        # reuse the SAME estimator rather than re-deriving lambda.
+        "lam": float(lam),
     }
+
+
+def _kw_influence_cov(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    pairs,
+    lam: float,
+) -> np.ndarray:
+    """Null-structured influence-function covariance of the PPI-corrected
+    pairwise dominance vector. No bootstrap.
+
+    For the two-sample midrank U-statistic, the first-order (Hajek) influence
+    of item i in group a on theta_ab is F_b^mid(x_i), and of item j in group b
+    is -F_a^mid(y_j). UNDER H0 every group shares one F, so evaluating both
+    with the POOLED empirical CDF makes each group's per-item contributions to
+    all of its pairs exactly +/- ONE vector. Two things follow, and they are
+    the whole point:
+
+    1. The covariance is EXACTLY rank k-1 by construction, with k free
+       parameters (the within-group variance of F_pooled). That removes the
+       degrees-of-freedom defect the bootstrap covariance has -- see
+       _ppi_kruskal_wallis_pairwise's df comment: matrix_rank cannot see a
+       degeneracy the bootstrap does not reproduce, so it counts C(k,2)
+       directions when the estimand has k-1, and the test under-rejects
+       (Type-I 0.005 at k=5, 0.000 at k=7).
+    2. For the PPI estimator theta_lab_h + lam*(theta_unlab - theta_lab_l),
+       the per-item influence of a LABELED item is
+       ``phi_h(y_i) - lam*phi_l(yhat_i)`` -- one number per item, the human and
+       judge parts differenced BEFORE any variance is taken. The shipped
+       bootstrap instead assembles V_h + lam^2(V_u + V_l) - 2 lam C_hl from
+       separately estimated terms, a difference whose cross term is 4-8x the
+       result when lam ~ 1, so few-percent component errors become 14-36%
+       errors in the assembled variance. Differencing per item makes that
+       conditioning problem impossible.
+
+    Pooling the JUDGE scores is load-bearing too, and not obvious: judge
+    scores need not be exchangeable across groups under differential judge
+    bias. Using per-pair judge ECDFs instead was measured and fails -- df
+    stays C(k,2) and E[W]/df reaches 4.2 at high judge noise.
+
+    NULL-RESTRICTED, therefore for the TEST only. The pooled ECDF is the right
+    object only under H0, which makes this a score-type covariance: correct for
+    a p-value, wrong for a confidence interval (which needs the covariance at
+    the estimate). That is the same split friedman already makes, and the same
+    score-vs-Wald reasoning behind Wilson-over-Wald, Tango, and
+    evalstats.ppi._analytic_walsh_theta_correct's score variance.
+
+    See simulations/kw_rowsum/step13_influence_cov.py and REPORT.md section D.
+    """
+    k = len(groups)
+    m = len(pairs)
+    masks = [~np.isnan(l) for l in groups_lab]
+    y_lab = [l[b] for l, b in zip(groups_lab, masks)]
+    j_lab = [g[b] for g, b in zip(groups, masks)]
+    j_unlab = [g[~b] for g, b in zip(groups, masks)]
+    pooled_h = np.sort(np.concatenate(y_lab)) if any(len(a) for a in y_lab) else np.zeros(0)
+    pooled_j = np.sort(np.concatenate(j_lab + j_unlab))
+
+    def _mid(sorted_pool, x):
+        n = len(sorted_pool)
+        if n == 0 or len(x) == 0:
+            return np.zeros(len(x))
+        lt = sorted_pool.searchsorted(x, side="left")
+        le = sorted_pool.searchsorted(x, side="right")
+        return (lt + 0.5 * (le - lt)) / n
+
+    cov = np.zeros((m, m))
+    for g in range(k):
+        n_l, n_u = len(y_lab[g]), len(j_unlab[g])
+        phi_lab = _mid(pooled_h, y_lab[g]) - lam * _mid(pooled_j, j_lab[g])
+        phi_unlab = lam * _mid(pooled_j, j_unlab[g])
+        col = np.zeros(m)
+        for c, (a, b) in enumerate(pairs):
+            col[c] = 1.0 if g == a else (-1.0 if g == b else 0.0)
+        if n_l > 1:
+            cov += np.outer(col, col) * (float(np.var(phi_lab, ddof=1)) / n_l)
+        if n_u > 1:
+            cov += np.outer(col, col) * (float(np.var(phi_unlab, ddof=1)) / n_u)
+    return cov
+
+
+def _ppi_kruskal_wallis_influence(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+) -> dict:
+    """EXPERIMENTAL. The shipped pairwise estimator with its Wald covariance
+    replaced by :func:`_kw_influence_cov`'s null-structured, bootstrap-free
+    one. The point estimate, the per-pair CIs and lambda are untouched -- only
+    the omnibus test's covariance (and hence its df, which becomes k-1 by
+    construction rather than by truncation) changes.
+
+    The bootstrap is still run, because the point estimate, the per-pair
+    intervals and lambda all come from it. Deriving lambda from influence
+    functions too would remove it entirely and make this test O(n log n)
+    instead of O(n_boot * n log n); that is a further step, not taken here.
+    """
+    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+    pairs = pw["pairs"]
+    cov = _kw_influence_cov(groups, groups_lab, pairs, pw["lam"])
+    diff = pw["theta_hat"] - 0.5
+    nu = int(sum(pw["n_lab_per_group"]))
+    stat, df, p = _kw_wald_from_vector(diff, cov, nu)
+    out = dict(pw)
+    out.update({
+        "wald_stat": stat, "wald_p": p, "df": df,
+        "pairwise_wald_stat": pw["wald_stat"], "pairwise_wald_p": pw["wald_p"],
+        "pairwise_df": pw["df"], "influence_cov": cov,
+    })
+    return out
 
 
 def _ppi_kruskal_wallis_rowsum(
@@ -5364,7 +5481,7 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
     _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled",
-                   "twopart", "eigengap")
+                   "twopart", "eigengap", "influence")
     if method not in _KW_METHODS:
         raise ValueError(
             f"method must be one of {_KW_METHODS}; got {method!r}."
@@ -5423,6 +5540,8 @@ def kruskalwallis(
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
         if method == "mnar_experimental":
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
+        elif method == "influence":
+            pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha, n_boot, rng)
         elif method in ("twopart", "eigengap"):
             pw = _kw_candidate_from_pairwise(
                 _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng),
