@@ -1755,8 +1755,16 @@ def _vs_n_plot(
         ax.set_xlabel("Group size (n per group)")
         ax.set_ylabel(ylabel if col_idx == 0 else "")
         ax.set_title(et.upper())
-        if et_methods:
-            ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    # One shared legend beneath the panels rather than one inside each. With
+    # 16 methods over 3 panels an in-axes legend covered the region where the
+    # binary curves separate, which is the part a reader needs to see.
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, title="Method", loc="upper center",
+                   bbox_to_anchor=(0.5, 0.02), ncol=min(8, len(labels)),
+                   fontsize=7.5, title_fontsize=8, frameon=False)
     return _finish(fig, out_path, f"{title}\nci_unpaired | reps={n_reps} | alpha={alpha}")
 
 
@@ -1822,7 +1830,13 @@ def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str
         ax.set_xlabel("Mean time per interval (ms, log scale)")
         ax.set_ylabel("Empirical coverage")
         ax.set_title(et.upper())
-        ax.legend(title="Method", fontsize=7, title_fontsize=8, ncol=2, loc="lower right")
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, title="Method", loc="upper center",
+                   bbox_to_anchor=(0.5, 0.02), ncol=min(8, len(labels)),
+                   fontsize=7, title_fontsize=8, frameon=False)
     n_reps = results[0].n_reps if results else 0
     return _finish(fig, out_path,
                    f"Coverage vs. Compute Cost (one point per group size)\n"
