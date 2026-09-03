@@ -107,7 +107,17 @@ _SOCSCI_COLUMNS = ["study_id", "task_num", "condition_num", "participant", "resp
 `stimuli`, `prompt` and `reasoning` free-text columns, none of which this case
 needs -- projecting at read time keeps the load to a few hundred MB."""
 
-_SOCSCI_MIN_PER_CONDITION = 100
+_SOCSCI_MIN_PER_CONDITION = 400
+"""Minimum participants per condition for an outcome to be usable.
+
+Set well above what validity strictly requires. Sampling is WITH replacement,
+so the pool is an exact iid population at any size and there is no
+finite-population correction to worry about -- but `true_diff` is the POOL
+mean, and a small pool estimates the real study population's mean poorly. A
+117-participant pool pins a 5-level item's proportions to only about +-4.6%,
+and at the largest sampled n=100 we would be drawing nearly the whole pool.
+At 400 that tightens to about +-2.5% with 4x headroom, and it costs nothing:
+115 between-subjects studies still qualify and only 15 are ever used."""
 _SOCSCI_MAX_LEVELS = 11
 """Widest ordinal scale accepted (a 0-10 or 1-11 item). SocSci210's `response`
 column mixes scales wildly -- its observed range spans -5 to 6e7, because some
