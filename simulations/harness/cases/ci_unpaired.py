@@ -343,11 +343,33 @@ def _mover_combine(
     well-calibrated -- which is why newcombe_hybrid works so well on binary
     (Wilson marginals are excellent) and why mover_logit_t is fine on likert
     and ordinary continuous data but not on ceiling-saturated continuous.
-    This is a property of the construction, not a bug in it: three separate
-    fixes were tried and none helped, because nothing about the combination
-    step is wrong. Handling degenerate arms by interval arithmetic instead of
-    quadrature changed coverage by 0.000; the [0, 1] clamp never fired; and
-    the arm intervals' tail distances track the arms' true sampling spread.
+    This is a property of the construction, not a bug in it, and it is NOT
+    FIXABLE -- established by giving MOVER an ORACLE marginal, the exact 95%
+    interval built from each arm's true sampling distribution by heavy Monte
+    Carlo, i.e. the best any arm method could possibly be. Even then MOVER
+    under-covers at 0.922 while being WIDER than welch_t (0.096 vs 0.088,
+    which covers 0.963). No arm interval, existing or hypothetical, rescues
+    it: assembling from marginals prices in each arm's full skew, while the
+    difference's own skew is far milder because the two partly cancel, and
+    MOVER cannot reach that cancellation.
+
+    Candidate fixes tried and rejected, each on measurement, so they are not
+    re-attempted:
+      * degenerate arms combined by interval arithmetic rather than in
+        quadrature -- coverage moved 0.000, and only 7.3% of draws have a
+        degenerate arm at all;
+      * logit_t order=2, whose docstring documents a real coverage gain on
+        boundary-hugging skewed data at small n -- WORSE here (0.708 vs
+        0.725) despite being 29% wider, the same mis-centring signature;
+      * a hybrid that switches the arm to NIG when the sample looks
+        saturated -- 0.731, i.e. no change;
+      * NIG arms throughout -- works (0.999) but that is simply mover_nig,
+        at 2.2x welch_t's width.
+
+    The failure is not confined to one shape: cont-zero-inflated-extreme
+    fails too (0.849), so it is both boundaries. Likert is unaffected because
+    no likert shape saturates -- the most extreme sits at 4.63/5 and never
+    yields a constant sample -- so the regime does not arise there.
     """
     d = ta - tb
     lo = d - float(np.sqrt((ta - arm_a[0]) ** 2 + (arm_b[1] - tb) ** 2))
@@ -1906,8 +1928,11 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         data_source="synthetic", scenario_suite="expanded",
         eval_types=["binary", "continuous", "likert"], methods=None,
         real_datasets=None, data_dir=REAL_DEFAULT_DATA_DIR,
-        sizes=[10, 15, 20, 30, 40, 50, 60, 80, 100], size_ratios=[1.0, 2.0],
-        reps=300, bootstrap_n=2000, bayes_n=10000, alpha=0.05, seed=base_seed,
+        # sizes and bootstrap_n deliberately mirror ci_paired.official_args, so
+        # the two cases' tables are directly comparable; size_ratios is the one
+        # addition, since unequal group sizes only arise between subjects.
+        sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100], size_ratios=[1.0, 2.0],
+        reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05, seed=base_seed,
         icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4],
         include_null=True,
         exact_coverage=False, exact_sizes=[10, 20, 30], exact_p_grid=19,
@@ -1921,11 +1946,12 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
 def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
     """Entries offered by ``--official-tests``' interactive menu.
 
-    Listed but flagged PROVISIONAL: the method slate here has not been
-    adjudicated against the literature yet, so this is not something to
-    quote in the paper. Selecting it from the menu is opt-in, so listing it
-    costs nothing and keeps the case reachable through the same path as
-    every other case.
+    The synthetic preset deliberately mirrors ci_paired.official_args --
+    same scenario suite, eval types, sizes, reps, bootstrap_n, bayes_n,
+    alpha, icc and effect sweeps -- so the two cases' tables are directly
+    comparable. size_ratios is the single addition, since unequal group
+    sizes only arise between subjects, and ci_paired's statistic/runs
+    options have no analogue here (this case is mean-only and flat-only).
     """
     real = argparse.Namespace(**{**vars(official_args(base_seed + 1)),
                                  "data_source": "real",
@@ -1933,11 +1959,11 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
                                  # shape/icc/effect sweep does not apply to them.
                                  "icc_values": None, "cohens_d_values": [0.3]})
     return [
-        ("PROVISIONAL: between-subjects pairwise CIs, synthetic (mean difference)",
+        ("Between-subjects pairwise CIs, synthetic (mean difference)",
          official_args(base_seed)),
-        ("PROVISIONAL: between-subjects pairwise CIs, real human labels (mean difference)",
+        ("Between-subjects pairwise CIs, real data incl. human subjects (mean difference)",
          real),
-        ("PROVISIONAL: between-subjects binary CIs, EXACT coverage (no Monte Carlo)",
+        ("Between-subjects binary CIs, EXACT coverage (no Monte Carlo)",
          argparse.Namespace(**{**vars(official_args(base_seed)), "exact_coverage": True})),
     ]
 
