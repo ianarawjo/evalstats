@@ -328,6 +328,17 @@ def _socsci_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
             continue
         if not np.allclose(uniq, np.round(uniq)):
             continue                      # not an ordinal rating scale
+        # A rating scale's levels are CONSECUTIVE integers. Requiring that
+        # rejects items where sentinel codes masquerade as scale points --
+        # study 5an26's outcome 3 reports levels [1,2,3,4,5,1000,2000,3000,
+        # 4000,5000], i.e. a 5-point rating plus refused/don't-know codes,
+        # and passed a levels-count filter easily. Left in, it was the single
+        # source of mover_logit_t's worst-case Likert coverage (0.833), which
+        # would have read as a defect in the method rather than in the data.
+        # Two-level items are exempt: a binary outcome is binary whatever
+        # codes it uses, and is rescaled onto {0, 1} below.
+        if uniq.size > 2 and not np.allclose(np.diff(uniq), 1.0):
+            continue
         lo_v, hi_v = float(uniq.min()), float(uniq.max())
         pools = {int(c): g.response.to_numpy(dtype=float)
                  for c, g in sub.groupby("condition_num")
