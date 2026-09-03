@@ -71,7 +71,7 @@ from . import CIPairSource
 
 DEFAULT_DATA_DIR = "simulations/out"
 
-REAL_UNPAIRED_DATASETS = ["iclr_metareview", "privacy_judge", "appstore", "inspect"]
+REAL_UNPAIRED_DATASETS = ["iclr_metareview", "privacy_judge", "appstore", "inspect", "socsci210"]
 
 _APPSTORE_REVIEWS = "appstore_scenario_reviews.csv"
 _APPSTORE_POSITIVE_THRESHOLD = 4.0
@@ -89,6 +89,31 @@ _INSPECT_PAIRS_PER_BENCHMARK = 3
 true accuracy gaps (smallest, median, largest) rather than taking all 130
 available pairs -- 9 benchmarks x 3 keeps the sweep proportionate while still
 covering gaps from ~0 to 0.66."""
+
+_SOCSCI_DIR = "socsci210"
+"""Subdirectory of the data dir holding the SocSci210 parquet shards.
+
+NOT redistributable with this repo and not committed: the HuggingFace dataset
+card (socratesft/SocSci210) carries no license field, so we use it locally
+without republishing any of it. Fetch it yourself into
+``simulations/out/socsci210/`` -- that path is gitignored -- and these sources
+appear; leave it absent and they are skipped with a warning. The underlying
+experiments come from NSF's TESS programme, whose studies are individually
+archived and citable, which is what a paper should cite rather than this
+convenience packaging."""
+
+_SOCSCI_COLUMNS = ["study_id", "task_num", "condition_num", "participant", "response"]
+"""Only these are read. The corpus is ~1.45 GB almost entirely because of the
+`stimuli`, `prompt` and `reasoning` free-text columns, none of which this case
+needs -- projecting at read time keeps the load to a few hundred MB."""
+
+_SOCSCI_MIN_PER_CONDITION = 100
+_SOCSCI_MAX_LEVELS = 11
+"""Widest ordinal scale accepted (a 0-10 or 1-11 item). SocSci210's `response`
+column mixes scales wildly -- its observed range spans -5 to 6e7, because some
+outcomes are dollar amounts or counts rather than rating scales -- so anything
+that is not a small integer scale is dropped rather than guessed at."""
+_SOCSCI_MAX_SOURCES = 30
 
 _PRIVACY_BOUNDS = (1.0, 5.0)
 """privacy_judge's human labels are continuous on an observed [1.04, 4.58].
@@ -234,6 +259,86 @@ def _inspect_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
     return out
 
 
+def _socsci_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
+    """Between-subjects human-subjects sources from SocSci210 (NSF TESS).
+
+    The point of this corpus for us is provenance: every other real source
+    here is AI-eval or product-review data, whereas between-subjects designs
+    are overwhelmingly an HCI/social-science practice, so a recommendation
+    aimed at that setting should be checked against actual human-subjects
+    experiments.
+
+    A (study, outcome) is kept only when it is genuinely between-subjects --
+    every participant appears under exactly one condition within the study --
+    and its responses form a small integer scale. Both are verified from the
+    data rather than assumed, since the corpus mixes between- and
+    within-subjects studies and mixes rating scales with unbounded numeric
+    outcomes.
+    """
+    import pandas as pd
+
+    root = Path(data_dir) / _SOCSCI_DIR
+    shards = sorted(root.rglob("*.parquet"))
+    if not shards:
+        print(f"  Warning: no parquet files under {root}; skipping socsci210 sources. "
+              f"Download socratesft/SocSci210 into that directory to enable them.")
+        return []
+
+    frames = []
+    for f in shards:
+        try:
+            frames.append(pd.read_parquet(f, columns=_SOCSCI_COLUMNS))
+        except Exception as exc:  # a shard with an unexpected schema shouldn't kill the run
+            print(f"  Warning: could not read {f.name} ({exc}); skipping that shard.")
+    if not frames:
+        return []
+    df = pd.concat(frames, ignore_index=True)
+    df = df.dropna(subset=["response", "condition_num", "participant", "study_id", "task_num"])
+
+    # Between-subjects check, per STUDY: a participant must sit in one condition.
+    per_study = df.groupby("study_id").participant.nunique()
+    cond_per_p = df.groupby(["study_id", "participant"]).condition_num.nunique()
+    between = {sid for sid, sub in cond_per_p.groupby(level=0) if int(sub.max()) == 1}
+    print(f"  socsci210: {len(shards)} shards, {df.study_id.nunique()} studies, "
+          f"{len(between)} between-subjects ({int(per_study.sum())} participant-study rows)")
+
+    out: list[CIPairSource] = []
+    for (sid, task), sub in df[df.study_id.isin(between)].groupby(["study_id", "task_num"], sort=True):
+        if len(out) >= _SOCSCI_MAX_SOURCES:
+            break
+        vals = sub.response.to_numpy(dtype=float)
+        uniq = np.unique(vals)
+        if uniq.size < 2 or uniq.size > _SOCSCI_MAX_LEVELS:
+            continue
+        if not np.allclose(uniq, np.round(uniq)):
+            continue                      # not an ordinal rating scale
+        lo_v, hi_v = float(uniq.min()), float(uniq.max())
+        binary = uniq.size == 2 and lo_v == 0.0 and hi_v == 1.0
+        eval_type = "binary" if binary else "likert"
+        pools = {int(c): g.response.to_numpy(dtype=float)
+                 for c, g in sub.groupby("condition_num")
+                 if len(g) >= _SOCSCI_MIN_PER_CONDITION}
+        if len(pools) < 2:
+            continue
+        conds = sorted(pools)
+        bounds = (0.0, 1.0) if binary else (lo_v, hi_v)
+        tag = f"socsci{int(sid)}t{int(task)}"
+        if include_null:
+            p0 = pools[conds[0]]
+            out.append(_pool_source(f"{tag}|null|N={p0.size}", eval_type, p0, p0,
+                                    scale_bounds=bounds, is_null=True))
+        # Widest true contrast available for this outcome.
+        best = max(((abs(pools[a].mean() - pools[b].mean()), a, b)
+                    for i, a in enumerate(conds) for b in conds[i + 1:]),
+                   default=None)
+        if best is not None:
+            _gap, a, b = best
+            out.append(_pool_source(f"{tag}|c{a}vc{b}", eval_type, pools[a], pools[b],
+                                    scale_bounds=bounds))
+    print(f"  socsci210: built {len(out)} sources")
+    return out
+
+
 def build_real_unpaired_sources(
     data_dir: str = DEFAULT_DATA_DIR,
     datasets: list[str] | None = None,
@@ -312,6 +417,9 @@ def build_real_unpaired_sources(
 
     if "inspect" in wanted:
         sources += _inspect_sources(data_dir, include_null)
+
+    if "socsci210" in wanted:
+        sources += _socsci_sources(data_dir, include_null)
 
     if not sources:
         raise ValueError(
