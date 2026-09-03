@@ -114,6 +114,12 @@ column mixes scales wildly -- its observed range spans -5 to 6e7, because some
 outcomes are dollar amounts or counts rather than rating scales -- so anything
 that is not a small integer scale is dropped rather than guessed at."""
 _SOCSCI_MAX_SOURCES = 30
+_SOCSCI_OUTCOMES_PER_STUDY = 1
+"""At most one outcome per study, so the cap spreads across STUDIES rather
+than being consumed by whichever study sorts first. The whole reason this
+corpus is worth having is independent replication -- 30 outcomes drawn from
+2 studies would be barely better than the single App Store corpus it is meant
+to complement."""
 
 _PRIVACY_BOUNDS = (1.0, 5.0)
 """privacy_judge's human labels are continuous on an observed [1.04, 4.58].
@@ -302,10 +308,10 @@ def _socsci_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
     print(f"  socsci210: {len(shards)} shards, {df.study_id.nunique()} studies, "
           f"{len(between)} between-subjects ({int(per_study.sum())} participant-study rows)")
 
-    out: list[CIPairSource] = []
+    # Score every candidate outcome first, then take the best one per study,
+    # so the source cap spans as many independent studies as possible.
+    cands: dict[str, list] = defaultdict(list)
     for (sid, task), sub in df[df.study_id.isin(between)].groupby(["study_id", "task_num"], sort=True):
-        if len(out) >= _SOCSCI_MAX_SOURCES:
-            break
         vals = sub.response.to_numpy(dtype=float)
         uniq = np.unique(vals)
         if uniq.size < 2 or uniq.size > _SOCSCI_MAX_LEVELS:
@@ -313,26 +319,36 @@ def _socsci_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
         if not np.allclose(uniq, np.round(uniq)):
             continue                      # not an ordinal rating scale
         lo_v, hi_v = float(uniq.min()), float(uniq.max())
-        binary = uniq.size == 2 and lo_v == 0.0 and hi_v == 1.0
-        eval_type = "binary" if binary else "likert"
         pools = {int(c): g.response.to_numpy(dtype=float)
                  for c, g in sub.groupby("condition_num")
                  if len(g) >= _SOCSCI_MIN_PER_CONDITION}
         if len(pools) < 2:
             continue
+        # A two-level item is a binary outcome however it happens to be coded
+        # (TESS uses 1/2 as often as 0/1), so rescale it onto {0, 1} -- the
+        # binary interval methods threshold at 0.5 and would read 1/2 coding
+        # as "every response is a success".
+        if uniq.size == 2:
+            eval_type, bounds = "binary", (0.0, 1.0)
+            pools = {c: (v - lo_v) / (hi_v - lo_v) for c, v in pools.items()}
+        else:
+            eval_type, bounds = "likert", (lo_v, hi_v)
         conds = sorted(pools)
-        bounds = (0.0, 1.0) if binary else (lo_v, hi_v)
-        tag = f"socsci{int(sid)}t{int(task)}"
-        if include_null:
-            p0 = pools[conds[0]]
-            out.append(_pool_source(f"{tag}|null|N={p0.size}", eval_type, p0, p0,
-                                    scale_bounds=bounds, is_null=True))
-        # Widest true contrast available for this outcome.
-        best = max(((abs(pools[a].mean() - pools[b].mean()), a, b)
-                    for i, a in enumerate(conds) for b in conds[i + 1:]),
-                   default=None)
-        if best is not None:
-            _gap, a, b = best
+        gap, a, b = max((abs(pools[x].mean() - pools[y].mean()), x, y)
+                        for i, x in enumerate(conds) for y in conds[i + 1:])
+        cands[sid].append((gap, int(task), eval_type, bounds, pools, a, b))
+
+    out: list[CIPairSource] = []
+    for sid in sorted(cands):
+        if len(out) >= _SOCSCI_MAX_SOURCES:
+            break
+        for gap, task, eval_type, bounds, pools, a, b in sorted(
+                cands[sid], reverse=True)[:_SOCSCI_OUTCOMES_PER_STUDY]:
+            tag = f"socsci{sid}t{task}"
+            if include_null:
+                p0 = pools[sorted(pools)[0]]
+                out.append(_pool_source(f"{tag}|null|N={p0.size}", eval_type, p0, p0,
+                                        scale_bounds=bounds, is_null=True))
             out.append(_pool_source(f"{tag}|c{a}vc{b}", eval_type, pools[a], pools[b],
                                     scale_bounds=bounds))
     print(f"  socsci210: built {len(out)} sources")
