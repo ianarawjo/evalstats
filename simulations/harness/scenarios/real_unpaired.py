@@ -71,13 +71,24 @@ from . import CIPairSource
 
 DEFAULT_DATA_DIR = "simulations/out"
 
-REAL_UNPAIRED_DATASETS = ["iclr_metareview", "privacy_judge", "appstore"]
+REAL_UNPAIRED_DATASETS = ["iclr_metareview", "privacy_judge", "appstore", "inspect"]
 
 _APPSTORE_REVIEWS = "appstore_scenario_reviews.csv"
 _APPSTORE_POSITIVE_THRESHOLD = 4.0
 """A 4- or 5-star review counts as "positive" for the binarised source --
 the usual split for star ratings, and it lands near p=0.44 here, which is
 a more informative regime than a threshold that pushes p to an extreme."""
+
+_INSPECT_CSV = "inspect_benchmarks.csv"
+_INSPECT_RUN_IDX = 0
+"""Single run only. Averaging the 5 available runs per item would turn a
+strictly 0/1 score into one of six levels, which is no longer binary and
+would silently be scored by the wrong method family."""
+_INSPECT_PAIRS_PER_BENCHMARK = 3
+"""Model pairs kept per benchmark, chosen to span that benchmark's range of
+true accuracy gaps (smallest, median, largest) rather than taking all 130
+available pairs -- 9 benchmarks x 3 keeps the sweep proportionate while still
+covering gaps from ~0 to 0.66."""
 
 _PRIVACY_BOUNDS = (1.0, 5.0)
 """privacy_judge's human labels are continuous on an observed [1.04, 4.58].
@@ -152,6 +163,75 @@ def _load_appstore(data_dir: str) -> dict[str, np.ndarray]:
             continue
         by_app[r["app_id"]].append(float(raw))
     return {k: np.asarray(v, dtype=float) for k, v in sorted(by_app.items())}
+
+
+def _load_inspect_pools(data_dir: str) -> dict[tuple[str, str], np.ndarray]:
+    """(benchmark, model) -> that model's 0/1 item scores on that benchmark.
+
+    Real LLM benchmark results, and the one corpus here that supplies
+    genuinely INDEPENDENT replications: 9 separate benchmarks, ~1000 items
+    each, rather than several contrasts carved out of a single dataset the
+    way the App Store app pairs are.
+    """
+    path = Path(data_dir) / _INSPECT_CSV
+    if not path.exists():
+        return {}
+    pools: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for r in _read_rows(path):
+        if int(float(r.get("run_idx", 0))) != _INSPECT_RUN_IDX:
+            continue
+        raw = r.get("score", "")
+        if raw in ("", None):
+            continue
+        pools[(r["benchmark"], r["model"])].append(float(raw))
+    return {k: np.asarray(v, dtype=float) for k, v in pools.items() if len(v) >= 200}
+
+
+def _inspect_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
+    """Null and non-null binary sources from the Inspect benchmark corpus.
+
+    Two models' scores on the same benchmark, drawn independently, is a
+    genuine unpaired contrast whose true difference is the two models' real
+    accuracy gap. Drawing each arm's indices independently makes the two
+    sample means independent regardless of how correlated the models are
+    item-by-item, so the per-item correlation that makes this corpus PAIRED
+    for ci_paired does not leak into this construction.
+    """
+    pools = _load_inspect_pools(data_dir)
+    if not pools:
+        print(f"  Warning: {_INSPECT_CSV} not found; skipping inspect sources.")
+        return []
+    by_bench: dict[str, list[str]] = defaultdict(list)
+    for (bench, model) in pools:
+        by_bench[bench].append(model)
+
+    out: list[CIPairSource] = []
+    for bench in sorted(by_bench):
+        models = sorted(by_bench[bench])
+        if include_null:
+            # Both arms from ONE model's pool: true difference is exactly 0.
+            pool = pools[(bench, models[0])]
+            out.append(_pool_source(
+                f"inspect_{bench}|null|N={pool.size}", "binary", pool, pool,
+                scale_bounds=(0.0, 1.0), is_null=True,
+            ))
+        cand = []
+        for i in range(len(models)):
+            for j in range(i + 1, len(models)):
+                pa, pb = pools[(bench, models[i])], pools[(bench, models[j])]
+                cand.append((abs(pa.mean() - pb.mean()), models[i], models[j]))
+        cand.sort()
+        if not cand:
+            continue
+        # Smallest, median and largest true gap on this benchmark.
+        picks = {0, len(cand) // 2, len(cand) - 1}
+        for idx in sorted(picks)[:_INSPECT_PAIRS_PER_BENCHMARK]:
+            _gap, ma, mb = cand[idx]
+            out.append(_pool_source(
+                f"inspect_{bench}|{ma.split('/')[-1]}v{mb.split('/')[-1]}", "binary",
+                pools[(bench, ma)], pools[(bench, mb)], scale_bounds=(0.0, 1.0),
+            ))
+    return out
 
 
 def build_real_unpaired_sources(
@@ -229,6 +309,9 @@ def build_real_unpaired_sources(
                         (sb >= _APPSTORE_POSITIVE_THRESHOLD).astype(float),
                         scale_bounds=(0.0, 1.0),
                     ))
+
+    if "inspect" in wanted:
+        sources += _inspect_sources(data_dir, include_null)
 
     if not sources:
         raise ValueError(
