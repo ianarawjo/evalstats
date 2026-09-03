@@ -74,6 +74,15 @@ DEFAULT_DATA_DIR = "simulations/out"
 REAL_UNPAIRED_DATASETS = ["iclr_metareview", "privacy_judge", "appstore", "inspect", "socsci210"]
 
 _APPSTORE_REVIEWS = "appstore_scenario_reviews.csv"
+_APPSTORE_JUDGE_SCORES = "appstore_scenario_judge_scores.csv"
+_APPSTORE_JUDGE_BOUNDS = (1.0, 5.0)
+"""The mean of the five judge models' 1-5 scores for a review: a real
+CONTINUOUS outcome on [1, 5] with ~24 distinct values, over the same four
+disjoint app pools. Included because continuous is by far the thinnest eval
+type in the real suite -- privacy_judge alone supplies it otherwise -- and
+this needs no new download. It is judge output rather than human labels, so
+it does not answer the human-subjects question; it answers whether the
+continuous methods behave on a real, lumpy, bounded distribution."""
 _APPSTORE_POSITIVE_THRESHOLD = 4.0
 """A 4- or 5-star review counts as "positive" for the binarised source --
 the usual split for star ratings, and it lands near p=0.44 here, which is
@@ -376,6 +385,25 @@ def _socsci_sources(data_dir: str, include_null: bool) -> list[CIPairSource]:
     return out
 
 
+def _load_appstore_judge_means(data_dir: str) -> dict[str, np.ndarray]:
+    """Per-app pools of the across-model mean judge score."""
+    reviews = Path(data_dir) / _APPSTORE_REVIEWS
+    scores = Path(data_dir) / _APPSTORE_JUDGE_SCORES
+    if not (reviews.exists() and scores.exists()):
+        return {}
+    app_of = {r["item_id"]: r["app_id"] for r in _read_rows(reviews)}
+    acc: dict[str, list[float]] = defaultdict(list)
+    for r in _read_rows(scores):
+        raw = r.get("judge_score", "")
+        if raw in ("", None) or r["item_id"] not in app_of:
+            continue
+        acc[r["item_id"]].append(float(raw))
+    by_app: dict[str, list[float]] = defaultdict(list)
+    for item, vals in acc.items():
+        by_app[app_of[item]].append(float(np.mean(vals)))
+    return {k: np.asarray(v, dtype=float) for k, v in sorted(by_app.items())}
+
+
 def build_real_unpaired_sources(
     data_dir: str = DEFAULT_DATA_DIR,
     datasets: list[str] | None = None,
@@ -437,6 +465,13 @@ def build_real_unpaired_sources(
                     f"appstore_pos|null|N={all_bin.size}", "binary",
                     all_bin, all_bin, scale_bounds=(0.0, 1.0), is_null=True,
                 ))
+            judge = _load_appstore_judge_means(data_dir)
+            if judge and include_null:
+                all_j = np.concatenate([judge[a] for a in sorted(judge)])
+                sources.append(_pool_source(
+                    f"appstore_judgemean|null|N={all_j.size}", "continuous",
+                    all_j, all_j, scale_bounds=_APPSTORE_JUDGE_BOUNDS, is_null=True,
+                ))
             for i in range(len(apps)):
                 for j in range(i + 1, len(apps)):
                     a_id, b_id = apps[i], apps[j]
@@ -451,6 +486,12 @@ def build_real_unpaired_sources(
                         (sb >= _APPSTORE_POSITIVE_THRESHOLD).astype(float),
                         scale_bounds=(0.0, 1.0),
                     ))
+                    if a_id in judge and b_id in judge:
+                        sources.append(_pool_source(
+                            f"appstore_judgemean|{a_id}v{b_id}", "continuous",
+                            judge[a_id], judge[b_id],
+                            scale_bounds=_APPSTORE_JUDGE_BOUNDS,
+                        ))
 
     if "inspect" in wanted:
         sources += _inspect_sources(data_dir, include_null)
