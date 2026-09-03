@@ -177,6 +177,17 @@ class SimResult:
     total_time_sq: float = 0.0
     is_null: bool = False
     true_value: float = 0.0
+    scale_span: float = 1.0
+    """Width of this source's measurement scale (hi - lo).
+
+    Width, Penalty and Score are all homogeneous of degree 1 in the scale's
+    units, so dividing by this is exactly equivalent to computing them on the
+    [0, 1]-rescaled data -- which is what makes them poolable across sources.
+    Synthetic sources of one eval type all share a scale, so this was moot
+    until the real corpora arrived: SocSci210's likert outcomes alone span
+    1-3, 1-4, 1-5, 1-6, 1-7, 1-9 and 0-5, and averaging raw widths over those
+    let one wide-scale outcome dominate the mean. That artefact reversed the
+    apparent likert ranking, making the best method look near-worst."""
     icc: float = 0.0
     cohens_d: float = 0.0
 
@@ -896,6 +907,7 @@ def _run_cell(
     total_t_sq = {k: 0.0 for k in all_methods}
 
     target = float(source.true_diff)
+    scale_span = float(scale_bounds[1] - scale_bounds[0]) or 1.0
 
     def _record(key, lo: float, hi: float, elapsed: float) -> None:
         if lo <= target <= hi:
@@ -985,7 +997,7 @@ def _run_cell(
             covered=covered[method], total_width=total_w[method], total_score=total_score[method],
             total_pen_under=pen_under[method], total_pen_over=pen_over[method],
             rejects=rejects[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
-            is_null=source.is_null, true_value=target,
+            is_null=source.is_null, true_value=target, scale_span=scale_span,
             icc=source.icc, cohens_d=source.cohens_d,
         ))
     return out
@@ -1346,6 +1358,11 @@ def _print_overall_summary_table(
           "  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
     print("  TypeI = P(CI excludes 0) on null cells (target alpha); Power = the same rate\n"
           "  on the alternative cells, averaged over scenarios.")
+    print("  Width, Penalty and Score are expressed as a FRACTION OF EACH SOURCE'S OWN\n"
+          "  SCALE. They are homogeneous of degree 1 in the scale's units, so this is\n"
+          "  exactly their value on the [0,1]-rescaled data -- and it is what makes them\n"
+          "  poolable at all, since real corpora mix 1-5, 1-7, 0-10 ... outcomes within\n"
+          "  one eval type. Coverage, MinCov and TypeI are already scale-free.")
     print("  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
           "  so a too-narrow method can post the best Score while under-covering.\n"
           "  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
@@ -1389,9 +1406,10 @@ def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]
     agg_counts: dict = defaultdict(lambda: (0, 0))
     for r in non_null:
         n = max(r.n_reps, 1)
+        sp = r.scale_span or 1.0
         agg[(r.eval_type, r.method, r.n_a)].append((
-            r.covered / n, r.total_width / n, r.total_score / n,
-            (r.total_pen_under + r.total_pen_over) / n,
+            r.covered / n, r.total_width / n / sp, r.total_score / n / sp,
+            (r.total_pen_under + r.total_pen_over) / n / sp,
         ))
         cp, tp = agg_counts[(r.eval_type, r.method, r.n_a)]
         agg_counts[(r.eval_type, r.method, r.n_a)] = (cp + r.covered, tp + r.n_reps)
@@ -1452,9 +1470,10 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
     for r in rows_in:
         g = report_eval_type_group(r.eval_type)
         n = max(r.n_reps, 1)
+        sp = r.scale_span or 1.0
         agg[(g, r.method)].append((
-            r.covered / n, r.total_width / n, r.total_score / n,
-            (r.total_pen_under + r.total_pen_over) / n,
+            r.covered / n, r.total_width / n / sp, r.total_score / n / sp,
+            (r.total_pen_under + r.total_pen_over) / n / sp,
         ))
         c, t = counts[(g, r.method)]
         counts[(g, r.method)] = (c + r.covered, t + r.n_reps)
@@ -1515,7 +1534,11 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
                  r"difference $\bar{A}-\bar{B}$. "
                  f"Non-null cells only; TypeI is the rejection rate on null cells. "
                  f"Coverage cells are shaded when they fall outside the acceptable band "
-                 f"around {target:.2f}. Best Score per block in bold, runner-up underlined."),
+                 f"around {target:.2f}. Best Score per block in bold, runner-up underlined. "
+                 r"Width, Pen and Score are expressed as a fraction of each source's own "
+                 r"measurement scale, which is exactly their value on the $[0,1]$-rescaled "
+                 r"data and is what makes them poolable across outcomes measured on "
+                 r"different scales."),
         label="tab:ci_unpaired_overall",
         columns=columns, rows=rows, rule_before=rule_before,
     )
@@ -1599,8 +1622,11 @@ def _plot_frame(results: list[SimResult]) -> "pd.DataFrame":
         {
             "eval_type": r.eval_type, "label": r.label, "method": r.method,
             "n": r.n_a, "coverage": r.covered / max(r.n_reps, 1),
-            "width": r.total_width / max(r.n_reps, 1),
-            "score": r.total_score / max(r.n_reps, 1),
+            # Normalised by the source's own scale for the same reason the
+            # tables are -- see SimResult.scale_span. A width-vs-n plot that
+            # mixed 1-5 and 1-9 outcomes would show the scale, not the method.
+            "width": r.total_width / max(r.n_reps, 1) / (r.scale_span or 1.0),
+            "score": r.total_score / max(r.n_reps, 1) / (r.scale_span or 1.0),
         }
         for r in results if not r.is_null
     ])
@@ -1703,7 +1729,7 @@ def save_width_vs_n_plot(results: list[SimResult], alpha: float, out_path: str) 
     wide is visible here and nowhere else."""
     n_reps = results[0].n_reps if results else 0
     return _vs_n_plot(results, alpha, out_path, metric="width",
-                      ylabel="Mean CI width", title="CI Width vs. Group Size",
+                      ylabel="Mean CI width (fraction of scale)", title="CI Width vs. Group Size",
                       n_reps=n_reps, target_line=False)
 
 
@@ -1782,7 +1808,7 @@ def save_reliability_violin_plot(results: list[SimResult], alpha: float, out_pat
         et_df = scenario_level[scenario_level["eval_type"] == et]
         et_methods = [n for n in names if n in et_df["method"].values]
         for row_idx, (metric, ylabel) in enumerate(
-            [("coverage", "Coverage per scenario"), ("score", "Interval score per scenario")]
+            [("coverage", "Coverage per scenario"), ("score", "Interval score per scenario (scale-normalised)")]
         ):
             ax = axes[row_idx][col_idx]
             if et_df.empty:
