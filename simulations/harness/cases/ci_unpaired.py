@@ -177,6 +177,13 @@ class SimResult:
     total_time_sq: float = 0.0
     is_null: bool = False
     true_value: float = 0.0
+    base_n: int = 0
+    """The sweep's size parameter for this cell, before the imbalance ratio.
+
+    Not the same as n_a once the ratio may be applied to EITHER arm: a cell
+    can be (20, 80) or (80, 20) and both come from base_n=20. Per-n report
+    columns and the vs-n plots group on this, so a column headed n=20 means
+    "base size 20" rather than mixing base-20-scaled-up with base-80."""
     scale_span: float = 1.0
     """Width of this source's measurement scale (hi - lo).
 
@@ -900,6 +907,7 @@ def _run_cell(
     alpha: float, seed,
     method_names: frozenset[str] | None = None,
     agresti_min_max_n: int = _AGRESTI_MIN_MAX_N,
+    base_n: int = 0,
 ) -> list[SimResult]:
     """Run all reps for one (source, n_a, n_b) cell."""
     rng = np.random.default_rng(seed)
@@ -1015,7 +1023,7 @@ def _run_cell(
     for method in all_methods:
         out.append(SimResult(
             source=source.source, label=source.label, eval_type=source.eval_type,
-            n_a=n_a, n_b=n_b, method=method.name, n_reps=n_reps,
+            n_a=n_a, n_b=n_b, base_n=base_n or n_a, method=method.name, n_reps=n_reps,
             covered=covered[method], total_width=total_w[method], total_score=total_score[method],
             total_pen_under=pen_under[method], total_pen_over=pen_over[method],
             rejects=rejects[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
@@ -1070,11 +1078,11 @@ _CELL_SOURCES: list = []
 
 
 def _run_cell_worker(args: tuple) -> list[SimResult]:
-    (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, seed,
+    (sc_idx, n_a, n_b, base, n_reps, n_bootstrap, bayes_n, alpha, seed,
      method_names, agresti_min_max_n) = args
     return _run_cell(
         _CELL_SOURCES[sc_idx], n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha,
-        seed, method_names, agresti_min_max_n,
+        seed, method_names, agresti_min_max_n, base_n=base,
     )
 
 
@@ -1088,18 +1096,33 @@ def run_simulation(
     global _CELL_SOURCES
     _CELL_SOURCES = list(sources)
 
-    cells = [
-        (i, n, max(2, int(round(n * ratio))))
-        for i, s in enumerate(sources)
-        for n in sample_sizes
-        for ratio in size_ratios
-    ]
+    # Which arm carries the imbalance is randomised per cell, seeded so the
+    # sweep stays reproducible. Arm B is the effect-carrying one, so applying
+    # the ratio to it always -- as this did -- means the larger group is
+    # always the shifted one, and on a bounded scale shifting toward a
+    # boundary changes the variance, so only one pairing of (size, variance)
+    # was ever tested. Scaling the OTHER arm up instead of scaling B down
+    # keeps both groups at or above the base size, which a ratio below 1
+    # would not: at base 10 it would put a group at 5, under the N=15 floor
+    # below which evalstats refuses to report at all.
+    _dir_rng = np.random.default_rng(seed ^ 0x5A17)
+    cells = []
+    for i, s in enumerate(sources):
+        for n in sample_sizes:
+            for ratio in size_ratios:
+                scaled = max(2, int(round(n * ratio)))
+                if ratio == 1.0 or _dir_rng.random() < 0.5:
+                    cells.append((i, n, n, scaled))       # arm B larger
+                else:
+                    cells.append((i, n, scaled, n))       # arm A larger
+    cells = [(i, na, nb, base) for (i, base, na, nb) in
+             ((c[0], c[1], c[2], c[3]) for c in cells)]
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
     args_list = [
-        (sc_idx, n_a, n_b, n_reps, n_bootstrap, bayes_n, alpha, cseed,
+        (sc_idx, n_a, n_b, base, n_reps, n_bootstrap, bayes_n, alpha, cseed,
          method_names, agresti_min_max_n)
-        for (sc_idx, n_a, n_b), cseed in zip(cells, child_seeds)
+        for (sc_idx, n_a, n_b, base), cseed in zip(cells, child_seeds)
     ]
     # Shuffle the EXECUTION order (seeds are already bound to their cell above,
     # so results are unchanged and still reproducible). build_pair_sources emits
@@ -1114,7 +1137,7 @@ def run_simulation(
     if n_workers <= 1:
         for i, a in enumerate(args_list):
             results.extend(_run_cell_worker(a))
-            sc_idx, n_a, n_b = cells[i]
+            sc_idx, n_a, n_b, _base = cells[i]
             reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} n={n_a}/{n_b}")
     else:
         ctx = _mp.get_context("fork")
@@ -1429,12 +1452,12 @@ def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]
     for r in non_null:
         n = max(r.n_reps, 1)
         sp = r.scale_span or 1.0
-        agg[(r.eval_type, r.method, r.n_a)].append((
+        agg[(r.eval_type, r.method, r.base_n or r.n_a)].append((
             r.covered / n, r.total_width / n / sp, r.total_score / n / sp,
             (r.total_pen_under + r.total_pen_over) / n / sp,
         ))
-        cp, tp = agg_counts[(r.eval_type, r.method, r.n_a)]
-        agg_counts[(r.eval_type, r.method, r.n_a)] = (cp + r.covered, tp + r.n_reps)
+        cp, tp = agg_counts[(r.eval_type, r.method, r.base_n or r.n_a)]
+        agg_counts[(r.eval_type, r.method, r.base_n or r.n_a)] = (cp + r.covered, tp + r.n_reps)
 
     def mean_cov(et, m, n):
         vals = agg.get((et, m, n), [])
@@ -1448,7 +1471,7 @@ def print_report(results: list[SimResult], alpha: float, sample_sizes: list[int]
           f"  Score = interval score (width + (2/alpha)*miss-distance; lower is better --\n"
           f"  see evalstats.core.stats_utils.interval_score)\n{sep}")
 
-    sizes_present = sorted({r.n_a for r in non_null})
+    sizes_present = sorted({(r.base_n or r.n_a) for r in non_null})
     for et in eval_types_present:
         print(f"\n  [{et}]")
         print(f"    {'Method':<20}" + "".join(f"  n={n:<6}" for n in sizes_present))
@@ -1484,7 +1507,7 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
     if not rows_in:
         return ""
     method_labels = [m.name for m in order_present_methods({r.method for r in rows_in})]
-    sizes_present = sorted({r.n_a for r in rows_in})
+    sizes_present = sorted({(r.base_n or r.n_a) for r in rows_in})
 
     agg: dict = defaultdict(list)
     counts: dict = defaultdict(lambda: (0, 0))
@@ -1499,8 +1522,8 @@ def latex_summary(results: list[SimResult], alpha: float) -> str:
         ))
         c, t = counts[(g, r.method)]
         counts[(g, r.method)] = (c + r.covered, t + r.n_reps)
-        c2, t2 = per_n[(g, r.method, r.n_a)]
-        per_n[(g, r.method, r.n_a)] = (c2 + r.covered, t2 + r.n_reps)
+        c2, t2 = per_n[(g, r.method, r.base_n or r.n_a)]
+        per_n[(g, r.method, r.base_n or r.n_a)] = (c2 + r.covered, t2 + r.n_reps)
 
     # Type-I error lives on the null rows, which are excluded from `rows_in`.
     null_rate: dict = defaultdict(lambda: (0, 0))
@@ -1643,7 +1666,7 @@ def _plot_frame(results: list[SimResult]) -> "pd.DataFrame":
     return pd.DataFrame([
         {
             "eval_type": r.eval_type, "label": r.label, "method": r.method,
-            "n": r.n_a, "coverage": r.covered / max(r.n_reps, 1),
+            "n": (r.base_n or r.n_a), "coverage": r.covered / max(r.n_reps, 1),
             # Normalised by the source's own scale for the same reason the
             # tables are -- see SimResult.scale_span. A width-vs-n plot that
             # mixed 1-5 and 1-9 outcomes would show the scale, not the method.
@@ -1772,7 +1795,7 @@ def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str
     for row_idx, et in enumerate(eval_types_present):
         ax = axes[row_idx][0]
         et_results = [r for r in non_null if r.eval_type == et]
-        sizes = sorted({r.n_a for r in et_results})
+        sizes = sorted({(r.base_n or r.n_a) for r in et_results})
         ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04),
                    color="#DDDDDD", alpha=0.40, zorder=0)
         ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
@@ -1782,7 +1805,7 @@ def save_cost_plot(results: list[SimResult], alpha: float, out_path: str) -> str
                 continue
             pts = []
             for n in sizes:
-                subset = [r for r in m_results if r.n_a == n]
+                subset = [r for r in m_results if (r.base_n or r.n_a) == n]
                 if not subset:
                     continue
                 avg_ms, _se = _time_stats(subset)
@@ -1931,7 +1954,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         # sizes and bootstrap_n deliberately mirror ci_paired.official_args, so
         # the two cases' tables are directly comparable; size_ratios is the one
         # addition, since unequal group sizes only arise between subjects.
-        sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100], size_ratios=[1.0, 2.0],
+        sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100], size_ratios=[1.0, 2.0, 4.0],
         reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05, seed=base_seed,
         icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4],
         include_null=True,
