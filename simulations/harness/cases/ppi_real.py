@@ -151,6 +151,17 @@ from typing import Callable
 import numpy as np
 import scipy.stats as scipy_stats
 
+
+class _MWUResult:
+    """Shim: the mwu call sites read only ``.p_value``. They now go through
+    evalstats.tests._ppi_mannwhitney_corrected -- the same path mannwhitney()
+    uses -- instead of calling _ppi_two_sample directly."""
+    __slots__ = ("p_value",)
+
+    def __init__(self, p):
+        self.p_value = p
+
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from evalstats.tests import (
@@ -159,6 +170,7 @@ with warnings.catch_warnings():
         _ppi_single_logit_t,
         _ppi_single_t_interval,
         _ppi_two_sample,
+    _ppi_mannwhitney_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -171,6 +183,9 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
+        _kw_candidate_from_pairwise,
+        _ppi_kruskal_wallis_influence,
+        _kw_rowsum_from_pairwise,
         _ppi_kruskal_wallis_pairwise,
     )
 
@@ -178,7 +193,12 @@ from ..methods import (
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
     PPI_BONETT_PRICE,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
-    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+    KRUSKAL_ROWSUM,
+    KRUSKAL_ROWSUM_LABELED,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
+    PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
@@ -373,7 +393,8 @@ def _run_real_twogroup_cell(
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
                     uncorrected[MWU.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
@@ -536,8 +557,61 @@ def _run_real_omnibus_independent_cell(
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
+            # Row-sum ("real Kruskal-Wallis") projection. Deliberately its
+            # OWN bootstrap draw rather than reusing KRUSKAL's: sharing one
+            # would shift KRUSKAL's rng stream and silently change every
+            # existing kruskal number in this case. The uncorrected
+            # comparator is the same classical KW on the judge scores --
+            # this projection is the PPI correction OF that statistic, so it
+            # is the directly matched pair.
+            if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+                                                KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+                                                KRUSKAL_INFLUENCE,
+                                                KRUSKAL_INFLUENCE_LOGO,
+                                                KRUSKAL_INFLUENCE_FLOOR)):
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    pw_r = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                    # The k>=5-conservatism candidates share pw_r too -- same
+                    # bootstrap, different test form, so the comparison between
+                    # them carries no Monte Carlo difference of its own.
+                    for _m, _c in ((KRUSKAL_TWOPART, "twopart"),
+                                   (KRUSKAL_EIGENGAP, "eigengap")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_LOGO.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_LOGO.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_LOGO.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=True, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_FLOOR.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=False, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE.name in methods:
+                        # Its own draw: it needs the raw groups, and the
+                        # covariance replacement is the whole point, so it does
+                        # not share pw_r.
+                        uncorrected[KRUSKAL_INFLUENCE.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed()
+                            )["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -643,7 +717,8 @@ def _run_real_twogroup_power_cell(
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
                     uncorrected[MWU.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
@@ -689,8 +764,61 @@ def _run_real_omnibus_independent_power_cell(
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
+            # Row-sum ("real Kruskal-Wallis") projection. Deliberately its
+            # OWN bootstrap draw rather than reusing KRUSKAL's: sharing one
+            # would shift KRUSKAL's rng stream and silently change every
+            # existing kruskal number in this case. The uncorrected
+            # comparator is the same classical KW on the judge scores --
+            # this projection is the PPI correction OF that statistic, so it
+            # is the directly matched pair.
+            if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+                                                KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
+                                                KRUSKAL_INFLUENCE,
+                                                KRUSKAL_INFLUENCE_LOGO,
+                                                KRUSKAL_INFLUENCE_FLOOR)):
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    pw_r = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_rowsum_from_pairwise(pw_r, weights=_w)["wald_p"] < _ALPHA)
+                    # The k>=5-conservatism candidates share pw_r too -- same
+                    # bootstrap, different test form, so the comparison between
+                    # them carries no Monte Carlo difference of its own.
+                    for _m, _c in ((KRUSKAL_TWOPART, "twopart"),
+                                   (KRUSKAL_EIGENGAP, "eigengap")):
+                        if _m.name in methods:
+                            uncorrected[_m.name] += int(p_u < _ALPHA)
+                            corrected[_m.name] += int(
+                                _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_LOGO.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_LOGO.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_LOGO.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=True, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_FLOOR.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=False, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE.name in methods:
+                        # Its own draw: it needs the raw groups, and the
+                        # covariance replacement is the whole point, so it does
+                        # not share pw_r.
+                        uncorrected[KRUSKAL_INFLUENCE.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed()
+                            )["wald_p"] < _ALPHA)
                 except Exception:
                     pass
 
@@ -1058,6 +1186,14 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # (generate_real_twogroup_null_cell's _reveal_labels call), so there was
     # no MNAR risk here for a local rectifier to buy anything against. MWU
     # (the global rectifier) is now the only midrank correction.
+    if _TWOGROUP_TESTS_OVERRIDE:
+        # --twogroup-tests: restrict the two-group check to a named subset, so
+        # re-validating ONE test after a fix costs a fraction of the run.
+        # Mirrors --omnibus-tests. Binary still drops the rank test.
+        want = list(_TWOGROUP_TESTS_OVERRIDE)
+        if eval_type == "binary":
+            want = [m for m in want if m != MWU.name]
+        return want
     base = [TTEST.name, TTEST_WELCH.name]
     return base if eval_type == "binary" else base + [MWU.name]
 
@@ -1088,6 +1224,13 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
+_TWOGROUP_TESTS_OVERRIDE: list[str] = []
+"""Set by --twogroup-tests; empty means the default set."""
+
+_OMNIBUS_TESTS_OVERRIDE: list[str] = []
+"""Set by --omnibus-tests; empty means the default set."""
+
+
 def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # anova_ind/kruskal/kruskal_mnar_experimental aren't in pvalues.py's
     # _PPI_BINARY_COMPATIBLE_TESTS -- binary's massive ties break these
@@ -1100,9 +1243,23 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # for MNAR robustness, but this check's real-data labeling is MCAR by
     # construction, so there's no MNAR risk here for its local rectifier to
     # buy anything against.
+    #
+    # KRUSKAL_ROWSUM/KRUSKAL_ROWSUM_LABELED ARE included: unlike the MNAR
+    # variant they are not a different rectifier competing on the same
+    # ground, they are the same correction projected onto classical KW's own
+    # contrasts -- so running them beside KRUSKAL on real data is exactly the
+    # "what does correcting the real KW cost" comparison, and it costs one
+    # extra bootstrap per rep.
     if eval_type == "binary":
         return []
-    return [ANOVA_IND.name, KRUSKAL.name]
+    if _OMNIBUS_TESTS_OVERRIDE:
+        # --omnibus-tests: restrict the omnibus-independent checks to a named
+        # subset. Every cell runs every listed method, so isolating one test
+        # cuts the cost of a targeted validation roughly proportionally --
+        # which is the point when re-validating a single method.
+        return list(_OMNIBUS_TESTS_OVERRIDE)
+    return [ANOVA_IND.name, KRUSKAL.name, KRUSKAL_ROWSUM.name, KRUSKAL_ROWSUM_LABELED.name,
+            KRUSKAL_TWOPART.name, KRUSKAL_EIGENGAP.name]
 
 
 def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:
@@ -1742,6 +1899,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label-fracs", type=float, nargs="+", default=DEFAULT_LABEL_FRACS)
     parser.add_argument("--sizes", type=int, nargs="+", default=None,
                          help="Sample sizes per rep (default: 3 sizes bounded by each dataset's actual corpus size).")
+    parser.add_argument("--twogroup-tests", nargs="+", default=None,
+                        help="Restrict the two-group Type-I check to these method "
+                             "names (e.g. 'mwu'). Override, not addition, so a "
+                             "default run is unchanged.")
+    parser.add_argument("--omnibus-tests", nargs="+", default=None,
+                         help="Restrict the omnibus-independent null/power checks to these "
+                              "method names (e.g. 'kruskal kruskal_influence'). Cuts runtime "
+                              "roughly in proportion, for re-validating one method without "
+                              "paying for the others.")
     parser.add_argument("--reps", type=int, default=200)
     parser.add_argument("--ppi-n-boot", type=int, default=2000)
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -1823,6 +1989,18 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
 
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
+    global _TWOGROUP_TESTS_OVERRIDE, _OMNIBUS_TESTS_OVERRIDE
+    _TWOGROUP_TESTS_OVERRIDE = list(getattr(args, "twogroup_tests", None) or [])
+    if _TWOGROUP_TESTS_OVERRIDE:
+        print(f"  two-group checks restricted to: {', '.join(_TWOGROUP_TESTS_OVERRIDE)}")
+    _OMNIBUS_TESTS_OVERRIDE = list(getattr(args, "omnibus_tests", None) or [])
+    if _OMNIBUS_TESTS_OVERRIDE:
+        _known = {m.name for m in PPI_TEST_METHODS}
+        _bad = [t for t in _OMNIBUS_TESTS_OVERRIDE if t not in _known]
+        if _bad:
+            raise ValueError(f"--omnibus-tests: unknown method name(s) {_bad}")
+        print(f"  omnibus-independent checks restricted to: "
+              f"{', '.join(_OMNIBUS_TESTS_OVERRIDE)}")
     try:
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
         stamp = time.strftime("%Y%m%d_%H%M%S")

@@ -104,7 +104,9 @@ class TestCompareUnpairedBasics:
         assert r.omnibus_statistic is not None
         assert r.omnibus_p_value is not None
         assert r.ci_correction == "bonferroni"
-        assert r.pvalue_correction == "holm"
+        # Shaffer, not Holm: identical FWER for an all-pairwise family (both
+        # divide by m at step 1) but strictly more powerful from step 2 on.
+        assert r.pvalue_correction == "shaffer"
         assert len(r.pairwise) == 3
         # Widely separated means -> omnibus should reject at alpha=0.05.
         assert r.omnibus_p_value < 0.05

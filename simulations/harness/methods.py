@@ -605,12 +605,54 @@ FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/
 # alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
+# KRUSKAL_ROWSUM/KRUSKAL_ROWSUM_LABELED: EXPERIMENTAL. Not another rectifier
+# -- the SAME corrected pairwise vector and covariance as KRUSKAL, Wald-tested
+# on its (k-1)-dimensional weighted row-sum projection, which is exactly the
+# part classical Kruskal-Wallis's mean pooled ranks are an affine function of
+# (see evalstats.tests._ppi_kruskal_wallis_rowsum). So KRUSKAL *replaces* the
+# classical statistic and these two *correct* it. "_labeled" weights the
+# projection by labeled counts instead of full group sizes; the two are
+# bit-identical under a balanced design and only diverge when per-group label
+# fractions differ. Same colour convention: lighter tints of KRUSKAL's pink.
+KRUSKAL_ROWSUM = Method("kruskal_rowsum", "#c2559c")           # darker pink
+KRUSKAL_ROWSUM_LABELED = Method("kruskal_rowsum_labeled", "#f7d6e8")  # palest tint
+# KRUSKAL_TWOPART/KRUSKAL_EIGENGAP: EXPERIMENTAL candidates
+# for the k>=5 conservatism of KRUSKAL itself (its df counts C(k,2) directions
+# when Cov(delta_hat) is rank k-1 under H0 -- see
+# evalstats.tests._kw_contrast_subspace and REPORT.md sections B-C). Same one
+# bootstrap as KRUSKAL, different test form only. Not in the official set.
+# The contrast-space Wald itself is KRUSKAL_ROWSUM -- there is deliberately
+# no separate 'kruskal_contrast': an unweighted contrast basis and the
+# n-weighted row space calibrate identically and only the weighted one is
+# the classical KW contrast (see _kw_contrast_subspace).
+KRUSKAL_TWOPART = Method("kruskal_twopart", "#d98cbb")     # mid tint
+KRUSKAL_EIGENGAP = Method("kruskal_eigengap", "#8c5f7d")   # muted plum
+# KRUSKAL_INFLUENCE: the phase-4 candidate -- the SAME estimator as KRUSKAL,
+# with the Wald covariance replaced by a null-structured influence-function one
+# (evalstats.tests._kw_influence_cov). Fixes the df defect by construction
+# (rank k-1, not by truncation) and the variance-assembly conditioning defect
+# (per-item differencing). Opt-in until validated on ppi_real.
+KRUSKAL_INFLUENCE = Method("kruskal_influence", "#7b3f9c")  # violet
+# KRUSKAL_INFLUENCE_LOGO: influence covariance + the two corner corrections
+# (leave-one-group-out reference ECDFs, and a floor on each group's labeled
+# composite variance). See REPORT.md section E.
+KRUSKAL_INFLUENCE_LOGO = Method("kruskal_influence_logo", "#4a2d6b")  # deep violet
+# KRUSKAL_INFLUENCE_FLOOR: the variance floor WITHOUT the LOGO ECDFs. The floor
+# binds only when a group's labeled composite variance collapses, which real
+# judge noise ratios (0.64-1.18 on privacy_judge) should never trigger -- so
+# this is the candidate that fixes the sparse-Likert corner while being
+# provably inert on real data. Inertness is checked by counting binding
+# events (evalstats.tests._KW_FLOOR_AUDIT), not by comparing rejection rates.
+KRUSKAL_INFLUENCE_FLOOR = Method("kruskal_influence_floor", "#9c5fbf")  # light violet
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
+    LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
 """Every PPI test method the harness knows how to run -- the full set
@@ -620,6 +662,13 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
+        # Experimental, opt-in via --tests kruskal_rowsum /
+        # kruskal_rowsum_labeled: they answer "what does correcting the REAL
+        # Kruskal-Wallis cost/buy", which is a study question, not part of
+        # the shipped default set.
+        KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via

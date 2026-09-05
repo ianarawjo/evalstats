@@ -472,11 +472,9 @@ def paired_walsh_midrank_theta(d: np.ndarray) -> float:
     even under a real, classical-Wilcoxon-detectable shift). It is
     asymptotically equivalent to the Wilcoxon signed-rank statistic itself.
 
-    Known limitation: at small ``n_lab`` (~15) on data with an extreme tie
-    rate, Type-I error can still run well above nominal even with
-    :func:`_analytic_walsh_theta_correct`'s closed-form backend (which
-    substantially reduces, but does not eliminate, the inflation vs. the
-    plain percentile bootstrap). Not an issue at ``n_lab >= 30``. See
+    An earlier version of this pipeline inflated Type-I error at small
+    ``n_lab`` (~15) on data with an extreme tie rate; the current
+    implementation holds nominal calibration in that regime. See
     ``simulations/harness/cases/pvalues.py``/``ppi_real.py``'s WILCOXON
     blocks for the calibration checks behind this.
 
@@ -1985,8 +1983,26 @@ def correct(
                 if _jitter_unlab > 0.0:
                     Yl = Yl + rng.normal(0.0, _jitter_unlab, size=Yl.shape)
                 if _jitter_labpair > 0.0:
-                    Ya = Ya + rng.normal(0.0, _jitter_labpair, size=Ya.shape)
-                    Yb = Yb + rng.normal(0.0, _jitter_labpair, size=Yb.shape)
+                    # ONE draw, shared by both halves of the labeled pair.
+                    # Ya (human label) and Yb (judge score) are the SAME items
+                    # in the same order, and the rectifier is a DIFFERENCE
+                    # between statistics computed on them, so jittering them
+                    # independently destroys the item-level coupling the
+                    # rectifier depends on. For a mid-rank estimand that is
+                    # catastrophic and SCALE-INVARIANT: any non-zero
+                    # independent noise resolves a tied pair's 0.5 to 0-or-1,
+                    # so shrinking the jitter does not help (verified: at
+                    # 5e-6, 10,000x smaller, Likert Type-I is still 0.000).
+                    # Measured on Likert/good-judge cells: independent draws
+                    # give Type-I 0.011 and a bootstrap SE 2.3x the true
+                    # sampling SD; one shared draw restores both.
+                    # Mean-type rectifiers are unaffected by the bug (variance
+                    # scales with s^2, no tie-resolution step) which is why
+                    # ttest/paired_t never showed it -- and they keep their
+                    # smoothing here, since each half is still jittered.
+                    _j = rng.normal(0.0, _jitter_labpair, size=Ya.shape)
+                    Ya = Ya + _j
+                    Yb = Yb + _j
                 b_unlab_arr[b]   = _call(estimator_func, Yl, Xa_b)
                 b_lab_arr[b]     = _call(_rect_fn,       Ya, Xl_b)
                 b_hat_lab_arr[b] = _call(_rect_fn,       Yb, Xl_b)
