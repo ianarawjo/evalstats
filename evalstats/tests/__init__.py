@@ -1284,16 +1284,31 @@ def _ppi_kruskal_wallis_pairwise(
     nu = sum(n_lab_per_group)
     wald_stat, df, wald_p = _kw_wald_from_vector(diff, cov, nu)
 
-    # Per-pair two-sided bootstrap p-values, same convention as
-    # TestResult.corrected_p_value's own definition (2*min(P(boot<=0.5),
-    # P(boot>=0.5))) -- exposed alongside `boots` itself (additive, not a
-    # contract change: existing callers only read the keys below already
-    # present) so a caller building its own multi-pair FWER correction
-    # (e.g. Holm across a family of pairs) has real per-pair p-values to
-    # correct, not just the single omnibus wald_p. See
-    # evalstats/core/unpaired.py.
-    pair_p = 2.0 * np.minimum((boots <= 0.5).mean(axis=0), (boots >= 0.5).mean(axis=0))
-    pair_p = np.minimum(pair_p, 1.0)
+    # Per-pair two-sided p-values, exposed alongside `boots` so a caller
+    # building its own multi-pair FWER correction (e.g. Holm across a family
+    # of pairs) has real per-pair p-values to correct, not just the single
+    # omnibus wald_p. See evalstats/core/unpaired.py.
+    #
+    # Pairwise post-hoc: the SAME test form the shipped PPI Mann-Whitney uses
+    # (evalstats.ppi's analytic t on estimate/se, df = n_lab - 1), applied to
+    # the corrected theta_ab. Previously this was a bootstrap PERCENTILE
+    # p-value, 2*min(P(boot<=.5), P(boot>=.5)). That construction has no floor:
+    # when every resample lands on one side it returns EXACTLY 0, which then
+    # survives Holm or Bonferroni untouched (measured at 1.3% of null pairs at
+    # n_boot=200, roughly doubling the family-wise rate). It also made the
+    # post-hoc a different test from the one a reader would expect after a
+    # Kruskal-Wallis omnibus, and a different test from evalstats' own
+    # mannwhitney(). Both reasons point at the same fix.
+    _se_pair = boots.std(axis=0, ddof=1)
+    _df_pair = max(int(sum(n_lab_per_group)) - 1, 1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        _tstat = np.abs(theta_hat - 0.5) / _se_pair
+    pair_p = np.where(
+        _se_pair > 0,
+        2.0 * (1.0 - _scipy_stats.t.cdf(_tstat, _df_pair)),
+        np.where(np.abs(theta_hat - 0.5) < 1e-12, 1.0, 0.0),
+    )
+    pair_p = np.clip(pair_p, 0.0, 1.0)
 
     return {
         "pairs": pairs,
@@ -1322,11 +1337,22 @@ def _ppi_kruskal_wallis_pairwise(
     }
 
 
+_KW_FLOOR_AUDIT = {"calls": 0, "calls_bound": 0, "groups": 0, "bound": 0}
+
+
+def _kw_floor_audit_reset():
+    """Zero the variance-floor binding counters (diagnostic use only)."""
+    for _k in _KW_FLOOR_AUDIT:
+        _KW_FLOOR_AUDIT[_k] = 0
+
+
 def _kw_influence_cov(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     pairs,
     lam: float,
+    loo_group: bool = False,
+    floor_frac: float = 0.0,
 ) -> np.ndarray:
     """Null-structured influence-function covariance of the PPI-corrected
     pairwise dominance vector. No bootstrap.
@@ -1367,7 +1393,28 @@ def _kw_influence_cov(
     score-vs-Wald reasoning behind Wilson-over-Wald, Tango, and
     evalstats.ppi._analytic_walsh_theta_correct's score variance.
 
-    See simulations/kw_rowsum/step13_influence_cov.py and REPORT.md section D.
+    TWO OPTIONAL CORRECTIONS for the good-judge corner (REPORT.md section E),
+    both off by default so the section D numbers stay reproducible:
+
+    ``loo_group`` -- build each group's reference ECDFs from the OTHER groups
+    only. The pooled ECDF otherwise includes group g's own points, so g's
+    composite is scored against a CDF partly fitted to it, shrinking its
+    apparent spread; at k=3 each group is a THIRD of the pool, so the
+    self-fitting is large. (Leave-one-ITEM-out was tested first and barely
+    moved anything -- 1/n against this 1/k.) Measured to take the worst
+    continuous good-judge cell from 0.131 to 0.071.
+
+    ``floor_frac`` -- floor each group's LABELED composite variance at this
+    fraction of the median across groups. A different mechanism: with heavy
+    ties and few labels a group's composite can collapse toward zero variance
+    outright, which no amount of better referencing fixes. Measured to take the
+    worst Likert cell from 0.146 to 0.059. The two are complementary --
+    neither touches the other's corner.
+
+    The 0.5 default used in the study is a round number, NOT a tuned one.
+
+    See simulations/kw_rowsum/step13_influence_cov.py, step18_corner_fixes.py
+    and REPORT.md sections D and E.
     """
     k = len(groups)
     m = len(pairs)
@@ -1386,18 +1433,43 @@ def _kw_influence_cov(
         le = sorted_pool.searchsorted(x, side="right")
         return (lt + 0.5 * (le - lt)) / n
 
-    cov = np.zeros((m, m))
+    v_lab = np.zeros(k)
+    v_unlab = np.zeros(k)
+    cols = []
     for g in range(k):
-        n_l, n_u = len(y_lab[g]), len(j_unlab[g])
-        phi_lab = _mid(pooled_h, y_lab[g]) - lam * _mid(pooled_j, j_lab[g])
-        phi_unlab = lam * _mid(pooled_j, j_unlab[g])
+        if loo_group:
+            others_h = [y_lab[h] for h in range(k) if h != g]
+            others_j = [j_lab[h] for h in range(k) if h != g] + \
+                       [j_unlab[h] for h in range(k) if h != g]
+            ph = np.sort(np.concatenate(others_h)) if others_h else pooled_h
+            pj = np.sort(np.concatenate(others_j)) if others_j else pooled_j
+        else:
+            ph, pj = pooled_h, pooled_j
+        if len(y_lab[g]) > 1:
+            v_lab[g] = float(np.var(_mid(ph, y_lab[g]) - lam * _mid(pj, j_lab[g]), ddof=1))
+        if len(j_unlab[g]) > 1:
+            v_unlab[g] = float(np.var(lam * _mid(pj, j_unlab[g]), ddof=1))
         col = np.zeros(m)
         for c, (a, b) in enumerate(pairs):
             col[c] = 1.0 if g == a else (-1.0 if g == b else 0.0)
-        if n_l > 1:
-            cov += np.outer(col, col) * (float(np.var(phi_lab, ddof=1)) / n_l)
-        if n_u > 1:
-            cov += np.outer(col, col) * (float(np.var(phi_unlab, ddof=1)) / n_u)
+        cols.append(col)
+
+    if floor_frac > 0.0:
+        pos = v_lab[v_lab > 0]
+        if pos.size:
+            thresh = floor_frac * float(np.median(pos))
+            _KW_FLOOR_AUDIT["groups"] += k
+            _KW_FLOOR_AUDIT["bound"] += int(np.count_nonzero(v_lab < thresh))
+            _KW_FLOOR_AUDIT["calls"] += 1
+            if np.any(v_lab < thresh):
+                _KW_FLOOR_AUDIT["calls_bound"] += 1
+            v_lab = np.maximum(v_lab, thresh)
+
+    cov = np.zeros((m, m))
+    for g in range(k):
+        n_l, n_u = len(y_lab[g]), len(j_unlab[g])
+        t = (v_lab[g] / n_l if n_l > 1 else 0.0) + (v_unlab[g] / n_u if n_u > 1 else 0.0)
+        cov += np.outer(cols[g], cols[g]) * t
     return cov
 
 
@@ -1407,6 +1479,8 @@ def _ppi_kruskal_wallis_influence(
     alpha: float,
     n_boot: int,
     rng,
+    loo_group: bool = False,
+    floor_frac: float = 0.0,
 ) -> dict:
     """EXPERIMENTAL. The shipped pairwise estimator with its Wald covariance
     replaced by :func:`_kw_influence_cov`'s null-structured, bootstrap-free
@@ -1421,7 +1495,8 @@ def _ppi_kruskal_wallis_influence(
     """
     pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
     pairs = pw["pairs"]
-    cov = _kw_influence_cov(groups, groups_lab, pairs, pw["lam"])
+    cov = _kw_influence_cov(groups, groups_lab, pairs, pw["lam"],
+                            loo_group=loo_group, floor_frac=floor_frac)
     diff = pw["theta_hat"] - 0.5
     nu = int(sum(pw["n_lab_per_group"]))
     stat, df, p = _kw_wald_from_vector(diff, cov, nu)
@@ -4726,6 +4801,60 @@ def ttest(
 # mannwhitney
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _ppi_mannwhitney_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng, power_tune=True):
+    """The PPI-corrected Mann-Whitney statistics, with NO alignment report.
+
+    Extracted so `mannwhitney()` and any caller that needs the numbers without
+    the report (the simulation harness, which discards it and would otherwise
+    pay ~515ms per call for it) compute the SAME thing. They previously did
+    not: the harness called `_ppi_two_sample` directly and so never saw
+    mannwhitney's variance construction at all, which meant every sweep was
+    measuring a different test from the one evalstats ships.
+
+    Returns (estimate, (ci_lo, ci_hi), p_value, rectifier, lam) with the
+    estimate on the P(X>Y) scale.
+    """
+    def _auc_shifted(xa, ya):
+        return _p_x_gt_y_midrank(xa, ya) - 0.5
+
+    ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng,
+                          power_tune=power_tune)
+    estimate = ppi.estimate + 0.5
+
+    # Null-structured influence variance; see mannwhitney's docstring notes.
+    lam = getattr(ppi, "lam", None)
+    lam = 1.0 if lam is None else float(lam)
+    # loo_group=True is not a tweak here -- at k=2 it IS the correct Hajek
+    # projection. For theta = P(X>Y) the influence function for group X is
+    # phi(x) = F_Y(x), the OTHER group's CDF. _kw_influence_cov's default
+    # scores each group against the POOLED ECDF, which at k=2 makes each group
+    # half of its own reference: the largest possible self-fit, shrinking the
+    # apparent spread. Measured against the true sampling SD of theta_hat over
+    # 300 replicates: pooled gives SE/SD = 0.636 at zero judge noise (a 36%
+    # understatement, and the test then rejects 19% of the time at nominal
+    # 0.05), while leave-one-group-out gives 0.970. Across cells the pooled
+    # ratios were 0.636/0.882/0.964/0.974/0.995 and LOGO's were
+    # 0.970/1.004/1.002/1.000/1.000.
+    #
+    # The k>=3 omnibus keeps the pooled default: there the self-fit is ~1/k and
+    # LOGO was measured to REGRESS on real data (REPORT.md section E), so this
+    # is deliberately a k=2-only choice, not a change to the shared helper.
+    cov = _kw_influence_cov([x, y], [x_lab, y_lab], [(0, 1)], lam, loo_group=True)
+    se = float(np.sqrt(max(float(cov[0, 0]), 0.0)))
+    n_lab_tot = int(np.count_nonzero(~np.isnan(x_lab)) + np.count_nonzero(~np.isnan(y_lab)))
+    nu = max(n_lab_tot - 1, 1)
+    if se > 0.0:
+        tcrit = float(_scipy_stats.t.ppf(1.0 - alpha / 2.0, nu))
+        ci = (estimate - tcrit * se, estimate + tcrit * se)
+        p = float(min(max(2.0 * (1.0 - _scipy_stats.t.cdf(
+            abs(estimate - 0.5) / se, nu)), 0.0), 1.0))
+    else:
+        ci = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)
+        p = ppi.p_value
+    return estimate, ci, p, ppi.rectifier, getattr(ppi, "lam", None)
+
+
 def mannwhitney(
     x,
     y,
@@ -4823,13 +4952,10 @@ def mannwhitney(
         def _auc_shifted(xa, ya):
             return _p_x_gt_y_midrank(xa, ya) - 0.5
 
-        ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng, power_tune=power_tune)
-
-        corrected_estimate = ppi.estimate + 0.5       # report as P(X>Y)
-        corrected_ci       = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)
-        corrected_p        = ppi.p_value
-        rectifier          = ppi.rectifier
-        lam                = getattr(ppi, "lam", None)
+        corrected_estimate, corrected_ci, corrected_p, rectifier, lam = (
+            _ppi_mannwhitney_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng,
+                                       power_tune=power_tune)
+        )
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
@@ -5379,7 +5505,7 @@ def kruskalwallis(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "global",
+    method: str = "influence",
 ) -> TestResult:
     """Kruskal-Wallis test (independent-groups, rank-based one-way) with
     optional PPI correction.
@@ -5481,7 +5607,8 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
     _KW_METHODS = ("global", "mnar_experimental", "rowsum", "rowsum_labeled",
-                   "twopart", "eigengap", "influence")
+                   "twopart", "eigengap", "influence", "influence_logo",
+                   "influence_floor")
     if method not in _KW_METHODS:
         raise ValueError(
             f"method must be one of {_KW_METHODS}; got {method!r}."
@@ -5542,6 +5669,12 @@ def kruskalwallis(
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
         elif method == "influence":
             pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha, n_boot, rng)
+        elif method == "influence_logo":
+            pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha, n_boot, rng,
+                                               loo_group=True, floor_frac=0.5)
+        elif method == "influence_floor":
+            pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha, n_boot, rng,
+                                               loo_group=False, floor_frac=0.5)
         elif method in ("twopart", "eigengap"):
             pw = _kw_candidate_from_pairwise(
                 _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng),
