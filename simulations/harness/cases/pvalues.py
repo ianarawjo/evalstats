@@ -129,6 +129,29 @@ import hashlib
 import io
 import math
 import multiprocessing as _mp
+
+
+class _MWUResult:
+    """Shim for the mwu call sites: exposes ``.p_value`` and ``.estimate``.
+
+    NOTE the scale: _ppi_two_sample's ``.estimate`` is theta-0.5, while
+    _ppi_mannwhitney_corrected returns theta on the P(X>Y) scale. This shim
+    subtracts 0.5 so downstream consumers (e.g. the estimator-comparison
+    variance ratio) keep the convention they were written against.
+
+    They now go through evalstats.tests._ppi_mannwhitney_corrected -- the SAME
+    code path mannwhitney() uses -- instead of calling _ppi_two_sample
+    directly. Previously the harness measured a different variance
+    construction from the one evalstats ships, so no sweep ever exercised the
+    shipped test. The helper skips only the alignment report (~515ms/call),
+    which the sweeps discard anyway.
+    """
+    __slots__ = ("p_value", "estimate")
+
+    def __init__(self, p, theta=None):
+        self.p_value = p
+        self.estimate = float("nan") if theta is None else theta - 0.5
+
 import time as _time
 import os
 import pathlib
@@ -159,6 +182,8 @@ with warnings.catch_warnings():
     )
     from evalstats.tests import (
         _ppi_two_sample,
+        _ppi_mannwhitney_corrected,
+    _ppi_mannwhitney_corrected,
         _ppi_two_sample_t_interval,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
@@ -317,6 +342,7 @@ from ..methods import (
     KRUSKAL_TWOPART,
     KRUSKAL_EIGENGAP,
     KRUSKAL_INFLUENCE,
+    KRUSKAL_INFLUENCE_FLOOR,
     KRUSKAL_MNAR_EXPERIMENTAL,
     LMM,
     LMM_FACTORIAL,
@@ -4478,7 +4504,8 @@ def _run_ppi_cell(
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
                     uncorrected[MWU.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[MWU.name] += 1
@@ -4629,7 +4656,7 @@ def _run_ppi_cell(
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     p_u = _uncorrected_kruskal_p_value(groups_kw)
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
                     failed[KRUSKAL.name] += 1
@@ -4657,7 +4684,7 @@ def _run_ppi_cell(
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     p_u = _uncorrected_kruskal_p_value(groups_kw)
-                    pw_r = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw_r = _ppi_kruskal_wallis_influence(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
                         if _m.name in active_tests:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -5005,7 +5032,8 @@ def _run_ppi_effect_cell(
 
             if MWU.name in active_tests:
                 try:
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     out[MWU.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
@@ -5180,7 +5208,7 @@ def _run_ppi_effect_cell(
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
-                    pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
                     out[KRUSKAL.name].append((
                         float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
@@ -5214,7 +5242,7 @@ def _run_ppi_effect_cell(
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
-                    pw_r = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw_r = _ppi_kruskal_wallis_influence(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     llm_theta = _kw_pairwise_thetas(groups_kw, pw_r["pairs"])
                     row = (float(np.mean(pw_r["theta_hat"])), float(np.mean(pw_r["ci_lo"])),
                            float(np.mean(pw_r["ci_hi"])), float(np.mean(llm_theta)))
@@ -5594,6 +5622,7 @@ _COMPARISON_METHOD_STRUCTURE = {
     TTEST.name: "group", TTEST_WELCH.name: "group", MWU.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
     ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
+    KRUSKAL_INFLUENCE.name: "group3", KRUSKAL_INFLUENCE_FLOOR.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
 _COMPARISON_METHODS_LABEL = "ttest/ttest_welch/paired_t/mwu/wilcoxon"
@@ -5685,8 +5714,11 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
         # MWU (global rectifier): the only midrank PPI correction --
         # see _COMPARISON_METHODS's docstring for why the local-rectifier
         # alternatives were removed rather than kept as options.
-        estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
-        _r = _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune)
+        # Routed through the SAME helper mannwhitney() uses, so this sweep
+        # measures the shipped test rather than a parallel construction.
+        _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(
+            a, b, a_lab, b_lab, _ALPHA, n_boot, seed, power_tune=power_tune)
+        _r = _MWUResult(_p, _e)
         return _r if return_result else _r.p_value
     # paired_t: np.mean. wilcoxon: paired_walsh_midrank_theta (evalstats.ppi --
     # a Hodges-Lehmann Walsh-average midrank-sign statistic), NOT np.median --
@@ -5788,16 +5820,25 @@ def _ppi_omnibus_pvalue_and_estimate(
     correction declines to fit, matching how each route treated that before."""
     from evalstats.tests import (
         _ppi_kruskal_wallis_pairwise, _ppi_kruskal_wallis_pairwise_mnar_experimental,
+        _ppi_kruskal_wallis_influence,
     )
+    _KW_FNS = {
+        KRUSKAL.name: _ppi_kruskal_wallis_influence,
+        KRUSKAL_MNAR_EXPERIMENTAL.name: _ppi_kruskal_wallis_pairwise_mnar_experimental,
+        # The influence variants share KRUSKAL's estimator and differ ONLY in
+        # the Wald covariance, so they belong on this same deduplicated path.
+        KRUSKAL_INFLUENCE.name: _ppi_kruskal_wallis_influence,
+        KRUSKAL_INFLUENCE_FLOOR.name: functools.partial(
+            _ppi_kruskal_wallis_influence, loo_group=False, floor_frac=0.5),
+    }
     try:
-        if method in (KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name):
+        if method in _KW_FNS:
             # The only genuinely expensive duplicate: this runs an
             # n_boot-resample bootstrap. Call it ONCE and take both outputs
             # from the same dict -- "wald_p" is exactly the field
             # _ppi_comparison_pvalue_omnibus returns, so the p-value is
             # bit-identical to the un-deduplicated path.
-            fn = (_ppi_kruskal_wallis_pairwise if method == KRUSKAL.name
-                  else _ppi_kruskal_wallis_pairwise_mnar_experimental)
+            fn = _KW_FNS[method]
             pw = fn(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
             th = np.asarray(pw["theta_hat"], dtype=float)
             est = float(np.mean(th ** 2)) if th.size else float("nan")
@@ -5853,7 +5894,7 @@ def _ppi_point_estimate_omnibus(
         elif method == FRIEDMAN.name:
             d = _ppi_friedman_f_stat(groups, groups_lab, k=k, power_tune=power_tune)
         else:
-            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA,
+            pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA,
                                               n_boot=n_boot, rng=seed)
             th = np.asarray(pw["theta_hat"], dtype=float)
             return float(np.mean(th ** 2)) if th.size else float("nan")
@@ -5885,7 +5926,14 @@ def _ppi_comparison_pvalue_omnibus(
     if method == FRIEDMAN.name:
         return _ppi_friedman_p_value(groups, groups_lab, k=k)
     if method == KRUSKAL.name:
-        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+        pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+        return pw["wald_p"]
+    if method == KRUSKAL_INFLUENCE.name:
+        pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+        return pw["wald_p"]
+    if method == KRUSKAL_INFLUENCE_FLOOR.name:
+        pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed,
+                                           loo_group=False, floor_frac=0.5)
         return pw["wald_p"]
     # KRUSKAL_MNAR_EXPERIMENTAL.name
     pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
@@ -7989,6 +8037,8 @@ _RHO_DRIFT_EVALSTATS_TEST = {
     ANOVA_IND.name:    ("anova_oneway", "between"),
     ANOVA_REP.name:    ("anova_oneway", "within"),
     KRUSKAL.name:      ("kruskalwallis", "between"),
+    KRUSKAL_INFLUENCE.name:       ("kruskalwallis", "between"),
+    KRUSKAL_INFLUENCE_FLOOR.name: ("kruskalwallis", "between"),
     FRIEDMAN.name:     ("friedman", "within"),
 }
 """Harness method name -> (evalstats.alignment test name, design) for
@@ -12297,6 +12347,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     MJ_FLOOR_FIXED_LAMBDA.name: "Tango score (fixed lambda)", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
+    KRUSKAL_INFLUENCE.name: "Kruskal-Wallis (influence cov.)",
+    KRUSKAL_INFLUENCE_FLOOR.name: "Kruskal-Wallis (influence cov. + floor)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
     PPI_T_INTERVAL.name: "t-interval", PPI_LOGIT_T.name: "logit-t",
     PPI_WILSON.name: "Wilson", PPI_BONETT_PRICE.name: "Bonett-Price",
@@ -13532,6 +13584,33 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "Reported and saved as its OWN pooled summary/log section (mean_of_4_omnibus), never "
                               "blended into the two-group tests' pooled rate -- see _COMPARISON_METHODS_OMNIBUS' "
                               "docstring for why (different hypothesis: 3-group omnibus vs. two-group location-shift).")
+    parser.add_argument("--comparison-omnibus-tests", nargs="+", default=None, metavar="TEST",
+                         help="ppi mode: REPLACE --comparison-omnibus's method set (default "
+                              "anova_ind/anova_rep/friedman/kruskal) with these names. Same rationale as "
+                              "--factorial-omnibus-tests: an override, not an addition, so a default run "
+                              "still reproduces the committed five-way-comparison-omnibus figure. Use it "
+                              "to re-run one omnibus test in isolation and splice.")
+    parser.add_argument("--factorial-two-group-tests", nargs="+", default=None, metavar="TEST",
+                         help="ppi mode: REPLACE --factorial-check's two-group method set (default "
+                              "ttest/ttest_welch/paired_t/mwu/wilcoxon) with these names. Use when "
+                              "re-running an OMNIBUS test in isolation: the two-group tests are then "
+                              "pure overhead, but they cannot simply be dropped -- the GLM report, the "
+                              "heatmap/alignment plots and the alignment sweep all consume them, so an "
+                              "empty set breaks those stages. Passing the cheapest single test instead "
+                              "(--factorial-two-group-tests ttest, ~0.007 s/src vs mwu's ~0.55) keeps "
+                              "every downstream stage working AND preserves the cross-run machinery "
+                              "anchor, while removing ~39%% of a single-omnibus run's cost. Must be "
+                              "non-empty.")
+    parser.add_argument("--factorial-omnibus-tests", nargs="+", default=None, metavar="TEST",
+                         help="ppi mode: REPLACE --factorial-omnibus's method set (default "
+                              "anova_ind/anova_rep/friedman/kruskal) with these names. Deliberately an "
+                              "override rather than an addition to _COMPARISON_METHODS_OMNIBUS: appending "
+                              "would change what a plain --factorial-omnibus run produces and so break "
+                              "reproducibility of the committed typeI_factorial_*_compact.png figures, "
+                              "whose provenance run used the default 4. Use it to re-run ONE omnibus test "
+                              "in isolation (e.g. --factorial-omnibus-tests kruskal kruskal_influence) and "
+                              "splice the resulting CSV against an existing full run. Note --tests does NOT "
+                              "reach the factorial check -- this flag is the only way to change its methods.")
     parser.add_argument("--factorial-no-power-tune", action="store_true", default=False,
                          help="ppi mode: disable PPI++ power-tuning (power_tune=False, i.e. fixed lambda=1, the "
                               "original 2023 PPI estimator) for --factorial-check's two-group methods (ttest_welch/"
@@ -14864,24 +14943,27 @@ def run(args: argparse.Namespace) -> CaseResult:
                         # reps/n_boot precision -- no screening-tier default needed
                         # the way --factorial-check has one.
                         if getattr(args, "comparison_omnibus", False):
+                            comp_omni_methods = tuple(getattr(args, "comparison_omnibus_tests", None)
+                                                      or _COMPARISON_METHODS_OMNIBUS)
+                            comp_omni_label = "/".join(comp_omni_methods)
                             print(f"\npvalues simulation (PPI-corrected, estimator comparison, omnibus) -- "
-                                  f"{len(comparison_sources)} scenarios x {len(_COMPARISON_METHODS_OMNIBUS)} methods "
-                                  f"({_COMPARISON_METHODS_OMNIBUS_LABEL}), reps={comparison_reps}, n_boot={args.ppi_n_boot}")
+                                  f"{len(comparison_sources)} scenarios x {len(comp_omni_methods)} methods "
+                                  f"({comp_omni_label}), reps={comparison_reps}, n_boot={args.ppi_n_boot}")
                             comparison_results_omnibus_raw = run_ppi_comparison_simulation(
                                 comparison_sources, n_reps=comparison_reps, n_boot=args.ppi_n_boot,
                                 progress_mode=args.progress, seed=args.seed + 19, n_workers=getattr(args, "workers", 1),
-                                methods=_COMPARISON_METHODS_OMNIBUS,
+                                methods=comp_omni_methods,
                             )
                             comparison_results_omnibus_pooled = pool_ppi_comparison_across_methods(comparison_results_omnibus_raw)
                             print_ppi_comparison_report(
-                                comparison_results_omnibus_pooled, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                                comparison_results_omnibus_pooled, alpha=args.alpha, label=comp_omni_label,
                             )
                             comparison_omnibus_stem = f"pvalues_ppi_comparison_omnibus_reps{comparison_reps}_{stamp}"
                             if args.save_results == "save":
                                 output_paths += save_results_artifacts_ppi_comparison(
                                     results=comparison_results_omnibus_raw, pooled_results=comparison_results_omnibus_pooled,
                                     alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_omnibus_stem,
-                                    label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                                    label=comp_omni_label,
                                 )
                             key_metrics["ppi_comparison_omnibus_n_results"] = len(comparison_results_omnibus_pooled)
 
@@ -15348,10 +15430,18 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)
                     likert_note = f", likert_max={factorial_likert_max}" if factorial_likert_max != 5 else ""
                     noise_note = f", noise_levels=fast({len(factorial_noise_levels)}pt)" if factorial_fast_noise else ""
-                    factorial_methods = _COMPARISON_METHODS + (_COMPARISON_METHODS_OMNIBUS if factorial_omnibus else ())
-                    omnibus_note = f" + {len(_COMPARISON_METHODS_OMNIBUS)} omnibus tests" if factorial_omnibus else ""
+                    omnibus_methods = tuple(getattr(args, "factorial_omnibus_tests", None)
+                                            or _COMPARISON_METHODS_OMNIBUS)
+                    two_group_methods = tuple(getattr(args, "factorial_two_group_tests", None)
+                                              or _COMPARISON_METHODS)
+                    if not two_group_methods:
+                        raise ValueError("--factorial-two-group-tests must be non-empty: the GLM "
+                                         "report, plots and alignment sweep all consume the two-group "
+                                         "results. Pass the cheapest single test (e.g. 'ttest').")
+                    factorial_methods = two_group_methods + (omnibus_methods if factorial_omnibus else ())
+                    omnibus_note = f" + {len(omnibus_methods)} omnibus tests {list(omnibus_methods)}" if factorial_omnibus else ""
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
-                          f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods{omnibus_note}, "
+                          f"{len(factorial_sources)} scenarios x {len(two_group_methods)} methods{omnibus_note}, "
                           f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}{noise_note}")
                     factorial_power_tune = not getattr(args, "factorial_no_power_tune", False)
                     factorial_results_raw = run_ppi_comparison_simulation(
@@ -15359,7 +15449,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
                         methods=factorial_methods, power_tune=factorial_power_tune,
                     )
-                    factorial_results_raw_2group = [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
+                    factorial_results_raw_2group = [r for r in factorial_results_raw if r.method in two_group_methods]
                     factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw_2group)
                     # GLM/heatmap/headline-report stay scoped to the llm_noise=0.20
                     # baseline (the only noise level non-null cells even have) --
@@ -15376,7 +15466,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_results_raw_omnibus = None
                     if factorial_omnibus:
                         factorial_results_raw_omnibus = [
-                            r for r in factorial_results_raw if r.method in _COMPARISON_METHODS_OMNIBUS
+                            r for r in factorial_results_raw if r.method in omnibus_methods
                         ]
                         omnibus_results = pool_ppi_comparison_across_methods(factorial_results_raw_omnibus)
                         omnibus_results_baseline = [
@@ -15404,24 +15494,24 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
-                            label=_COMPARISON_METHODS_LABEL, null_results_full=factorial_results,
+                            label="/".join(two_group_methods), null_results_full=factorial_results,
                             raw_results_full=factorial_results_raw_2group,
                         )
                         if omnibus_results_baseline is not None:
                             output_paths += save_results_artifacts_ppi_factorial(
                                 results=factorial_results_raw, pooled_results=omnibus_results_baseline,
                                 alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
-                                write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                                write_csv=False, label="/".join(omnibus_methods),
                                 null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
                             )
 
                     print_ppi_factorial_report(
-                        factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
+                        factorial_results_baseline, alpha=args.alpha, label="/".join(two_group_methods),
                         null_results_full=factorial_results, raw_results_full=factorial_results_raw_2group,
                     )
                     if omnibus_results_baseline is not None:
                         print_ppi_factorial_report(
-                            omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            omnibus_results_baseline, alpha=args.alpha, label="/".join(omnibus_methods),
                             null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
                         )
 

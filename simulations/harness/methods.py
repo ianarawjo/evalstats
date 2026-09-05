@@ -633,13 +633,25 @@ KRUSKAL_EIGENGAP = Method("kruskal_eigengap", "#8c5f7d")   # muted plum
 # (rank k-1, not by truncation) and the variance-assembly conditioning defect
 # (per-item differencing). Opt-in until validated on ppi_real.
 KRUSKAL_INFLUENCE = Method("kruskal_influence", "#7b3f9c")  # violet
+# KRUSKAL_INFLUENCE_LOGO: influence covariance + the two corner corrections
+# (leave-one-group-out reference ECDFs, and a floor on each group's labeled
+# composite variance). See REPORT.md section E.
+KRUSKAL_INFLUENCE_LOGO = Method("kruskal_influence_logo", "#4a2d6b")  # deep violet
+# KRUSKAL_INFLUENCE_FLOOR: the variance floor WITHOUT the LOGO ECDFs. The floor
+# binds only when a group's labeled composite variance collapses, which real
+# judge noise ratios (0.64-1.18 on privacy_judge) should never trigger -- so
+# this is the candidate that fixes the sparse-Likert corner while being
+# provably inert on real data. Inertness is checked by counting binding
+# events (evalstats.tests._KW_FLOOR_AUDIT), not by comparing rejection rates.
+KRUSKAL_INFLUENCE_FLOOR = Method("kruskal_influence_floor", "#9c5fbf")  # light violet
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
     LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -655,7 +667,8 @@ PPI_OFFICIAL_TEST_METHODS = [
         # Kruskal-Wallis cost/buy", which is a study question, not part of
         # the shipped default set.
         KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
-        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
+        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via

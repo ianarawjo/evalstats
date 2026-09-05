@@ -151,6 +151,17 @@ from typing import Callable
 import numpy as np
 import scipy.stats as scipy_stats
 
+
+class _MWUResult:
+    """Shim: the mwu call sites read only ``.p_value``. They now go through
+    evalstats.tests._ppi_mannwhitney_corrected -- the same path mannwhitney()
+    uses -- instead of calling _ppi_two_sample directly."""
+    __slots__ = ("p_value",)
+
+    def __init__(self, p):
+        self.p_value = p
+
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from evalstats.tests import (
@@ -159,6 +170,7 @@ with warnings.catch_warnings():
         _ppi_single_logit_t,
         _ppi_single_t_interval,
         _ppi_two_sample,
+    _ppi_mannwhitney_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -184,7 +196,8 @@ from ..methods import (
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     KRUSKAL_ROWSUM,
     KRUSKAL_ROWSUM_LABELED,
-    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
     PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
@@ -380,7 +393,8 @@ def _run_real_twogroup_cell(
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
                     uncorrected[MWU.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
@@ -543,7 +557,7 @@ def _run_real_omnibus_independent_cell(
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
                     pass
@@ -557,10 +571,12 @@ def _run_real_omnibus_independent_cell(
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
                                                 KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
-                                                KRUSKAL_INFLUENCE)):
+                                                KRUSKAL_INFLUENCE,
+                                                KRUSKAL_INFLUENCE_LOGO,
+                                                KRUSKAL_INFLUENCE_FLOOR)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
-                    pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw_r = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
                         if _m.name in methods:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -575,6 +591,18 @@ def _run_real_omnibus_independent_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_LOGO.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_LOGO.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_LOGO.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=True, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_FLOOR.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=False, floor_frac=0.5)["wald_p"] < _ALPHA)
                     if KRUSKAL_INFLUENCE.name in methods:
                         # Its own draw: it needs the raw groups, and the
                         # covariance replacement is the whole point, so it does
@@ -689,7 +717,8 @@ def _run_real_twogroup_power_cell(
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
                     uncorrected[MWU.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    _e, _ci, _p, _rec, _lam = _ppi_mannwhitney_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    r = _MWUResult(_p)
                     corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
@@ -735,7 +764,7 @@ def _run_real_omnibus_independent_power_cell(
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
                     uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
                     pass
@@ -749,10 +778,12 @@ def _run_real_omnibus_independent_power_cell(
             # is the directly matched pair.
             if any(_m.name in methods for _m in (KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
                                                 KRUSKAL_TWOPART, KRUSKAL_EIGENGAP,
-                                                KRUSKAL_INFLUENCE)):
+                                                KRUSKAL_INFLUENCE,
+                                                KRUSKAL_INFLUENCE_LOGO,
+                                                KRUSKAL_INFLUENCE_FLOOR)):
                 try:
                     p_u = _uncorrected_kruskal_p_value(groups)
-                    pw_r = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw_r = _ppi_kruskal_wallis_influence(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     for _m, _w in ((KRUSKAL_ROWSUM, "full"), (KRUSKAL_ROWSUM_LABELED, "labeled")):
                         if _m.name in methods:
                             uncorrected[_m.name] += int(p_u < _ALPHA)
@@ -767,6 +798,18 @@ def _run_real_omnibus_independent_power_cell(
                             uncorrected[_m.name] += int(p_u < _ALPHA)
                             corrected[_m.name] += int(
                                 _kw_candidate_from_pairwise(pw_r, _c, _ALPHA)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_LOGO.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_LOGO.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_LOGO.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=True, floor_frac=0.5)["wald_p"] < _ALPHA)
+                    if KRUSKAL_INFLUENCE_FLOOR.name in methods:
+                        uncorrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(p_u < _ALPHA)
+                        corrected[KRUSKAL_INFLUENCE_FLOOR.name] += int(
+                            _ppi_kruskal_wallis_influence(
+                                groups, groups_lab, _ALPHA, n_boot, _rng_seed(),
+                                loo_group=False, floor_frac=0.5)["wald_p"] < _ALPHA)
                     if KRUSKAL_INFLUENCE.name in methods:
                         # Its own draw: it needs the raw groups, and the
                         # covariance replacement is the whole point, so it does
@@ -1143,6 +1186,14 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # (generate_real_twogroup_null_cell's _reveal_labels call), so there was
     # no MNAR risk here for a local rectifier to buy anything against. MWU
     # (the global rectifier) is now the only midrank correction.
+    if _TWOGROUP_TESTS_OVERRIDE:
+        # --twogroup-tests: restrict the two-group check to a named subset, so
+        # re-validating ONE test after a fix costs a fraction of the run.
+        # Mirrors --omnibus-tests. Binary still drops the rank test.
+        want = list(_TWOGROUP_TESTS_OVERRIDE)
+        if eval_type == "binary":
+            want = [m for m in want if m != MWU.name]
+        return want
     base = [TTEST.name, TTEST_WELCH.name]
     return base if eval_type == "binary" else base + [MWU.name]
 
@@ -1172,6 +1223,9 @@ def _paired_methods_for(eval_type: str) -> list[str]:
         return [PAIRED_T.name, PPI_BONETT_PRICE.name]
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
+
+_TWOGROUP_TESTS_OVERRIDE: list[str] = []
+"""Set by --twogroup-tests; empty means the default set."""
 
 _OMNIBUS_TESTS_OVERRIDE: list[str] = []
 """Set by --omnibus-tests; empty means the default set."""
@@ -1845,6 +1899,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label-fracs", type=float, nargs="+", default=DEFAULT_LABEL_FRACS)
     parser.add_argument("--sizes", type=int, nargs="+", default=None,
                          help="Sample sizes per rep (default: 3 sizes bounded by each dataset's actual corpus size).")
+    parser.add_argument("--twogroup-tests", nargs="+", default=None,
+                        help="Restrict the two-group Type-I check to these method "
+                             "names (e.g. 'mwu'). Override, not addition, so a "
+                             "default run is unchanged.")
     parser.add_argument("--omnibus-tests", nargs="+", default=None,
                          help="Restrict the omnibus-independent null/power checks to these "
                               "method names (e.g. 'kruskal kruskal_influence'). Cuts runtime "
@@ -1931,7 +1989,10 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
 
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
-    global _OMNIBUS_TESTS_OVERRIDE
+    global _TWOGROUP_TESTS_OVERRIDE, _OMNIBUS_TESTS_OVERRIDE
+    _TWOGROUP_TESTS_OVERRIDE = list(getattr(args, "twogroup_tests", None) or [])
+    if _TWOGROUP_TESTS_OVERRIDE:
+        print(f"  two-group checks restricted to: {', '.join(_TWOGROUP_TESTS_OVERRIDE)}")
     _OMNIBUS_TESTS_OVERRIDE = list(getattr(args, "omnibus_tests", None) or [])
     if _OMNIBUS_TESTS_OVERRIDE:
         _known = {m.name for m in PPI_TEST_METHODS}
