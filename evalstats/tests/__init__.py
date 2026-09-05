@@ -1245,11 +1245,15 @@ def _ppi_kruskal_wallis_pairwise(
     #     when ~k-1 carry signal, each junk direction contributes well
     #     under 1 to W, and the test under-rejects: E[W]/df falls to
     #     0.52-0.70 at k=5 and Type-I to 0.005 against a nominal 0.05.
-    #     Raising this rcond until df collapses to k-1 restores
-    #     E[W]/df ~ 1 and a nominal rate without touching the covariance,
-    #     but a fixed rcond is not the right fix (the needed value moves
-    #     with n_lab); see the addendum's recommendation. Left as-is here
-    #     deliberately -- this comment is the record, not the fix.
+    #     RESOLVED 2026-09-04. Raising this rcond until df collapses to
+    #     k-1 restores E[W]/df ~ 1 and a nominal rate without touching the
+    #     covariance, but a fixed rcond was not the right fix (the needed
+    #     value moves with n_lab). The fix instead estimates the covariance
+    #     in a form that has rank k-1 by construction -- see
+    #     _kw_influence_cov -- which is now kruskalwallis()'s DEFAULT
+    #     (method="influence"). This bootstrap-Wald path is retained as
+    #     method="global" and still has the defect described above; the
+    #     paragraph is kept as the record of why the default moved.
     #
     #   * an F rather than chi-square reference (Hotelling's T2-style
     #     finite-sample correction, nu = total labeled observations across
@@ -1368,9 +1372,11 @@ def _kw_influence_cov(
        parameters (the within-group variance of F_pooled). That removes the
        degrees-of-freedom defect the bootstrap covariance has -- see
        _ppi_kruskal_wallis_pairwise's df comment: matrix_rank cannot see a
-       degeneracy the bootstrap does not reproduce, so it counts C(k,2)
-       directions when the estimand has k-1, and the test under-rejects
-       (Type-I 0.005 at k=5, 0.000 at k=7).
+       degeneracy the bootstrap does not reproduce, so it counted C(k,2)
+       directions when the estimand has k-1, and the test under-rejected
+       (Type-I 0.005 at k=5, 0.000 at k=7). That was the behaviour of the
+       old default (method="global"); this construction is the default now,
+       so those numbers describe what was fixed, not what ships.
     2. For the PPI estimator theta_lab_h + lam*(theta_unlab - theta_lab_l),
        the per-item influence of a LABELED item is
        ``phi_h(y_i) - lam*phi_l(yhat_i)`` -- one number per item, the human and
@@ -1393,8 +1399,14 @@ def _kw_influence_cov(
     score-vs-Wald reasoning behind Wilson-over-Wald, Tango, and
     evalstats.ppi._analytic_walsh_theta_correct's score variance.
 
-    TWO OPTIONAL CORRECTIONS for the good-judge corner (REPORT.md section E),
-    both off by default so the section D numbers stay reproducible:
+    TWO OPTIONAL CORRECTIONS for the good-judge corner (REPORT.md section E).
+    ``floor_frac`` is off by default so the section D numbers stay
+    reproducible. ``loo_group`` is off for the k>=3 omnibus (deliberately --
+    there the self-fit is ~1/k and LOGO regressed on real data) but ON for
+    the k=2 Mann-Whitney path, where it is not a tweak but the correct Hajek
+    projection: for theta = P(X>Y) group X's influence function is F_Y(x),
+    the OTHER group's CDF, so the pooled default made each group half of its
+    own reference (SE/SD 0.636 pooled vs 0.970 LOGO at zero judge noise):
 
     ``loo_group`` -- build each group's reference ECDFs from the OTHER groups
     only. The pooled ECDF otherwise includes group g's own points, so g's
@@ -5549,9 +5561,22 @@ def kruskalwallis(
     groups_lab : sequence[array-like], optional
         Sparse human labels aligned with each group. Must have one array per
         group, with ``NaN`` for unlabeled items.
-    method : {"global", "mnar_experimental", "rowsum", "rowsum_labeled"}
+    method : {"influence", "global", "mnar_experimental", "rowsum", "rowsum_labeled"}
         Which PPI correction to use for the pairwise-dominance Wald test
-        (default ``"global"``). ``"global"``/``"mnar_experimental"`` are the
+        (default ``"influence"``).
+
+        ``"influence"`` (:func:`_kw_influence_cov`) is the default: the
+        null-structured influence covariance, which has rank k-1 by
+        construction and so yields df = k-1 with no rcond or eigengap rule.
+        It replaced ``"global"`` as the default because the bootstrap Wald
+        covariance read df off ``rank(Sigma_hat)``, counting C(k,2)
+        directions when only k-1 carry signal, and was progressively
+        conservative in k (Type-I .028/.004/.000 at k = 3/5/7). Measured
+        after the change: .0273 -> .0522 over 2,046 MCAR null cells, median
+        cell exactly .050; real judge data .035 -> .056; power at d=0.3
+        .688 -> .890.
+
+        ``"global"``/``"mnar_experimental"`` are the
         same tradeoff as ``mannwhitney``'s equivalent option, one level up
         (k independent groups instead of 2); ``"rowsum"``/
         ``"rowsum_labeled"`` are EXPERIMENTAL and change *which linear
