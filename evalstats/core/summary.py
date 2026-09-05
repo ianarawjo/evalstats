@@ -1312,9 +1312,11 @@ def _prepare_paired_pairwise_rows(
 
 _FAMILY_DISPLAY_UNPAIRED = {
     "binary_proportion": "proportion difference (Δp)",
-    "rank_based": "stochastic dominance (θ = P(a>b))",
+    # "rank_based" names the TESTS (Kruskal-Wallis omnibus, Mann-Whitney U
+    # post-hoc), not the estimand -- both families report a mean difference.
+    "rank_based": "mean difference (Δ), Mann-Whitney tested",
 }
-_ESTIMAND_LABEL_UNPAIRED = {"mean_diff": "Δ", "dominance": "θ"}
+_ESTIMAND_LABEL_UNPAIRED = {"mean_diff": "Δ"}
 
 
 def _prepare_unpaired_pairwise_rows(
@@ -1332,8 +1334,8 @@ def _prepare_unpaired_pairwise_rows(
     to derive an alternate canonical left/right order from (natural
     factor-level order, i.e. ``result.labels``, is already canonical).
     ``point_diff``/``ci_low``/``ci_high`` are shifted by each pair's
-    ``null_value`` (0.5 for the rank-based dominance family, 0.0 for the
-    binary mean-difference family) so the shared axis/bar-rendering math in
+    ``null_value`` (0.0 for every family now that all of them report a mean
+    difference, so the shift is a no-op) so the shared axis/bar-rendering math in
     :func:`_print_pairwise_section` -- which assumes a signed quantity
     centered at zero, same convention the paired path's own "Left - Right"
     difference already has -- works identically for both estimand kinds.
@@ -1343,20 +1345,17 @@ def _prepare_unpaired_pairwise_rows(
     null_value = result.pairwise[0].null_value if result.pairwise else 0.0
     estimand = result.pairwise[0].estimand if result.pairwise else "mean_diff"
     est_symbol = _ESTIMAND_LABEL_UNPAIRED.get(estimand, "Δ")
-    # A shifted dominance probability (null=0.5) is a deviation, not the raw
-    # estimand -- label it "Δθ" so the column header doesn't silently claim
-    # to show raw θ. A mean/proportion difference (null=0.0) is unaffected
-    # by the shift, so its existing "Δ" label already describes it exactly.
+    # Every family's estimand is now a mean/proportion difference, whose null
+    # is already 0 -- so the shift is a no-op and "Δ" describes the column
+    # exactly. (``null_value`` is kept in the plumbing because the shared
+    # bar-rendering math below consumes it, and because a future non-zero-null
+    # estimand would need it again.)
     pair_stat_label = f"Δ{est_symbol}" if null_value != 0.0 else est_symbol
 
-    # For the rank-based (dominance) family, Δθ alone doesn't say how far
-    # apart the groups are on the metric's own scale -- e.g. a 1-5 Likert
-    # score. Surface each pair's raw mean difference too (point estimate
-    # only, no separate CI -- same convention the paired path's own "ES"
-    # rank-biserial column uses), reusing the marginal means already
-    # computed for the "Mean Performance" section above this table.
-    mean_by_label = {g.label: g.mean for g in result.groups}
-    show_mean_diff = result.pairwise and result.pairwise[0].estimand == "dominance"
+    # There is no secondary Δmean column: it existed only to put the old
+    # dominance estimand back on the metric's own scale, and the primary
+    # column now *is* that mean difference. (The shared renderer's "ES" slot
+    # is left empty here; the paired path still uses it for rank-biserial.)
 
     # Explicit pairwise test name -- previously the column header was just
     # "p" with no indication of which test produced it, PPI-corrected or
@@ -1394,8 +1393,6 @@ def _prepare_unpaired_pairwise_rows(
             "display_p": p.p_value if show_p else None,
             "multi_ci": None,
         }
-        if show_mean_diff:
-            row["es_value"] = mean_by_label[p.label_a] - mean_by_label[p.label_b]
         rows.append(row)
 
     if pairwise_sort not in {"grouped", "significance"}:
@@ -1454,10 +1451,9 @@ def _prepare_unpaired_pairwise_rows(
         "pair_stat_label": pair_stat_label,
         "pair_item_col_width": label_width,
         "effect_label": "Left - Right",
-        # Only the dominance family gets a secondary raw-mean-difference
-        # column -- the binary/mean_diff family's primary column already
-        # *is* the raw difference (Δp), so a second copy would be redundant.
-        "es_label": "Δmean" if show_mean_diff else None,
+        # No secondary raw-mean-difference column: every family's primary
+        # column already *is* that difference, so a copy would be redundant.
+        "es_label": None,
         "p_col_header": p_col_header,
         "friedman_line_fn": None,
         "footer_fn": _footer,

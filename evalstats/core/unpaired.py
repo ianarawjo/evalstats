@@ -13,11 +13,22 @@ as its statistical engine rather than reimplementing anything.
 Two test families (see ``config.AUTO_UNPAIRED_METHOD_TABLE`` for the
 decision and full rationale):
 
+Every family reports the same estimand -- the **mean difference** between
+two groups (a difference of proportions on binary data, which is the mean
+of a 0/1 variable). Only the interval construction and the accompanying
+test differ:
+
 * **binary** data -- ``anova_oneway`` (omnibus, k>=3 only) + pairwise
-  Welch's ``ttest``-equivalent CIs (mean/proportion difference).
+  Agresti-Caffo intervals on Δp, with Welch's t-test supplying the p-value.
 * **continuous / likert / grade** data -- ``kruskalwallis`` (omnibus,
-  k>=3 only) + pairwise Mann-Whitney-equivalent CIs (stochastic-dominance
-  probability θ=P(a>b)).
+  k>=3 only) + pairwise Welch t-intervals on the mean difference, with
+  Mann-Whitney U -- Kruskal-Wallis's own post-hoc -- supplying the p-value.
+
+Because Mann-Whitney tests θ=P(a>b) against 1/2 rather than the mean
+difference the interval covers, the two can disagree; each pair therefore
+also carries ``mean_test_p``, the interval's own p-value. This mirrors the
+paired path, which has always reported mean differences and carried its
+rank test (``PairedDiffResult.wilcoxon_p``) alongside.
 
 At k=2 there is only one possible comparison, so there is no separate
 omnibus test and no multiple-comparison correction to apply (Bonferroni/
@@ -103,15 +114,22 @@ class GroupDiffResult:
     """
     label_a: str
     label_b: str
-    estimand: str          # "mean_diff" (binary family) or "dominance" (rank-based family)
-    null_value: float       # 0.0 for mean_diff, 0.5 for dominance
+    estimand: str           # always "mean_diff" -- see compare_unpaired's note
+    null_value: float       # always 0.0 (mean_diff's null)
     point_estimate: float
     ci_low: float
     ci_high: float          # Bonferroni-corrected at k>=3; nominal alpha at k=2
-    p_value: float          # Holm-corrected at k>=3; raw at k=2
+    p_value: float          # Shaffer-corrected at k>=3; raw at k=2
     raw_p_value: float      # always uncorrected, for transparency
     n_a: int
     n_b: int
+    mean_test_p: Optional[float] = None
+    """Uncorrected p-value from the test that MATCHES ``ci_low``/``ci_high``
+    (Welch's t, or its PPI-corrected form). ``p_value`` is the headline test,
+    which for the rank_based family is Mann-Whitney U -- a different estimand
+    from the reported mean difference, so it can disagree with the interval.
+    This field makes the mean-difference decision inspectable alongside it.
+    None for the binary family, where ``p_value`` already is the Welch p."""
 
     @property
     def significant(self) -> bool:
@@ -134,8 +152,9 @@ class _GroupDiffResultsAsPairwiseMatrix:
     (Bonferroni), so ``simultaneous_ci_method`` is set to a matching
     sentinel and the p-value-threshold branch never fires.
     ``point_diff``/``ci_low``/``ci_high`` are the same null-shifted
-    quantities the pairwise table itself displays (Δθ/Δp), so "CI excludes
-    zero" means exactly what it already means there.
+    quantities the pairwise table itself displays (Δ/Δp -- the null is 0 for
+    every family, so the shift is a no-op), so "CI excludes zero" means
+    exactly what it already means there.
     """
 
     def __init__(self, pairwise: list["GroupDiffResult"]):
@@ -275,6 +294,7 @@ class GroupComparisonResult:
                     "point_estimate": p.point_estimate,
                     "ci_low": p.ci_low, "ci_high": p.ci_high,
                     "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                    "mean_test_p": p.mean_test_p,
                     "significant": p.significant,
                     "n_a": p.n_a, "n_b": p.n_b,
                 }
@@ -313,6 +333,7 @@ class GroupComparisonResult:
                 "point_estimate": p.point_estimate,
                 "ci_low": p.ci_low, "ci_high": p.ci_high,
                 "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                "mean_test_p": p.mean_test_p,
                 "significant": p.significant,
                 "n_a": p.n_a, "n_b": p.n_b,
             }
@@ -373,83 +394,86 @@ def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
 # a point-estimate array, "ci_lo"/"ci_hi", and "pair_p" (uncorrected).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _rank_based_pairwise_ppi(
+def _numeric_pairwise_ppi(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], alpha: float, n_boot: int, rng,
 ) -> dict:
-    """θ_ab = P_mid(a>b) for every pair, PPI-corrected. Thin wrapper around
-    the private kruskalwallis machinery -- valid at any k>=2 (kruskalwallis's
-    own docstring: "For k=2 groups Kruskal-Wallis reduces to Mann-Whitney;
-    this pairwise-θ framework is the direct generalization to k>2"), so this
-    is reused uniformly rather than special-casing k=2 through mannwhitney().
+    """PPI-corrected mean difference mean(a) - mean(b) for every pair, with a
+    PPI-corrected Mann-Whitney U p-value alongside.
+
+    The interval comes from :func:`evalstats.tests._ppi_two_sample_t_interval`
+    -- the closed-form independent-groups mean-difference correction, i.e. the
+    same construction the binary family uses, which is a mean of a 0/1 variable
+    and needs no separate machinery. It is scale-agnostic, so a 1-5 Likert
+    outcome needs no ``score_range`` for the pairwise interval to be on the
+    right scale (the *marginal* group CIs do use the range -- see
+    ``_compute_group_stats``).
+
+    ``pair_p`` stays the PPI-corrected Mann-Whitney U p-value -- the post-hoc
+    that follows the Kruskal-Wallis omnibus above it, and the one this
+    project's PPI work validates. It tests theta = P_mid(a>b) against 1/2,
+    which is NOT the estimand the interval covers, so ``mean_test_p`` carries
+    the interval's own p-value for comparison.
     """
     from evalstats.tests import (
-        _ppi_kruskal_wallis_pairwise, _ppi_two_sample, _p_x_gt_y_midrank,
+        _ppi_two_sample, _ppi_two_sample_t_interval, _p_x_gt_y_midrank,
     )
-    out = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
 
-    # Post-hoc after the Kruskal-Wallis omnibus = the PPI-corrected
-    # Mann-Whitney U test, pair by pair -- the same machinery
-    # evalstats.tests.mannwhitney() runs, on the same theta = P_mid(a>b)
-    # estimand. Point/CI/p all come from that one fit so they cannot disagree
-    # with each other.
-    #
-    # This replaces a bootstrap PERCENTILE p-value, 2*min(P(boot<=.5),
-    # P(boot>=.5)), taken off the joint KW bootstrap. Two problems with it:
-    # it is not the test a reader expects after a Kruskal-Wallis omnibus, and
-    # it has no floor -- when every resample lands on one side it returns
-    # EXACTLY 0, which then survives Holm or Bonferroni untouched (1.3% of
-    # null pairs at n_boot=200, roughly doubling the family-wise rate).
     def _auc_shifted(xa, ya):
         return _p_x_gt_y_midrank(xa, ya) - 0.5
 
     rng = np.random.default_rng(rng)
-    pairs = out["pairs"]
-    point = np.empty(len(pairs)); ci_lo = np.empty(len(pairs))
-    ci_hi = np.empty(len(pairs)); pair_p = np.empty(len(pairs))
-    for i, (a, b) in enumerate(pairs):
-        r = _ppi_two_sample(groups[a], groups[b], groups_lab[a], groups_lab[b],
-                            _auc_shifted, alpha, n_boot, rng)
-        point[i] = r.estimate + 0.5          # report on the P(a>b) scale
-        ci_lo[i] = r.ci_low + 0.5
-        ci_hi[i] = r.ci_high + 0.5
-        pair_p[i] = 1.0 if r.p_value is None else float(r.p_value)
-    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
-            "pair_p": pair_p}
-
-
-def _rank_based_pairwise_uncorrected(
-    groups: list[np.ndarray], alpha: float, n_boot: int, rng,
-) -> dict:
-    """Non-PPI analog of :func:`_rank_based_pairwise_ppi` -- a stripped-down
-    copy of ``_ppi_kruskal_wallis_pairwise`` with the rectifier terms
-    removed (plain bootstrap of the same θ_ab estimator, no human labels).
-    """
-    from evalstats.tests import _kw_pairwise_thetas
-    rng = np.random.default_rng(rng)
     k = len(groups)
     pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
-    n_per_group = [len(g) for g in groups]
-    theta_hat = _kw_pairwise_thetas(groups, pairs)
+    point = np.empty(len(pairs)); ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs)); pair_p = np.empty(len(pairs))
+    mean_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        t = _ppi_two_sample_t_interval(
+            groups[a], groups[b], groups_lab[a], groups_lab[b], alpha,
+        )
+        point[idx] = float(t.estimate)
+        ci_lo[idx] = float(t.ci_low)
+        ci_hi[idx] = float(t.ci_high)
+        mean_p[idx] = float(t.p_value)
+        u = _ppi_two_sample(groups[a], groups[b], groups_lab[a], groups_lab[b],
+                            _auc_shifted, alpha, n_boot, rng)
+        pair_p[idx] = 1.0 if u.p_value is None else float(u.p_value)
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": mean_p}
 
-    boots = np.empty((n_boot, len(pairs)))
-    for bi in range(n_boot):
-        resampled = [groups[j][rng.integers(0, n_per_group[j], n_per_group[j])] for j in range(k)]
-        boots[bi] = _kw_pairwise_thetas(resampled, pairs)
 
-    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
-    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
-    # Post-hoc after the classical Kruskal-Wallis omnibus = the Mann-Whitney U
-    # test, which is the exact test of this same theta = P_mid(a>b) estimand
-    # against 1/2, and what any reader will expect and can reproduce in scipy.
-    # (Was a bootstrap percentile p-value; see _rank_based_pairwise_ppi for
-    # why that construction was wrong here too. The CI stays bootstrap --
-    # Mann-Whitney supplies a p-value, not an interval for theta.)
-    pair_p = np.array([
-        float(_scipy_stats.mannwhitneyu(groups[a], groups[b],
-                                        alternative="two-sided").pvalue)
-        for a, b in pairs
-    ])
-    return {"pairs": pairs, "point": theta_hat, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+def _numeric_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict:
+    """Non-PPI analog: Welch's t-interval on the mean difference, with a
+    Mann-Whitney U p-value alongside.
+
+    Welch rather than Student throughout: between-subjects groups routinely
+    differ in both size and variance, and Welch costs almost nothing when the
+    variances happen to match (Delacre, Lakens & Leys 2017; Ruxton 2006). It
+    is also what ``cases/ci_unpaired.py`` measured as the safe default across
+    both continuous and Likert real corpora -- ``mover_logit_t`` scores
+    slightly better on Likert alone, but Welch is one method for all numeric
+    data and does not degrade on ceiling-saturated continuous shapes, where
+    MOVER constructions fall to ~0.72 coverage.
+    """
+    from scipy.stats import ttest_ind
+    k = len(groups)
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    point = np.empty(len(pairs)); ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs)); pair_p = np.empty(len(pairs))
+    mean_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        r = ttest_ind(groups[a], groups[b], equal_var=False)
+        ci = r.confidence_interval(confidence_level=1.0 - alpha)
+        point[idx] = float(np.mean(groups[a]) - np.mean(groups[b]))
+        ci_lo[idx] = float(ci.low)
+        ci_hi[idx] = float(ci.high)
+        mean_p[idx] = float(r.pvalue)
+        # Post-hoc after the Kruskal-Wallis omnibus = the Mann-Whitney U test,
+        # which is what a reader expects there and can reproduce in scipy.
+        pair_p[idx] = float(_scipy_stats.mannwhitneyu(
+            groups[a], groups[b], alternative="two-sided").pvalue)
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": mean_p}
 
 
 def _binary_pairwise_ppi(
@@ -477,12 +501,50 @@ def _binary_pairwise_ppi(
         ci_lo[idx] = res.ci_low
         ci_hi[idx] = res.ci_high
         pair_p[idx] = res.p_value
-    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": None}
+
+
+def _agresti_caffo_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Agresti & Caffo (2000) interval for a difference of two independent
+    proportions, The American Statistician 54(4):280-288.
+
+    Add one success and one failure to EACH arm, then apply the plain Wald
+    formula to the adjusted counts -- the two-sample analogue of the
+    Agresti-Coull single-proportion adjustment, and a one-line change to Wald
+    that removes most of Wald's small-sample undercoverage.
+
+    Replaces a Welch t-interval on the raw 0/1 scores. Exact coverage
+    enumerated over every (k_A, k_B) table (simulations/harness/cases/
+    ci_unpaired.py's exact mode, no Monte Carlo) puts Welch's worst case at
+    0.641 -- reached at p near 0 or 1, which is where binary eval data
+    actually sits -- against 0.930 here, at a *narrower* mean width (0.472 vs
+    0.511) and half the runtime. Agresti-Min is the only method in that
+    comparison never dipping below nominal, but costs ~600x the time and
+    roughly half the power, so it is not the default.
+    """
+    a_bin = (np.asarray(a, dtype=float) >= 0.5).astype(float)
+    b_bin = (np.asarray(b, dtype=float) >= 0.5).astype(float)
+    na, nb = a_bin.size, b_bin.size
+    if na == 0 or nb == 0:
+        return (0.0, 0.0)
+    pa = (float(np.sum(a_bin)) + 1.0) / (na + 2.0)
+    pb = (float(np.sum(b_bin)) + 1.0) / (nb + 2.0)
+    se = float(np.sqrt(pa * (1.0 - pa) / (na + 2.0) + pb * (1.0 - pb) / (nb + 2.0)))
+    z = float(_scipy_stats.norm.ppf(1.0 - alpha / 2.0))
+    d = pa - pb
+    return max(-1.0, d - z * se), min(1.0, d + z * se)
 
 
 def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict:
-    """Non-PPI analog: ordinary Welch's t-interval per pair (closed-form,
-    via scipy -- no bootstrap needed since this has no PPI rectifier).
+    """Non-PPI analog: Agresti-Caffo interval per pair, with Welch's t-test
+    supplying the p-value.
+
+    The point estimate stays the raw difference of proportions -- the +1/+1
+    adjustment is a variance-stabilising device for the *interval*, and
+    reporting the shrunken proportion as the effect would misstate the
+    observed difference. The interval is therefore very slightly off-centre
+    relative to the point estimate, which is expected and standard.
     """
     from scipy.stats import ttest_ind
     k = len(groups)
@@ -493,12 +555,11 @@ def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict
     pair_p = np.empty(len(pairs))
     for idx, (a, b) in enumerate(pairs):
         r = ttest_ind(groups[a], groups[b], equal_var=False)
-        ci = r.confidence_interval(confidence_level=1.0 - alpha)
         point[idx] = float(np.mean(groups[a]) - np.mean(groups[b]))
-        ci_lo[idx] = float(ci.low)
-        ci_hi[idx] = float(ci.high)
+        ci_lo[idx], ci_hi[idx] = _agresti_caffo_ci(groups[a], groups[b], alpha)
         pair_p[idx] = float(r.pvalue)
-    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": None}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -729,6 +790,25 @@ def compare_unpaired(
     score_type = _detect_score_type(df[metric_col].dropna())
     family, _, _ = resolve_auto_unpaired_methods(score_type)
 
+    # A judged SECONDARY metric is not supported and must not fail quietly.
+    # PPI reaches the primary metric only: the Pareto joint bootstrap
+    # (core.pareto.pareto_bootstrap_unpaired) takes no labels, and the
+    # secondary metric's own marginal CIs are computed without them -- so an
+    # alignment entry for the secondary column would be accepted and then
+    # silently ignored, reporting uncorrected frontier probabilities as if
+    # they were corrected. Refuse instead. The common case (a cost/latency
+    # secondary, which has no judge and needs no correction) is unaffected.
+    if alignment is not None and secondary_col and secondary_col in alignment:
+        raise ValueError(
+            f"secondary_metric={secondary_col!r} also has a judge-alignment "
+            f"entry, but PPI correction of a secondary metric is not supported: "
+            f"the Pareto frontier bootstrap and the secondary metric's CIs are "
+            f"computed on raw scores, so the correction would be silently "
+            f"dropped. Pass alignment for the primary metric "
+            f"({metric_col!r}) only -- a secondary metric measured without a "
+            f"judge (cost, latency, length) needs no correction and works as-is."
+        )
+
     ppi_applied = alignment is not None and metric_col in alignment
     alignment_result = alignment[metric_col] if ppi_applied else None
     human_col = None
@@ -853,18 +933,29 @@ def compare_unpaired(
         )
 
     # ── Pairwise table (all k>=2 -- Bonferroni/Holm no-op at n_pairs=1) ─────
+    #
+    # ONE estimand for every family: the mean difference (a difference of
+    # proportions for binary data, which is the same thing on a 0/1 variable).
+    # The rank_based family previously reported theta = P(a>b) + .5 P(a=b)
+    # here, because no validated mean-difference post-hoc existed for
+    # between-subjects data; simulations/harness/cases/ci_unpaired.py is that
+    # validation, so the reason no longer holds. Reporting a dominance
+    # probability also made this the only surface in evalstats stated in
+    # something other than a mean -- the paired path has always reported mean
+    # differences and carried its rank test (Wilcoxon) alongside as a
+    # supplementary p-value. This mirrors that arrangement exactly: means are
+    # the estimand, the rank test is still run and still reported.
     if family == "binary_proportion":
         pw = (
             _binary_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha)
             if ppi_applied else _binary_pairwise_uncorrected(group_arrays, ci_alpha)
         )
-        estimand, null_value = "mean_diff", 0.0
     else:
         pw = (
-            _rank_based_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha, n_boot, rng)
-            if ppi_applied else _rank_based_pairwise_uncorrected(group_arrays, ci_alpha, n_boot, rng)
+            _numeric_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha, n_boot, rng)
+            if ppi_applied else _numeric_pairwise_uncorrected(group_arrays, ci_alpha)
         )
-        estimand, null_value = "dominance", 0.5
+    estimand, null_value = "mean_diff", 0.0
 
     raw_p = np.asarray(pw["pair_p"], dtype=float)
     # Shaffer's modified step-down rather than plain Holm. For an ALL-PAIRWISE
@@ -889,6 +980,8 @@ def compare_unpaired(
             ci_low=float(pw["ci_lo"][idx]), ci_high=float(pw["ci_hi"][idx]),
             p_value=float(corrected_p[idx]), raw_p_value=float(raw_p[idx]),
             n_a=int(group_arrays[i].size), n_b=int(group_arrays[j].size),
+            mean_test_p=(None if pw["mean_test_p"] is None
+                         else float(pw["mean_test_p"][idx])),
         )
         for idx, (i, j) in enumerate(pw["pairs"])
     ]

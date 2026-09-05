@@ -80,3 +80,126 @@ Three review passes beyond the initial implementation: my own integration review
 1. Skim this summary; the pairwise-table format change (bars + Δθ framing) is the one thing worth a deliberate look, not just a rubber-stamp, since it's a visible behavior change to what you saw earlier.
 2. If it looks good, say the word and I'll commit this as a logically-separated set of commits.
 3. The `test_pareto.py`/`test_quick_primitives.py` pre-existing failures are still there if you want a follow-up investigation — happy to spin that off separately.
+
+---
+
+# Addendum, 2026-09-05 — the estimand changed to the mean difference
+
+**This reverses the decision recorded above** ("continuous/likert/grade →
+Kruskal-Wallis/Mann-Whitney U (θ = P(a>b)), per your decision"). Recording the
+reversal explicitly so the earlier note isn't read as current.
+
+## What changed
+
+`compare(design="unpaired")` now reports the **mean difference** for every
+score type. `family="rank_based"` is kept as a name, but it now names the
+*tests* (Kruskal-Wallis omnibus, Mann-Whitney U post-hoc), not the estimand.
+
+| | before | after |
+|---|---|---|
+| binary — CI | Welch t on 0/1 | **Agresti-Caffo** on Δp |
+| binary — p | Welch t | Welch t (unchanged) |
+| continuous/likert/grade — estimand | θ = P(a>b) | **mean difference** |
+| continuous/likert/grade — CI | bootstrap percentile on θ | **Welch t** (non-PPI) / `_ppi_two_sample_t_interval` (PPI) |
+| continuous/likert/grade — p | Mann-Whitney U | Mann-Whitney U (unchanged) |
+| omnibus | Kruskal-Wallis | Kruskal-Wallis (unchanged) |
+
+## Why
+
+1. **Consistency.** The paired path has always reported mean differences and
+   carried its rank test as a supplementary p-value
+   (`PairedDiffResult.wilcoxon_p`, `core/paired.py`). The unpaired path
+   reporting θ made it the only surface in evalstats stated in something
+   other than a mean. This mirrors the paired arrangement exactly.
+2. **The original reason expired.** The config table justified θ by saying a
+   mean-difference post-hoc "does not exist and would be new, unvalidated
+   statistical work." `simulations/harness/cases/ci_unpaired.py` is that work.
+3. **The binary interval was measurably wrong.** Exact enumeration over every
+   (k_A, k_B) table puts Welch's worst-case coverage at **0.641** — at p near
+   0 or 1, i.e. where binary eval data actually sits — against **0.930** for
+   Agresti-Caffo, at a *narrower* mean width (0.472 vs 0.511) and half the
+   runtime. Agresti-Caffo strictly dominates it. (Agresti-Min is the only
+   method never dipping below nominal, 0.950, but costs ~600x the time and
+   roughly half the power, so it is not the default.)
+
+## Why Welch and not `mover_logit_t`
+
+`mover_logit_t` scores better on real Likert corpora (interval score 0.3131
+vs 0.3328, coverage 0.958 vs 0.949) but is a new method to carry, and MOVER
+constructions fall to ~0.72 coverage on ceiling-saturated continuous shapes —
+structural, not an implementation bug (see commit d6623d4). Welch is one
+method for all numeric data with no such failure mode. Deliberate choice of
+the safer option over the marginally better-scoring one.
+
+## The known wart: the p-value tests a different estimand
+
+Mann-Whitney tests θ = P(a>b) against 1/2; the interval covers a mean
+difference. **They can disagree, and do.** On a 3-group Likert demo, one pair
+came out raw MWU p = 0.0452 against raw Welch p = 0.0566 — opposite sides of
+0.05 on the same data. Kept deliberately: MWU is the post-hoc that follows
+the Kruskal-Wallis omnibus and is what this project's PPI work validates.
+Each pair therefore also carries **`mean_test_p`**, the interval's own
+(Welch / PPI-t) p-value, so the mean-difference decision is inspectable
+alongside the headline one. This is separate from — and compounds with — the
+pre-existing Bonferroni-CI / Shaffer-p mismatch already disclosed in the
+printed footer.
+
+## Judged secondary metrics are now refused
+
+PPI reaches the primary metric only: `pareto_bootstrap_unpaired` takes no
+labels argument, and the secondary metric's marginal CIs are computed without
+them. An alignment entry for the secondary column used to be accepted and
+silently ignored, so the frontier probabilities would print as if corrected.
+`compare_unpaired` now raises `ValueError` when `secondary_metric=` names a
+column that also appears in the `alignment=` dict. The supported case -- a
+judge-free secondary such as cost or latency, alongside a PPI-corrected
+primary -- is unaffected and still runs.
+
+## Separate finding, not fixed here
+
+Likert data given **without an explicit `score_range`** resolves to
+`data_kind="unbounded"`, so the *marginal* group CIs fall back to
+`ppi_t_interval` and the `likert` row of `PPI_AUTO_METHOD_TABLE`
+(`ppi_logit_t`) is unreachable. A `UserWarning` fires, but the default for
+someone who just hands us 1-5 data is the bounds-agnostic method. Verified by
+running it both ways. Pairwise intervals are unaffected (scale-agnostic).
+Worth deciding separately whether `compare()` should infer bounds from
+Likert-looking data.
+
+## Output-shape changes
+
+`to_dict()["pairwise"][i]` and `to_frame()`: `estimand` is now always
+`"mean_diff"`, `null_value` always `0.0`, point estimates move from a
+θ≈0.5-centred scale to a 0-centred difference, and a new `mean_test_p` key
+appears. The printed table drops the secondary `Δmean` column (the primary
+column now *is* it) and the `Δθ` header becomes `Δ`.
+
+## Verification
+
+`tests/test_unpaired.py` 58 passed (4 rewritten); `test_compare.py`,
+`test_auto_ci_routing.py`, `test_design.py` 75 passed; `test_cli.py`,
+`test_io.py` 116 passed. Not committed.
+
+## Stale limitation text corrected (not part of this change)
+
+While auditing which pathways are PPI-corrected I reported two caveats that
+turned out to be already fixed by commit 7cf8c0d ("Correct the PPI
+Kruskal-Wallis and Mann-Whitney variances"). Four places in
+`evalstats/tests/__init__.py` still described the pre-fix behaviour:
+
+- `kruskalwallis()`'s `method` docstring listed the default as `"global"` and
+  omitted `"influence"` entirely -- the signature has said
+  `method="influence"` since that commit.
+- The bootstrap-Wald df comment's KNOWN DEFECT paragraph ended "Left as-is
+  here deliberately -- this comment is the record, not the fix." The fix
+  exists and is the default; that path is now reachable only as
+  `method="global"`.
+- `_kw_influence_cov`'s docstring described the under-rejection in the
+  present tense, reading as shipped behaviour rather than as the thing it
+  fixed.
+- "TWO OPTIONAL CORRECTIONS ... both off by default" -- `loo_group` is ON for
+  the k=2 Mann-Whitney path, where it is the correct Hajek projection.
+
+Re-tensed and scoped rather than deleted: the contrast with the bootstrap
+covariance is the design rationale for the influence construction, so removing
+it outright would leave that function unmotivated.

@@ -609,25 +609,41 @@ AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
             "codebase; treating the 0/1 outcome as a numeric mean and "
             "reusing the validated anova_oneway/ttest PPI paths reports "
             "the proportion difference a reader expects for a binary "
-            "outcome, using entirely existing machinery. Known limitation: "
-            "t-intervals on proportions can misbehave at extreme values or "
-            "small N."
+            "outcome, using entirely existing machinery. The non-PPI "
+            "pairwise INTERVAL is Agresti-Caffo rather than Welch's t: "
+            "exact enumeration over every (k_A, k_B) table puts Welch's "
+            "worst-case coverage at 0.641, reached at p near 0 or 1 where "
+            "binary eval data sits, against 0.930 for Agresti-Caffo at a "
+            "narrower width (see core/unpaired._agresti_caffo_ci). This "
+            "retires the 't-intervals on proportions misbehave at extreme "
+            "values or small N' limitation previously noted here."
         ),
     ),
     AutoUnpairedRule(
         score_type="continuous", family="rank_based",
         omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
         reason=(
-            "Kruskal-Wallis's θ_ab pairwise post-hoc is the only validated "
-            "k>=3 pairwise mechanism in this codebase for any score type; "
-            "a PPI-corrected Tukey-HSD-style mean-difference post-hoc does "
-            "not exist and would be new, unvalidated statistical work."
+            "Kruskal-Wallis omnibus with Mann-Whitney U post-hocs -- the "
+            "pairing this project's PPI work validates. 'rank_based' names "
+            "the TESTS, not the estimand: the reported effect and interval "
+            "are the mean difference (Welch), matching the paired path and "
+            "every other recommendation evalstats makes. This row used to "
+            "report theta = P(a>b) instead, on the grounds that 'a "
+            "PPI-corrected Tukey-HSD-style mean-difference post-hoc does "
+            "not exist and would be new, unvalidated statistical work' -- "
+            "simulations/harness/cases/ci_unpaired.py is that work, so the "
+            "reason no longer holds."
         ),
     ),
     AutoUnpairedRule(
         score_type="likert", family="rank_based",
         omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
-        reason="Ordinal data -- rank-based tests are the standard HCI convention.",
+        reason=(
+            "Ordinal data -- rank-based tests are the standard HCI "
+            "convention, so Kruskal-Wallis/Mann-Whitney stay the tests. The "
+            "reported effect is the mean difference (Welch interval); see "
+            "the 'continuous' row for why the estimand is a mean."
+        ),
     ),
     AutoUnpairedRule(
         score_type="grade", family="rank_based",
