@@ -1494,9 +1494,10 @@ def _ppi_kruskal_wallis_influence(
     loo_group: bool = False,
     floor_frac: float = 0.0,
 ) -> dict:
-    """EXPERIMENTAL. The shipped pairwise estimator with its Wald covariance
-    replaced by :func:`_kw_influence_cov`'s null-structured, bootstrap-free
-    one. The point estimate, the per-pair CIs and lambda are untouched -- only
+    """``kruskalwallis()``'s DEFAULT omnibus (``method="influence"``), and the
+    same covariance ``mannwhitney`` uses at k=2. The shipped pairwise estimator
+    with its Wald covariance replaced by :func:`_kw_influence_cov`'s
+    null-structured, bootstrap-free one. The point estimate, the per-pair CIs and lambda are untouched -- only
     the omnibus test's covariance (and hence its df, which becomes k-1 by
     construction rather than by truncation) changes.
 
@@ -4303,8 +4304,8 @@ def _ppi_friedman_f_stat(
     :func:`_ppi_anova_independent_f_stat`'s docstring for why this is
     factored out (p-value/CI consistency by construction).
 
-    ``power_tune=True``: EXPERIMENTAL, reuses the SAME construction
-    validated for :func:`_ppi_anova_repeated_f_stat` (disjoint unlabeled
+    ``power_tune=True`` (the shipped default -- ``friedman()`` passes nothing
+    else): reuses the SAME construction validated for :func:`_ppi_anova_repeated_f_stat` (disjoint unlabeled
     sample + a single shared scalar lambda minimizing
     trace(P @ Var[cond_means_ppi(lambda)] @ P), all from plain empirical
     covariances of rank-mean vectors -- see
@@ -5576,9 +5577,9 @@ def kruskalwallis(
         cell exactly .050; real judge data .035 -> .056; power at d=0.3
         .688 -> .890.
 
-        ``"global"``/``"mnar_experimental"`` are the
-        same tradeoff as ``mannwhitney``'s equivalent option, one level up
-        (k independent groups instead of 2); ``"rowsum"``/
+        ``"global"`` is the previous default, kept for reproducing
+        pre-change results; ``"mnar_experimental"`` trades calibration under
+        non-uniform labeling for extra variance; ``"rowsum"``/
         ``"rowsum_labeled"`` are EXPERIMENTAL and change *which linear
         functional* of the corrected pairwise vector is tested rather than
         how it is corrected -- see
