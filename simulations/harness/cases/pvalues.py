@@ -183,7 +183,6 @@ with warnings.catch_warnings():
     from evalstats.tests import (
         _ppi_two_sample,
         _ppi_mannwhitney_corrected,
-    _ppi_mannwhitney_corrected,
         _ppi_two_sample_t_interval,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
@@ -9262,7 +9261,18 @@ def save_ppi_label_efficiency_threshold_plot(
     # Annotations may only sit where the curve was MEASURED -- np.interp clamps
     # past the last point, so quoting a multiplier at 0.7 when the data stops at
     # 0.67 would silently reprint the 0.67 value under a rounder label.
-    _rounds_meas = [v for v in _rounds if v <= max(xs_plot) + 1e-9]
+    # ... and only where EVERY curve was measured, not merely one of them.
+    # max(xs_plot) is the global max across eval types, so it let an annotation
+    # sit past the end of the shorter curves -- np.interp clamps there, and
+    # _at()/_all_clear() would then silently reuse a curve's last measured value
+    # under a rounder label. That is the very failure the comment above warns
+    # about, applied across eval types rather than within one: with binary
+    # reaching rho^2 0.830 but continuous 0.763 and likert 0.739, the top marker
+    # landed on 0.8, where two of the three curves are clamped and the quoted
+    # "pooled" multiplier is really binary's alone.
+    _meas_hi = min((max(_xs_by_et[et][0]) for et in _xs_by_et
+                    if len(_xs_by_et[et][0]) >= 2), default=max(xs_plot))
+    _rounds_meas = [v for v in _rounds if v <= _meas_hi + 1e-9]
 
     # Leftmost annotated line is always 0.20 -- the anchor the rule of thumb is
     # quoted against, whether or not the curve happens to cross 1.25x there.
@@ -14041,6 +14051,12 @@ def official_args_ppi_rho_drift(base_seed: int = 42) -> argparse.Namespace:
     args.no_power_check = True
     args.no_comparison_check = True
     args.no_label_efficiency_check = True
+    # official_args_ppi turns the 7-factor factorial ON; a preset described as
+    # "JUST the rho drift check" must turn it back off, or selecting it costs a
+    # ~6h factorial sweep nobody asked for (measured: reps200 factorial ran
+    # 22:45->04:51). The label-efficiency preset already does this; this one
+    # was missing the line.
+    args.factorial_check = False
     args.rho_drift_check = True
     args.rho_drift_reps = 2000
     args.rho_drift_n_boot = args.ppi_n_boot
