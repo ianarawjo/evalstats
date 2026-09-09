@@ -1754,6 +1754,37 @@ def _likert_population_sd(likert_max: int, n_mc: int = 5_000_000, seed: int = 20
     return float(truth.std(ddof=0))
 
 
+@functools.lru_cache(maxsize=None)
+def _shape_population_median(shape_label: str, eval_type: str, likert_max: int, n_mc: int = 200_000, seed: int = 20260908) -> float:
+    """TRUE population median of one representative-shape draw (zero effect
+    shift), via a one-time Monte Carlo estimate -- used by
+    generate_judge_bias_cell's ``_rescale`` to anchor a truth_scale_b/c
+    stretch on the shape's actual center rather than the finite sample's
+    own realized median.
+
+    Anchoring on the SAMPLE's own median (recomputed fresh from the very
+    array being transformed) looks like the natural reading of "stretch
+    about its own median," but it's a serious bug: for n items, EXACTLY
+    n/2 fall below the sample median and n/2 above it by construction, in
+    EVERY replicate -- so once a stretch factor is large enough to push
+    all of both halves out to the eval type's clip bounds, the rescaled
+    group's sample mean collapses to a near-constant (lo+hi)/2 in every
+    replicate instead of fluctuating with genuine sampling variability.
+    Measured effect: at n=400, s=4.0 on cont-uniform, Var(sample mean)
+    with a per-sample median anchor was ~10x SMALLER than both the
+    population-median-anchored version and the naive i.i.d. Var/n
+    prediction (see simulations/out/PLAN_hetero_null_check.md's follow-up
+    investigation) -- which manufactures severe, spurious Type-I
+    *under*-coverage for every test downstream, unrelated to any real
+    statistical property of unequal spread. Cached like
+    _likert_population_sd -- cheap relative to the surrounding sweep, but
+    not free enough to redo per finite sample."""
+    shape = _ppi_shape(eval_type, shape_label)
+    rng = np.random.default_rng(seed)
+    truth = sample_group_truth(shape, n_mc, 1, 1, 1.0, rng, likert_max=likert_max)[0, :, 0]
+    return float(np.median(truth))
+
+
 def _eval_type_population_sd(eval_type: str, *, scale_bounds: tuple[float, float] | None = None) -> float:
     """EVAL_TYPE_POPULATION_SD[eval_type], with scale_bounds (see
     _jb_bias_magnitude's parameter of the same name) mapped to the matching
@@ -4084,12 +4115,44 @@ def generate_judge_bias_cell(
             shape, n, 1, n_conditions, scenario.icc, rng, effects=effects, likert_max=scenario.likert_max,
         )[:, :, 0]
 
+    def _rescale(truth: np.ndarray, s: float) -> np.ndarray:
+        """Stretch/compress `truth` about the shape's TRUE population
+        median (_shape_population_median -- NOT this finite sample's own
+        realized median; see that function's docstring for why anchoring
+        on a per-sample median is a serious bug, not a harmless
+        implementation choice) by factor `s`, then re-clip to the eval
+        type's valid range (and re-round for likert, matching
+        sample_group_truth's own _finish step). s=1.0 (every pre-existing
+        scenario) is an exact no-op. This is an AFFINE transform of the
+        already-drawn truth array -- applied elementwise, so it preserves
+        item-level pairing/correlation structure exactly (Pearson
+        correlation is invariant to a positive-scale affine transform of
+        one side) -- but it does NOT generally preserve symmetry of paired
+        differences under H0 for wilcoxon/friedman; see
+        simulations/out/PLAN_hetero_null_check.md Step 4.3."""
+        if s == 1.0:
+            return truth
+        med = _shape_population_median(shape.label, scenario.eval_type, scenario.likert_max)
+        out = med + s * (truth - med)
+        if scenario.eval_type == "continuous":
+            lo, hi = 0.0, 1.0
+        elif scenario.eval_type == "likert":
+            lo, hi = 1.0, float(scenario.likert_max)
+        elif scenario.eval_type == "grades":
+            lo, hi = 0.0, 100.0
+        else:
+            raise ValueError(f"truth_scale_b/c is not supported for eval_type={scenario.eval_type!r}")
+        out = np.clip(out, lo, hi)
+        if scenario.eval_type == "likert":
+            out = np.rint(out)
+        return out
+
     # -- Independent two-group data (ttest, mannwhitney; ttest/ttest_welch
     # also validated on binary -- see _jb_llm_binary. _marginal handles the
     # effect shift correctly for both binary and non-binary -- see its own
     # docstring.) --
     truth_a2 = _marginal(n1)
-    truth_b2 = _marginal(n2, es)
+    truth_b2 = _rescale(_marginal(n2, es), scenario.truth_scale_b)
     if scenario.eval_type == "binary":
         llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a),
                                 noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
@@ -4120,6 +4183,7 @@ def generate_judge_bias_cell(
     # -- Paired data (wilcoxon; paired_t also validated on binary -- see
     # _jb_llm_repeated_binary) --
     truth_x, truth_y = _repeated(n1, 2, np.array([0.0, es]))
+    truth_y = _rescale(truth_y, scenario.truth_scale_b)
     if scenario.eval_type == "binary":
         llm_x, llm_y = _jb_llm_repeated_binary(
             [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
@@ -4139,8 +4203,8 @@ def generate_judge_bias_cell(
 
     # -- Independent three-group data (anova_ind) --
     truth_a3 = _marginal(n1)
-    truth_b3 = _marginal(n2, es)
-    truth_c3 = _marginal(n3, 2 * es)
+    truth_b3 = _rescale(_marginal(n2, es), scenario.truth_scale_b)
+    truth_c3 = _rescale(_marginal(n3, 2 * es), scenario.truth_scale_c)
     llm_a3 = _jb_llm(
         truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
         noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
@@ -4171,6 +4235,8 @@ def generate_judge_bias_cell(
 
     # -- Repeated-measures three-group data (anova_rep, friedman, lmm) --
     truth_A, truth_B, truth_C = _repeated(n1, 3, np.array([0.0, es, 2 * es]))
+    truth_B = _rescale(truth_B, scenario.truth_scale_b)
+    truth_C = _rescale(truth_C, scenario.truth_scale_c)
     llm_A, llm_B, llm_C = _jb_llm_repeated(
         [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
         rng, anchor=anchor, corr=scenario.repeated_corr,

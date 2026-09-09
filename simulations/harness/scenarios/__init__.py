@@ -230,6 +230,17 @@ class JudgeBiasSource:
     mnar_mode: str = "high"  # "high" | "extreme"
     repeated_corr: float = 0.0
     effect_size: float = 0.0
+    truth_scale_b: float = 1.0
+    """SD multiplier for group B's (or condition 2's) truth, applied about
+    its own median after the usual draw -- see
+    scenarios.synthetic.generate_judge_bias_cell's ``_rescale``. Models
+    unequal HUMAN-side spread across groups/conditions (the classical
+    Behrens-Fisher stress case for rank tests), orthogonal to the
+    judge-side noise/bias axes this scenario family otherwise sweeps.
+    1.0 (the default) is a no-op -- every pre-existing scenario is
+    bit-for-bit unaffected."""
+    truth_scale_c: float = 1.0
+    """Same as truth_scale_b, for group C / condition 3."""
     shape_label: str | None = None
     """Override for which ShapeSpec (from scenarios.synthetic.SHAPES_BY_EVAL_TYPE[eval_type])
     to draw truth from -- None (the default) uses the eval type's fixed
