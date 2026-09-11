@@ -20,6 +20,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import evalstats as es
 from evalstats.alignment import judge_alignment
@@ -104,14 +105,21 @@ def _make_multiarm_continuous(
     return evaldata
 
 
-def _make_mixed_branch_binary(n_items: int = 150, seed: int = 0):
+def _make_mixed_branch_binary(n_items: int = 150, seed: int = 0,
+                              m3_labels: int = 20):
     """4-arm binary data where M0/M1/M2 share full labeled-item overlap
-    ("dispatch") but M3's labels come from a disjoint, sub-threshold set of
-    items -- every pair touching M3 has zero overlap AND fewer than 15 of
-    M3's own labels, so it lands in the "skip" branch (kept uncorrected).
+    ("dispatch") but M3's labels come from a disjoint set of items -- so every
+    pair touching M3 has zero shared labels, while still carrying enough labels
+    in each condition on its own. Those pairs land in the "fallback" branch: an
+    independent-groups correction, with a warning, and no joint bootstrap.
 
-    Exercises the fact that a single compound compare() call can return a
-    HETEROGENEOUS mix of PPI-corrected and un-corrected pairs.
+    Exercises the corrections that are all-or-nothing across pairs (max-T,
+    Romano-Wolf), which degrade for the WHOLE comparison as soon as any pair
+    cannot take the joint construction.
+
+    M3 previously got 8 labels, which put those pairs under the 15-label floor
+    and into the "skip" branch. Skipping stopped being a degraded result and
+    became an error, so that no longer reaches the assertions here.
     """
     rng = _rng(seed)
     entities = ["M0", "M1", "M2", "M3"]
@@ -125,7 +133,9 @@ def _make_mixed_branch_binary(n_items: int = 150, seed: int = 0):
     human = np.full(len(df), np.nan)
     shared_items = rng.choice(n_items, size=60, replace=False)
     remaining = np.setdiff1d(np.arange(n_items), shared_items)
-    m3_items = rng.choice(remaining, size=8, replace=False)
+    # Default 20: above the 15-label floor, so these pairs fall back rather than
+    # being refused outright. Pass fewer to build the refused case instead.
+    m3_items = rng.choice(remaining, size=m3_labels, replace=False)
 
     for lbl, items in (("M0", shared_items), ("M1", shared_items), ("M2", shared_items), ("M3", m3_items)):
         mask = (df["model"] == lbl) & (df["item"].isin(items))
@@ -399,28 +409,26 @@ class TestCompoundStructuralPlumbing:
         messages = [str(w.message) for w in caught]
         assert not any("Falling back to Bonferroni" in m for m in messages), messages
 
-    def test_skipped_pair_stays_uncorrected_while_others_are_ppi_corrected(self):
-        """In the mixed-branch dataset, pairs touching M3 (insufficient
-        overlap) must keep their un-annotated, non-PPI test_method, while
-        every pair among M0/M1/M2 (full overlap) must be PPI-corrected --
-        i.e. a single compound compare() result can legitimately be a
-        heterogeneous mix of corrected/uncorrected pairs."""
-        evaldata, labels = _make_mixed_branch_binary(seed=16)
+    def test_pair_below_the_label_floor_is_refused_not_left_uncorrected(self):
+        """A pair with too few labels to correct stops the comparison.
+
+        This used to return a heterogeneous result: pairs touching M3 kept an
+        uncorrected estimate behind a warning while the rest were PPI-corrected.
+        Mixing the two under a banner saying everything below is corrected is
+        what the error replaced, so the guarantee now is that no such result can
+        be produced at all.
+        """
+        evaldata, _labels = _make_mixed_branch_binary(seed=16, m3_labels=8)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
-            result = es.compare(
-                evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30,
-                simultaneous_ci=True, correction="shaffer",
-            )
-        bundle = result._primary_bundle()
-        for (a, b), pr in bundle.pairwise.results.items():
-            touches_m3 = "M3" in (a, b)
-            if touches_m3:
-                assert "PPI" not in pr.test_method, (a, b, pr.test_method)
-            else:
-                assert "PPI" in pr.test_method, (a, b, pr.test_method)
+            ar = judge_alignment(evaldata, llm_metric="llm_score",
+                                 human_groundtruth="human_score")
+            with pytest.raises(ValueError, match="fewer than 15 items labeled"):
+                es.compare(
+                    evaldata, factors="model", metric="llm_score",
+                    alignment={"llm_score": ar}, n_mc=30,
+                    simultaneous_ci=True, correction="shaffer",
+                )
 
     def test_two_arm_compound_does_not_widen_for_fwer(self):
         """With only one pair (k=2 arms), use_simultaneous is False regardless
