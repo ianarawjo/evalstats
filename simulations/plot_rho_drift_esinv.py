@@ -192,13 +192,16 @@ def main() -> int:
         labels = ["mean-based (measured)", "rank-based (measured)",
                   (r"score-level $\rho^2$ (what it must equal)"
                    if a.reference == "score"
-                   else r"\textsc{evalstats} $\rho^2$ (influence function)"
+                   else r"$\rho^2$ (influence function)"
                    if a.reference == "compare"
                    else r"recipe prediction (Pearson / Spearman $\rho^2$)")]
         if a.reference == "compare":
             handles.append(Line2D([0], [0], color=C_NAIVE, lw=1.3, ls=":"))
             labels.append(r"naive Pearson / Spearman $\rho^2$")
-            labels[2] = r"evalstats $\rho^2$ (influence function)"
+            # Deliberately unnamed: the contrast the legend draws is with the
+            # naive recipe below it, and leaving the package out means the figure
+            # never has to be regenerated when the name changes.
+            labels[2] = r"$\rho^2$ (influence function)"
         fig.tight_layout(rect=[0, 0.17, 1, 1], w_pad=0.7)
         fig.legend(handles, labels, loc="lower center",
                    ncol=4 if a.reference == "compare" else 3, frameon=False,
