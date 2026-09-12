@@ -833,8 +833,14 @@ class TestPPIPooledPValues:
 # PPI sample-size checks and CI method override warnings
 # ---------------------------------------------------------------------------
 
-def _make_small_evaldata(n_items: int, n_labeled: int, seed: int = 99):
-    """Helper: binary evaldata with specified total items and labeled count."""
+def _make_small_evaldata(n_items: int, n_labeled: int, seed: int = 99, shared: bool = False):
+    """Helper: binary evaldata with specified total items and labeled count.
+
+    ``shared=True`` labels whole ITEMS across both models, the way a rater
+    actually works and the way ``evalstats label`` samples. The default picks
+    random rows, which leaves the two models sharing almost no labeled items --
+    fine for the total-count checks, but below the paired PPI overlap floor.
+    """
     rng = np.random.default_rng(seed)
     df = pd.DataFrame({
         "model":     ["A"] * n_items + ["B"] * n_items,
@@ -845,8 +851,13 @@ def _make_small_evaldata(n_items: int, n_labeled: int, seed: int = 99):
         ]).astype(float),
     })
     human = np.full(len(df), np.nan)
-    for idx in rng.choice(len(df), size=n_labeled, replace=False):
-        human[idx] = df.loc[idx, "llm_score"]
+    if shared:
+        chosen = set(rng.choice(n_items, size=n_labeled, replace=False).tolist())
+        mask = df["item"].isin(chosen).to_numpy()
+        human[mask] = df.loc[mask, "llm_score"]
+    else:
+        for idx in rng.choice(len(df), size=n_labeled, replace=False):
+            human[idx] = df.loc[idx, "llm_score"]
     df["human_score"] = human
     return es.load_from(df, col_map={"model": "model", "item": "item"})
 
@@ -881,19 +892,23 @@ class TestPPISampleSizeChecks:
         """compare(alignment=...) should warn about potential under-coverage when n_labeled < 30."""
         # n_labeled=20 satisfies the ≥15 hard requirement but not the ≥30 soft one.
         # n_items=60 so n_all=120, above the 100 threshold.
-        evaldata = _make_small_evaldata(n_items=60, n_labeled=20)
+        evaldata = _make_small_evaldata(n_items=60, n_labeled=20, shared=True)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = judge_alignment(evaldata, llm_metric="llm_score",
                                     human_groundtruth="human_score")
-        with pytest.warns(UserWarning, match="recommend ≥ 30"):
+        # compare()'s own "recommend >= 30" counts labeled ROWS, and with two
+        # conditions the paired overlap floor (15 shared ITEMS) already puts
+        # that at 30+. The thin-labels warning the user actually sees at this
+        # size comes from the alignment layer.
+        with pytest.warns(UserWarning, match="recommend ≥ 30|fewer than ~30 labeled items"):
             es.compare(evaldata, factors="model", metric="llm_score",
                        alignment={"llm_score": ar})
 
     def test_warns_when_n_all_below_100(self):
         """compare(alignment=...) should warn about potential under-coverage when N < 100."""
         # n_items=30 → n_all=60 (30 items × 2 models), between 50 and 100.
-        evaldata = _make_small_evaldata(n_items=30, n_labeled=30)
+        evaldata = _make_small_evaldata(n_items=30, n_labeled=20, shared=True)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = judge_alignment(evaldata, llm_metric="llm_score",
@@ -920,10 +935,13 @@ class TestPPISampleSizeChecks:
             ]).astype(float),
         })
         human = np.full(len(df), np.nan)
-        # Every item for model A is labeled (n_all=0 for A); model B stays
-        # fully unlabeled so this isolates the single-arm (robustness) path.
+        # Every item for model A is labeled (n_all=0 for A).
         a_mask = df["model"] == "A"
         human[a_mask] = df.loc[a_mask, "llm_score"]
+        # B needs labels of its own, else its missing-labels error fires first
+        # and this test never reaches the case it is about.
+        b_idx = df.index[df["model"] == "B"].to_numpy()[:20]
+        human[b_idx] = df.loc[b_idx, "llm_score"]
         df["human_score"] = human
         evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
 
@@ -1111,6 +1129,66 @@ class TestMultiConditionAlignment:
         assert len(r.pairwise_metrics) == 3    # raw pairwise still reported
         assert np.isfinite(r.omnibus_metric["n_eff"])
 
+    @pytest.mark.parametrize("test,design", [
+        ("friedman", "within"), ("kruskalwallis", "between"), ("anova_oneway", "between"),
+    ])
+    def test_omnibus_multiplier_matches_savings_formula(self, test, design):
+        """The omnibus multiplier obeys 1/(1 - rho^2 (1 - n_lab/N)) with both
+        counts on ONE scale, and n_eff stays on the scale of its own labeled
+        count. Regression: friedman's linearization emits k numbers per item,
+        so pairing it with the item-scale _pair_total_n drove n_lab/N about k
+        times too high, flattening the multiplier to ~1 while n_eff was read
+        as per-condition -- a ~3x overstatement of the reported label savings.
+        """
+        rng = _rng(11)
+        n, n_lab, k = 80, 25, 3
+        conds = {}
+        for i in range(k):
+            human = rng.normal(size=n)
+            judge = 0.7 * human + rng.normal(size=n) * 0.7
+            human = human.copy()
+            human[n_lab:] = np.nan
+            conds[f"c{i}"] = (judge, human)
+        kw = {"design": design} if test == "anova_oneway" else {}
+        r = judge_alignment(conds, test=test, selection="random", ci=False, **kw)
+        m = r.omnibus_metric
+
+        # n_lab and N must share a scale, so their ratio is the labeled fraction.
+        assert m["n"] / m["N"] == pytest.approx(n_lab / n, rel=1e-9)
+        expected = 1.0 / (1.0 - m["estimate"] ** 2 * (1.0 - n_lab / n))
+        assert m["multiplier"] == pytest.approx(expected, rel=1e-9)
+        assert m["n_eff"] == pytest.approx(m["multiplier"] * m["n"], rel=1e-9)
+        # PPI can only ever add information.
+        assert 1.0 <= m["multiplier"] < 1.0 / (1.0 - (1.0 - n_lab / n))
+
+    def test_full_linearized_n_only_differs_for_friedman(self):
+        """_full_linearized_n replaces _pair_total_n, so it must agree with it
+        everywhere the old count was already on the linearization's scale."""
+        from evalstats.alignment import _full_linearized_n, _pair_total_n
+
+        rng = _rng(12)
+        conds = {}
+        for i in range(3):
+            human = rng.normal(size=40)
+            judge = 0.6 * human + rng.normal(size=40) * 0.8
+            human = human.copy()
+            human[12:] = np.nan
+            conds[f"c{i}"] = (judge, human)
+        names = list(conds)
+        for test, design, same in [
+            ("wilcoxon", "within", True), ("ttest", "within", True),
+            ("mannwhitney", "between", True), ("kruskalwallis", "between", True),
+            ("anova_oneway", "between", True), ("friedman", "within", False),
+        ]:
+            sub = conds if test in ("friedman", "kruskalwallis", "anova_oneway") else \
+                {nm: conds[nm] for nm in names[:2]}
+            full = _full_linearized_n(sub, test=test, design=design)
+            pair = _pair_total_n(sub, list(sub), design)
+            if same:
+                assert full == pair, f"{test}/{design}: {full} != {pair}"
+            else:
+                assert full == pair * len(sub), f"{test}/{design}: {full} != {pair}*{len(sub)}"
+
     def test_per_condition_counts_reported(self):
         conds = _cond(_rng(9), n=400, n_lab=120)
         r = judge_alignment(conds, design="between", selection="random")
@@ -1197,3 +1275,73 @@ class TestMultiConditionAlignment:
         assert pred_M / oracle_M == pytest.approx(1.0, abs=0.10), (
             f"{kind} d={d}: predicted {pred_M:.4f} vs oracle {oracle_M:.4f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Label-position check on paired data: judge ITEMS, not rows
+# ---------------------------------------------------------------------------
+
+
+def _make_paired_judge_df(n_items: int = 60, k: int = 3, seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for m in range(k):
+        for i in range(n_items):
+            truth = rng.uniform(1, 5)
+            rows.append({
+                "item": f"i{i:03d}", "model": f"M{m}",
+                "coherence": float(np.clip(round(truth + rng.normal(0, 0.8)), 1, 5)),
+                "_truth": truth,
+            })
+    return pd.DataFrame(rows)
+
+
+def _reveal_items(df: pd.DataFrame, labeled_items: set) -> pd.DataFrame:
+    out = df.copy()
+    out["human_coherence"] = np.where(out["item"].isin(labeled_items), out["_truth"], np.nan)
+    return out.drop(columns="_truth")
+
+
+def _position_check(df: pd.DataFrame) -> dict:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ar = judge_alignment(es.load_from(df), llm_metric="coherence",
+                             human_groundtruth="human_coherence", selection="random")
+    return ar.representativeness["label_contiguity"]
+
+
+class TestLabelPositionCheckPairedDesign:
+    def test_random_items_sorted_by_item_pass(self):
+        """Same 15 random items labeled for all 3 models, rows sorted by item:
+        labeled rows come in runs of 3 by construction, which must not be
+        read as clustering."""
+        df = _make_paired_judge_df()
+        items = sorted(df["item"].unique())
+        labeled = set(np.random.default_rng(1).choice(items, size=15, replace=False))
+        res = _position_check(_reveal_items(df, labeled).sort_values(["item", "model"]))
+        assert res["passed"], res["message"]
+
+    def test_random_items_are_order_invariant(self):
+        df = _make_paired_judge_df()
+        items = sorted(df["item"].unique())
+        labeled = set(np.random.default_rng(1).choice(items, size=15, replace=False))
+        by_item = _position_check(_reveal_items(df, labeled).sort_values(["item", "model"]))
+        by_model = _position_check(_reveal_items(df, labeled).sort_values(["model", "item"]))
+        assert by_item["passed"] and by_model["passed"]
+        assert by_item["p_value"] == pytest.approx(by_model["p_value"])
+
+    def test_contiguous_block_of_items_still_fails(self):
+        df = _make_paired_judge_df()
+        items = sorted(df["item"].unique())
+        res = _position_check(_reveal_items(df, set(items[:15])).sort_values(["item", "model"]))
+        assert not res["passed"]
+        assert "single contiguous block" in res["message"]
+
+    def test_single_row_per_item_behaviour_unchanged(self):
+        """With one row per item the item collapse is a no-op: a random draw
+        passes and a leading block fails, as before."""
+        df = _make_paired_judge_df(k=1)
+        items = sorted(df["item"].unique())
+        random_lab = set(np.random.default_rng(2).choice(items, size=15, replace=False))
+        assert _position_check(_reveal_items(df, random_lab))["passed"]
+        assert not _position_check(_reveal_items(df, set(items[:15])))["passed"]

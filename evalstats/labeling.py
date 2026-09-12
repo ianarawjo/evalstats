@@ -53,7 +53,7 @@ SYNTHETIC_ITEM_COL = "_row_item"
 # "<prefix><metric>".
 GENERIC_LABEL_KEY = "label"
 
-VALID_SCORE_TYPES = ("binary", "likert", "continuous", "grade")
+VALID_SCORE_TYPES = ("binary", "likert", "continuous")
 
 # Mirrors the n_all < 50 floor _run_alignment_ppi() enforces in api.py ("PPI
 # is only beneficial at scale"). Kept as a local constant rather than a
@@ -243,6 +243,7 @@ def sample_for_labeling(
     n_lab: int = 15,
     seed: Optional[int] = None,
     human_col_prefix: str = "human_",
+    sort_labeled_first: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """Mark rows for human labeling, targeting ``n_lab`` labeled items per
     condition (auto-detected as paired or unpaired -- see
@@ -259,6 +260,18 @@ def sample_for_labeling(
     set (e.g. re-loading a partially-labeled file) and this only tops up any
     condition still short of ``n_lab``, without disturbing existing
     selections or already-filled human labels.
+
+    sort_labeled_first : bool, default True
+        Move every marked (``_sampled_for_labeling=True``) row to the top of
+        the returned DataFrame, in a stable sort (rows keep their original
+        relative order within each of the two groups). A human labeler
+        opening the output file otherwise has to scroll through the entire
+        eval set to find the handful of rows that actually need a score --
+        with a paired design those rows aren't even contiguous, since each
+        marked item's rows are spread across every condition. Pass ``False``
+        to keep the input's original row order untouched instead (e.g. if
+        you rely on that order elsewhere, or hand-edit files and want a
+        stable diff against the un-sampled version).
 
     Returns
     -------
@@ -319,6 +332,13 @@ def sample_for_labeling(
                 df.loc[lvl_mask & df[item_col_r].isin(chosen), MARKER_COL] = True
             coverage[lvl if lvl is not None else "(all rows)"] = int((lvl_mask & df[MARKER_COL]).sum())
 
+    if sort_labeled_first:
+        # Stable sort: marked rows first, but original relative order is
+        # preserved within both the marked and unmarked groups.
+        df = df.sort_values(
+            by=MARKER_COL, ascending=False, kind="stable", ignore_index=True,
+        )
+
     info = {
         "seed": seed,
         "paired": paired,
@@ -343,8 +363,6 @@ def _prompt_for_grade(score_type: str, metric_name: str, in_: Callable[[str], st
         hint = "1=pass / 0=fail"
     elif score_type == "likert":
         hint = "small integer, e.g. 1-5"
-    elif score_type == "grade":
-        hint = "0-100"
     else:
         hint = "numeric score"
 
@@ -364,9 +382,6 @@ def _prompt_for_grade(score_type: str, metric_name: str, in_: Callable[[str], st
             continue
         if score_type == "likert" and not (1 <= val <= 10):
             print("    likert metric -- enter a small positive integer")
-            continue
-        if score_type == "grade" and not (0 <= val <= 100):
-            print("    grade metric -- enter 0-100")
             continue
         return val
 

@@ -17,10 +17,64 @@ Carlo error" would be false. What is true is that no test exceeds the bound on
 BOTH instruments -- where one reads high the other reads low -- and that is
 what the caption claims.
 """
-import pandas as pd, numpy as np, glob
-D = 'simulations/out/labeleff_final'
-r = pd.read_csv(glob.glob(D + '/*_ppi_label_efficiency_results.csv')[0])
-pm = pd.read_csv(glob.glob(D + '/figs_paper/*per_method.csv')[0])
+import argparse
+import glob
+import sys
+
+import pandas as pd, numpy as np
+
+
+def _one(pattern, what):
+    hits = sorted(glob.glob(pattern))
+    if not hits:
+        raise SystemExit(f"no {what} matching {pattern!r}")
+    return hits[-1]
+
+
+def _load(run, kind):
+    """Read one CSV of `kind` for a run, given a directory OR a run stem.
+
+    A run written by --official-tests lands in its own directory with the
+    per-method CSV under figs_paper/; a plain `--mode ppi` run writes both
+    files flat into simulations/out/ with the stem in the filename. Accept
+    either, so a fresh run can be pointed at without being reorganised first.
+    """
+    import os
+    if os.path.isdir(run):
+        sub = "/figs_paper/*per_method.csv" if kind == "per_method" else "/*_ppi_label_efficiency_results.csv"
+        try:
+            return pd.read_csv(_one(run + sub, kind))
+        except SystemExit:
+            if kind != "per_method":
+                raise
+            return pd.read_csv(_one(run + "/*per_method.csv", kind))
+    suffix = ("_ppi_label_efficiency_per_method.csv" if kind == "per_method"
+              else "_ppi_label_efficiency_results.csv")
+    return pd.read_csv(_one(f"simulations/out/*{run}*{suffix}", kind))
+
+
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument("--run", default="simulations/out/labeleff_final - use this for the paper",
+                help="run directory, or a run stem to match under simulations/out/")
+ap.add_argument("--continuous-from", default=None,
+                help="second run whose CONTINUOUS rows replace --run's. For when a "
+                     "problem forced only that eval type to be re-run, so the newest "
+                     "data is split across two runs.")
+ap.add_argument("-o", "--out", default="paper/appendix_label_efficiency_tables.tex")
+A = ap.parse_args()
+
+r = _load(A.run, "results")
+pm = _load(A.run, "per_method")
+if A.continuous_from:
+    r2 = _load(A.continuous_from, "results")
+    pm2 = _load(A.continuous_from, "per_method")
+    for nm, base, new in (("results", r, r2), ("per_method", pm, pm2)):
+        got = sorted(new.eval_type.unique())
+        if got != ["continuous"]:
+            raise SystemExit(f"--continuous-from's {nm} covers {got}, expected continuous only")
+    r = pd.concat([r[r.eval_type != "continuous"], r2], ignore_index=True)
+    pm = pd.concat([pm[pm.eval_type != "continuous"], pm2], ignore_index=True)
+    print(f"spliced continuous from {A.continuous_from}", file=sys.stderr)
 rng = np.random.default_rng(7)
 
 def bci(v, B=4000):
@@ -38,7 +92,7 @@ u = r[r.well_conditioned & ~r.saturated]
 NLABS = [30, 90, 200]          # 15 is too sparse to report (likert has none)
 TIERS = [0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
 L = []
-L.append(r"\begin{table}[t]\centering\small")
+L.append(r"\begin{table*}[t]\centering\small")
 L.append(r"\caption{Label-efficiency multiplier by data type, judge quality and "
          r"labeling budget. Each cell is the median over the four effect-size arms with a "
          r"bootstrap 95\% CI; $2\times$ means PPI matched the classical test's power on half "
@@ -48,18 +102,28 @@ L.append(r"\caption{Label-efficiency multiplier by data type, judge quality and 
          r"conditioning check are excluded, and $n_{lab}=15$ is omitted entirely for lack of "
          r"usable cells.}")
 L.append(r"\label{tab:le-mult}")
-L.append(r"\begin{tabular}{r|" + "c" * len(NLABS) + r"}\toprule")
-L.append(r"$\rho^2$ & " + " & ".join(rf"$n_{{lab}}={n}$" for n in NLABS) + r" \\")
-for et, lbl in (('binary', 'Binary'), ('continuous', 'Continuous'), ('likert', 'Likert')):
-    L.append(r"\midrule \multicolumn{" + str(len(NLABS) + 1) +
-             r"}{l}{\textbf{" + lbl + r"}} \\")
-    for t in TIERS:
-        cs = []
+# Eval types as COLUMN groups, one n_lab block each -- the layout the paper
+# uses. Stacking them as row groups instead (an earlier form of this script)
+# produces the same numbers but is not drop-in for appendix.tex.
+ETS = (('binary', 'Binary'), ('continuous', 'Continuous'), ('likert', 'Likert'))
+L.append(r"\begin{tabular}{r|" + "|".join("c" * len(NLABS) for _ in ETS) + r"}")
+L.append(r"\toprule")
+L.append(" & " + " & ".join(
+    r"\multicolumn{" + str(len(NLABS)) + r"}{c" + ("|" if i < len(ETS) - 1 else "") +
+    r"}{\textbf{" + lbl + r"}}" for i, (_, lbl) in enumerate(ETS)) + r" \\")
+L.append("".join(rf"\cmidrule(lr){{{2 + i * len(NLABS)}-{1 + (i + 1) * len(NLABS)}}}"
+                 for i in range(len(ETS))))
+L.append(r"$\rho^2$ & " + " & ".join(
+    rf"$n_{{lab}}{{=}}{n}$" for _ in ETS for n in NLABS) + r" \\")
+L.append(r"\midrule")
+for t in TIERS:
+    cs = []
+    for et, _ in ETS:
         for n in NLABS:
             g = u[(u.eval_type == et) & (u.alignment_target == t) & (u.n_lab == n)]
             cs.append("--" if len(g) < 3 else cell(*bci(g.multiplier), times=True))
-        L.append(f"{t:.2f} & " + " & ".join(cs) + r" \\")
-L.append(r"\bottomrule\end{tabular}\end{table}")
+    L.append(f"{t:.2f} & " + " & ".join(cs) + r" \\")
+L.append(r"\bottomrule\end{tabular}\end{table*}")
 L.append("")
 
 q = pm[pm.well_conditioned & ~pm.saturated].copy()
@@ -81,5 +145,7 @@ for m_, lbl in (('ttest', r"$t$-test"), ('ttest_welch', r"Welch $t$"), ('paired_
 L.append(r"\midrule")
 L.append(f"pooled & {cell(*bci(q['inv']), p=3)} & {cell(*bci(q['var']), p=3)} & {len(q)} \\\\")
 L.append(r"\bottomrule\end{tabular}\end{table}")
-open('paper/appendix_label_efficiency_tables.tex', 'w').write("\n".join(L) + "\n")
+import os
+os.makedirs(os.path.dirname(A.out) or ".", exist_ok=True)
+open(A.out, 'w').write("\n".join(L) + "\n")
 print("\n".join(L))

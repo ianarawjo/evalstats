@@ -60,7 +60,7 @@ def test_compare_prompts_stores_global_alpha():
     """report.alpha should reflect the global alpha when none is passed."""
     set_alpha_ci(0.03)
     report = es.compare_prompts(
-        {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
+        {"a": [1, 1, 0, 1, 0] * 3, "b": [0, 0, 1, 0, 0] * 3},
         method="newcombe",
         correction="none",
         rng=_rng(),
@@ -72,7 +72,7 @@ def test_compare_prompts_explicit_alpha_overrides_global():
     """An explicit alpha= kwarg should take precedence over set_alpha_ci."""
     set_alpha_ci(0.03)
     report = es.compare_prompts(
-        {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
+        {"a": [1, 1, 0, 1, 0] * 3, "b": [0, 0, 1, 0, 0] * 3},
         method="newcombe",
         correction="none",
         alpha=0.10,
@@ -88,12 +88,11 @@ def test_compare_prompts_explicit_alpha_overrides_global():
 def test_compare_models_stores_global_alpha():
     """report.alpha should reflect the global alpha when none is passed."""
     set_alpha_ci(0.03)
+    rng_data = np.random.default_rng(0)
     report = es.compare_models(
         {
-            "A": np.array([[1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
-                           [1, 0, 1, 1, 0, 1, 1, 0, 1, 0]]),
-            "B": np.array([[0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
-                           [0, 1, 0, 0, 0, 1, 0, 0, 0, 1]]),
+            "A": rng_data.integers(0, 2, size=(15, 3)),
+            "B": rng_data.integers(0, 2, size=(15, 3)),
         },
         n_bootstrap=500,
         rng=_rng(),
@@ -112,11 +111,13 @@ def test_alpha_affects_unbeaten_in_compare_prompts():
     2*(0.5)^6 = 0.03125: 6 non-tied inputs all won by 'a', 0 won by 'b'.
     This is significant at alpha=0.05 but not at alpha=0.01.
     """
-    # a wins 6 of 10 inputs (1 tie at index 0, 3 ties at indices 7-9).
+    # a wins 6 of 15 inputs (1 tie at index 0, 8 ties at indices 7-14) --
+    # extra trailing ties only pad N up to the sample floor, they don't
+    # change the sign-test statistic (ties are excluded from it).
     # sign test: 6 positives, 0 negatives → p = 2*(0.5)^6 ≈ 0.03125
     scores = {
-        "a": [1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-        "b": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "a": [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        "b": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     }
 
     # Verify the known p-value (sanity check)
@@ -146,8 +147,8 @@ def test_global_alpha_affects_unbeaten_outcome():
     """set_alpha_ci should produce the same behavioral change as passing alpha= explicitly."""
     # Same dataset as above: sign-test p ≈ 0.03125 (significant at 0.05, not at 0.01)
     scores = {
-        "a": [1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
-        "b": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "a": [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        "b": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     }
 
     # Via global: loose alpha → a is unbeaten.

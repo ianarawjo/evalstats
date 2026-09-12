@@ -1754,6 +1754,37 @@ def _likert_population_sd(likert_max: int, n_mc: int = 5_000_000, seed: int = 20
     return float(truth.std(ddof=0))
 
 
+@functools.lru_cache(maxsize=None)
+def _shape_population_median(shape_label: str, eval_type: str, likert_max: int, n_mc: int = 200_000, seed: int = 20260908) -> float:
+    """TRUE population median of one representative-shape draw (zero effect
+    shift), via a one-time Monte Carlo estimate -- used by
+    generate_judge_bias_cell's ``_rescale`` to anchor a truth_scale_b/c
+    stretch on the shape's actual center rather than the finite sample's
+    own realized median.
+
+    Anchoring on the SAMPLE's own median (recomputed fresh from the very
+    array being transformed) looks like the natural reading of "stretch
+    about its own median," but it's a serious bug: for n items, EXACTLY
+    n/2 fall below the sample median and n/2 above it by construction, in
+    EVERY replicate -- so once a stretch factor is large enough to push
+    all of both halves out to the eval type's clip bounds, the rescaled
+    group's sample mean collapses to a near-constant (lo+hi)/2 in every
+    replicate instead of fluctuating with genuine sampling variability.
+    Measured effect: at n=400, s=4.0 on cont-uniform, Var(sample mean)
+    with a per-sample median anchor was ~10x SMALLER than both the
+    population-median-anchored version and the naive i.i.d. Var/n
+    prediction (see simulations/out/PLAN_hetero_null_check.md's follow-up
+    investigation) -- which manufactures severe, spurious Type-I
+    *under*-coverage for every test downstream, unrelated to any real
+    statistical property of unequal spread. Cached like
+    _likert_population_sd -- cheap relative to the surrounding sweep, but
+    not free enough to redo per finite sample."""
+    shape = _ppi_shape(eval_type, shape_label)
+    rng = np.random.default_rng(seed)
+    truth = sample_group_truth(shape, n_mc, 1, 1, 1.0, rng, likert_max=likert_max)[0, :, 0]
+    return float(np.median(truth))
+
+
 def _eval_type_population_sd(eval_type: str, *, scale_bounds: tuple[float, float] | None = None) -> float:
     """EVAL_TYPE_POPULATION_SD[eval_type], with scale_bounds (see
     _jb_bias_magnitude's parameter of the same name) mapped to the matching
@@ -1912,13 +1943,10 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # deliberately the same for every group regardless of magnitude, so it
     # doesn't need one -- see _jb_biases). The trio above only contrasts
     # bias ABSENT (bias.none) against bias PRESENT at the shared baseline's
-    # fixed bias_delta=0.30, which is large enough that nearly every
-    # differential-biased scenario in this catalog saturates near a 100%
-    # uncorrected rejection rate -- with no scenario anywhere showing a
-    # smaller, more realistic judge-bias magnitude, the Type-I calibration
-    # plot's uncorrected dots cluster at the two extremes (~alpha or ~1.0)
-    # with nothing in between, which can look artificially bimodal/extreme
-    # to a reader skimming the plot.
+    # fixed bias_delta=0.30, which is large enough to saturate near a 100%
+    # uncorrected rejection rate; this sweep adds intermediate magnitudes so
+    # the Type-I calibration plot shows the uncorrected rate climbing
+    # smoothly rather than just two extremes.
     #
     # `bias_delta`/`bias_const` are raw additive offsets on each eval type's
     # own native scale (see _jb_llm: `pred = anchor + slope*(truth-anchor) +
@@ -1927,12 +1955,11 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # scenario above (eval_type.*/shape.*) uses it instead of a bare
     # number. This sweep expresses magnitude in population-SD units (see
     # EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude), so "mild"/"moderate"/
-    # "severe" mean the same standardized severity everywhere -- confirmed
-    # by matching uncorrected rejection rates across eval types at each
-    # tier (n=100/icc=0.20, ttest, alpha=0.05). Binary is excluded -- its
-    # bias model (_jb_llm_binary) works via flip-probabilities, not an
-    # additive offset on a continuous scale, so this framing doesn't apply
-    # to it at all (see PPI_BINARY_BIAS_MAGNITUDES instead).
+    # "severe" mean the same standardized severity everywhere. Binary is
+    # excluded -- its bias model (_jb_llm_binary) works via flip-
+    # probabilities, not an additive offset on a continuous scale, so this
+    # framing doesn't apply to it at all (see PPI_BINARY_BIAS_MAGNITUDES
+    # instead).
     for et in ["continuous", "likert", "grades"]:
         for label, frac in [("mild", 0.03), ("moderate", 0.07), ("severe", 0.30)]:
             S.append(make_scenario(
@@ -2101,19 +2128,16 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # above that uses bias_type="differential" at the fixed baseline
     # bias_delta=0.30 (sample_size, balance, label_frac, label_mechanism,
     # llm_noise, heteroskedastic, noise_family, stress, interaction, and
-    # shape). Without this, only the dedicated bias_type/bias_magnitude/
-    # group_calibration groups show any bias severity below "fully
-    # saturated," so the aggregate Type-I calibration plot's uncorrected
-    # dots cluster almost entirely at ~alpha or ~1.0 (most of the catalog
-    # is one of these ~36 scenarios). Adds two smaller-bias companion
-    # scenarios per eligible base scenario -- keeping the original
-    # UNCHANGED (same name, same "severe" bias_delta=0.30) so existing
-    # results/names stay valid -- rather than replacing it, using the SAME
-    # eval-type-relative fractions (3%/7% of range) validated in the
-    # standalone bias_magnitude sweep. The eval_type group itself is
-    # excluded: it's already exactly this cross (eval_type x bias
-    # magnitude) via the dedicated bias_magnitude group above, so adding
-    # companions here would just be exact duplicates.
+    # shape), so the aggregate Type-I calibration plot shows bias severity
+    # below "fully saturated" across these dimensions too, not just the
+    # dedicated bias_type/bias_magnitude/group_calibration groups. Adds two
+    # smaller-bias companion scenarios per eligible base scenario -- keeping
+    # the original UNCHANGED (same name, same "severe" bias_delta=0.30) so
+    # existing results/names stay valid -- using the same eval-type-relative
+    # fractions (3%/7% of range) as the standalone bias_magnitude sweep. The
+    # eval_type group itself is excluded: it's already exactly this cross
+    # (eval_type x bias magnitude) via the dedicated bias_magnitude group
+    # above, so adding companions here would just be exact duplicates.
     _EXCLUDED_TAGS = {"eval_type", "bias_type", "bias_magnitude", "group_calibration"}
     extra: list[JudgeBiasSource] = []
     for sc in S:
@@ -2347,11 +2371,10 @@ def build_ppi_power_nlab_grid_reinforcing_sources() -> list[JudgeBiasSource]:
     checks ONE (N, N_lab) point (the _ppi_power_baseline fixed values,
     n=100/label_frac=0.20 -> n_lab=20); this grid instead asks how the
     anomaly's shape moves as more labels or a larger unlabeled pool become
-    available, using the SAME extended effect_size grid
-    (PPI_POWER_EFFECT_FRACS, which now includes 0.225/0.25/0.275 bridging
-    the likert integer-crossing point at es=1.00) at every cell so the full
-    power curve -- not just one point -- can be read off each (N, N_lab)
-    combination.
+    available, using the SAME effect_size grid (PPI_POWER_EFFECT_FRACS,
+    which includes the likert integer-crossing point at es=0.874) at every
+    cell so the full power curve -- not just one point -- can be read off
+    each (N, N_lab) combination.
 
     Restricted to likert (where the anomaly appears) rather than every
     eval type, to keep this a "light" sweep per-cell as originally scoped,
@@ -2645,11 +2668,11 @@ def build_ppi_label_efficiency_sources(
     and measure_judge_alignment's docstring).
 
     label_frac is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=
-    PPI_LABEL_EFF_N (400, not _ppi_power_baseline's default 100 -- see
+    PPI_LABEL_EFF_N (1000, not _ppi_power_baseline's default 100 -- see
     that constant's docstring for why), the same "hit an ABSOLUTE N_lab
     exactly, independent of N" pattern build_ppi_nlab_grid_sources already
     uses -- NOT PPI_COMPARISON_LABEL_FRACS, which was tuned for N=100 and
-    would scale N_lab up to 60-160 at N=400 instead of holding it fixed."""
+    would scale N_lab up to 150-400 at N=1000 instead of holding it fixed."""
     noise_by_eval_type = noise_by_eval_type or {
         (et, fam): tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
         for et in PPI_LABEL_EFF_EVAL_TYPES
@@ -2692,29 +2715,22 @@ def build_ppi_label_efficiency_sources_binary(
     caller would want alignment-calibrated values here instead. label_frac
     is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=PPI_LABEL_EFF_N,
     same as the non-binary builder -- see its docstring for why."""
-    # Binary emits the GAUSSIAN arm only -- MEASURED, not assumed.
-    #
-    # _jb_llm_binary does implement "contaminated" for real (heterogeneous flip
-    # rates, see _contaminated_flip_probs), and it does produce different data.
-    # It does not produce different RESULTS: at n=400k, phi = 0.6296 gaussian
-    # vs 0.6287 contaminated. Item hardness is drawn independently of truth, so
-    # E[Y*Yhat] = E[Y]*(1 - pbar) and the confusion matrix depends only on the
-    # MEAN flip rate -- which _contaminated_flip_probs conserves by
+    # Binary emits the GAUSSIAN arm only. _jb_llm_binary does implement
+    # "contaminated" for real (heterogeneous flip rates, see
+    # _contaminated_flip_probs) and it does produce different data, but not
+    # different RESULTS here: item hardness is drawn independently of truth,
+    # so E[Y*Yhat] = E[Y]*(1 - pbar) and the confusion matrix depends only on
+    # the MEAN flip rate, which _contaminated_flip_probs conserves by
     # construction. phi is the whole of rho for a mean estimand, and binary
-    # runs only mean tests, so the two arms are statistically identical.
+    # runs only mean tests, so the two arms are statistically identical --
+    # emitting both would just re-measure the same null at extra cost.
     #
-    # Emitting the arm anyway cost 96 of 576 cells (17% of the sweep) to
-    # re-measure a null that a two-second direct phi computation establishes
-    # far more precisely than 300-rep sweep cells could.
-    #
-    # An earlier version of this comment excluded binary because noise_family
-    # was a no-op here; that was right for the wrong reason. The distinction
-    # matters if anyone revisits: binary is insensitive to heterogeneity that
-    # is INDEPENDENT OF TRUTH. It would NOT be insensitive to hardness shared
-    # across the paired conditions (a genuinely ambiguous item is ambiguous in
-    # both arms, so its errors would not cancel in D = Y_x - Y_y), which is the
-    # design to try if a consequential binary shape axis is ever wanted.
-    # Hardness correlated with truth is a different thing again -- that is
+    # This insensitivity is specific to heterogeneity that is INDEPENDENT OF
+    # TRUTH. It would NOT hold for hardness shared across the paired
+    # conditions (a genuinely ambiguous item is ambiguous in both arms, so
+    # its errors would not cancel in D = Y_x - Y_y) -- the design to use if a
+    # consequential binary noise-family axis is ever wanted. Hardness
+    # correlated with truth is a different thing again -- that is
     # differential bias, which already has its own axis.
     _gauss_only = tuple(f for f in noise_families if f[1] == "gaussian") or noise_families[:1]
     by_fam = (noise_levels if isinstance(noise_levels, dict)
@@ -2863,11 +2879,9 @@ def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSourc
     PPI_NLAB_GRID_NLAB_VALUES include 30) -- per eval type.
 
     Two eval types (continuous, likert) -- NOT the same scoping as
-    build_ppi_comparison_label_frac_sources (that function already sweeps
-    all three non-binary eval types; an earlier version of this docstring
-    claimed otherwise, which was a documentation error, not a considered
-    precedent). Likert is included because it's arguably the single most
-    common real-world LLM-as-judge output format, so a headline
+    build_ppi_comparison_label_frac_sources, which sweeps all three
+    non-binary eval types. Likert is included because it's arguably the
+    single most common real-world LLM-as-judge output format, so a headline
     calibration/power check silently skipping it was a real gap. Grades is
     deliberately excluded: it's just continuous rescaled to a [0, 100]
     span, so sweeping it here on top of continuous would be redundant, not
@@ -3138,21 +3152,15 @@ of PPI_FACTORIAL_BIAS_MAGNITUDES, kept as a SEPARATE dial from noise
 (PPI_BINARY_NOISE_BASELINE/PPI_BINARY_NOISE_LEVELS below), not folded into
 one combined "severity" scale: at p=0.50 (BINARY's representative shape),
 bias ALONE barely moves accuracy/kappa until it's large enough to saturate
-one of _jb_llm_binary's two flip-probabilities against its [0, 1] clip (an
-earlier version of this constant tried to express "severity" as single
-(bias, noise) pairs, which produced a design that was hard to defend to a
-reviewer -- "none" and "moderate" showed IDENTICAL accuracy/kappa, and
-reaching a genuinely bad judge required silently also bumping noise inside
-what was labeled a "bias" tier, an unmotivated discontinuity). What bias
-actually does at fixed noise is shift the judge's MARGINAL positive rate
-(confirmed by simulation at noise=PPI_BINARY_NOISE_BASELINE=0.10: bias=0.10
-moves it 0.50->0.55, bias=0.30 moves it to 0.63, while accuracy/kappa stay
-~0.90/~0.80 throughout) -- that marginal-rate shift is what drives Type-I
-inflation, not a change in raw alignment, mirroring the continuous/likert
-factorial's own "bias barely moves alignment metrics" finding exactly.
-"severe" is the level _ppi_power_baseline_binary holds fixed throughout the
-power/comparison/nlab_grid builders (the same role _jb_bias_magnitude
-(eval_type)'s default frac=0.30 plays for the other eval types); all three
+one of _jb_llm_binary's two flip-probabilities against its [0, 1] clip. What
+bias actually does at fixed noise is shift the judge's MARGINAL positive
+rate while accuracy/kappa stay roughly constant -- that marginal-rate shift
+is what drives Type-I inflation, not a change in raw alignment, mirroring
+the continuous/likert factorial's own "bias barely moves alignment
+metrics" finding exactly. "severe" is the level _ppi_power_baseline_binary
+holds fixed throughout the power/comparison/nlab_grid builders (the same
+role _jb_bias_magnitude(eval_type)'s default frac=0.30 plays for the
+other eval types); all three
 levels are crossed as build_ppi_factorial_sources_binary's bias_magnitude
 factor."""
 PPI_BINARY_NOISE_BASELINE = 0.10
@@ -3175,24 +3183,13 @@ meaning what it's supposed to" logic PPI_FACTORIAL_NOISE_LEVELS' frac<=1.0
 cap uses.
 
 At p=0.50 with bias=0, _jb_llm_binary's symmetric flip-probability model
-gives a CLOSED FORM: accuracy = 1 - noise, kappa = 1 - 2*noise exactly (no
-per-value tuning needed, and no need to verify empirically that specific
-values land in specific buckets the way the continuous grid's design
-discussion worried about) -- confirmed by direct simulation at every level
-in this grid, matching the formula to within Monte Carlo noise:
-
-    noise    accuracy  kappa   (formula: acc=1-noise, kappa=1-2*noise)
-    0.025    0.975     0.951   (0.975, 0.950)
-    0.0707   0.929     0.858   (0.929, 0.859)
-    0.10     0.900     0.800   (0.900, 0.800)   <- PPI_BINARY_NOISE_BASELINE
-    0.20     0.800     0.600   (0.800, 0.600)
-    0.2828   0.718     0.435   (0.717, 0.434)
-    0.40     0.600     0.200   (0.600, 0.200)
-
-so this single grid alone spans kappa 0.95 down to 0.20 (Landis & Koch's
-"almost perfect" down to "fair"), smoothly and via one closed-form
-relationship a reviewer can verify directly, rather than a discontinuous
-jump between hand-picked severity levels."""
+gives a CLOSED FORM: accuracy = 1 - noise, kappa = 1 - 2*noise exactly, so
+no per-value tuning or empirical verification is needed the way the
+continuous grid's design discussion required. This single grid spans kappa
+0.95 down to 0.20 (Landis & Koch's "almost perfect" down to "fair"),
+smoothly and via one closed-form relationship a reviewer can verify
+directly, rather than a discontinuous jump between hand-picked severity
+levels."""
 
 
 def _jb_effect_magnitude_binary(frac: float) -> float:
@@ -3241,9 +3238,9 @@ def build_ppi_power_sources_binary() -> list[JudgeBiasSource]:
     """Binary analogue of build_ppi_power_sources -- same effect-size sweep
     idea (does PPI correction retain power to detect a real proportion
     difference under the same judge severity that inflates Type-I error) and
-    the SAME nominal fracs (PPI_POWER_EFFECT_FRACS), at PPI_BINARY_SEVERITY_
-    TIERS' "severe" tier instead of _jb_bias_magnitude(eval_type)'s default.
-    Tag "power_binary"."""
+    the SAME nominal fracs (PPI_POWER_EFFECT_FRACS), at PPI_BINARY_BIAS_
+    MAGNITUDES' "severe" tier instead of _jb_bias_magnitude(eval_type)'s
+    default. Tag "power_binary"."""
     return [
         JudgeBiasSource(
             name=f"power.binary.es={frac:.2f}", tag="power_binary",
@@ -3491,16 +3488,14 @@ def build_judge_bias_sources_binary() -> list[JudgeBiasSource]:
         bias_type="differential",
     ))
 
-    # Companion bias-magnitude crossing -- lightweight, single-companion
-    # version of build_judge_bias_sources' own 2-point (mild/moderate)
-    # cross (see that block's comment for the "uncorrected dots cluster at
-    # ~alpha or ~1.0" problem it exists to avoid): PPI_BINARY_BIAS_
-    # MAGNITUDES only has one non-zero tier below "severe" ("moderate"),
-    # so there's only one meaningful companion point to add, not two. Adds
-    # one companion at bias_delta="moderate" per eligible base scenario
-    # above (every bias_type="differential" scenario except the dedicated
-    # bias_type/bias_magnitude groups, which already cover this cross
-    # directly), keeping the original unchanged.
+    # Companion bias-magnitude crossing -- binary's analogue of
+    # build_judge_bias_sources' 2-point (mild/moderate) cross, but with only
+    # one companion point since PPI_BINARY_BIAS_MAGNITUDES has just one
+    # non-zero tier below "severe" ("moderate"). Adds one companion at
+    # bias_delta="moderate" per eligible base scenario above (every
+    # bias_type="differential" scenario except the dedicated bias_type/
+    # bias_magnitude groups, which already cover this cross directly),
+    # keeping the original unchanged.
     _EXCLUDED_TAGS = {"bias_type", "bias_magnitude"}
     extra: list[JudgeBiasSource] = []
     for sc in S:
@@ -4120,12 +4115,44 @@ def generate_judge_bias_cell(
             shape, n, 1, n_conditions, scenario.icc, rng, effects=effects, likert_max=scenario.likert_max,
         )[:, :, 0]
 
+    def _rescale(truth: np.ndarray, s: float) -> np.ndarray:
+        """Stretch/compress `truth` about the shape's TRUE population
+        median (_shape_population_median -- NOT this finite sample's own
+        realized median; see that function's docstring for why anchoring
+        on a per-sample median is a serious bug, not a harmless
+        implementation choice) by factor `s`, then re-clip to the eval
+        type's valid range (and re-round for likert, matching
+        sample_group_truth's own _finish step). s=1.0 (every pre-existing
+        scenario) is an exact no-op. This is an AFFINE transform of the
+        already-drawn truth array -- applied elementwise, so it preserves
+        item-level pairing/correlation structure exactly (Pearson
+        correlation is invariant to a positive-scale affine transform of
+        one side) -- but it does NOT generally preserve symmetry of paired
+        differences under H0 for wilcoxon/friedman; see
+        simulations/out/PLAN_hetero_null_check.md Step 4.3."""
+        if s == 1.0:
+            return truth
+        med = _shape_population_median(shape.label, scenario.eval_type, scenario.likert_max)
+        out = med + s * (truth - med)
+        if scenario.eval_type == "continuous":
+            lo, hi = 0.0, 1.0
+        elif scenario.eval_type == "likert":
+            lo, hi = 1.0, float(scenario.likert_max)
+        elif scenario.eval_type == "grades":
+            lo, hi = 0.0, 100.0
+        else:
+            raise ValueError(f"truth_scale_b/c is not supported for eval_type={scenario.eval_type!r}")
+        out = np.clip(out, lo, hi)
+        if scenario.eval_type == "likert":
+            out = np.rint(out)
+        return out
+
     # -- Independent two-group data (ttest, mannwhitney; ttest/ttest_welch
     # also validated on binary -- see _jb_llm_binary. _marginal handles the
     # effect shift correctly for both binary and non-binary -- see its own
     # docstring.) --
     truth_a2 = _marginal(n1)
-    truth_b2 = _marginal(n2, es)
+    truth_b2 = _rescale(_marginal(n2, es), scenario.truth_scale_b)
     if scenario.eval_type == "binary":
         llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a),
                                 noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
@@ -4156,6 +4183,7 @@ def generate_judge_bias_cell(
     # -- Paired data (wilcoxon; paired_t also validated on binary -- see
     # _jb_llm_repeated_binary) --
     truth_x, truth_y = _repeated(n1, 2, np.array([0.0, es]))
+    truth_y = _rescale(truth_y, scenario.truth_scale_b)
     if scenario.eval_type == "binary":
         llm_x, llm_y = _jb_llm_repeated_binary(
             [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
@@ -4175,8 +4203,8 @@ def generate_judge_bias_cell(
 
     # -- Independent three-group data (anova_ind) --
     truth_a3 = _marginal(n1)
-    truth_b3 = _marginal(n2, es)
-    truth_c3 = _marginal(n3, 2 * es)
+    truth_b3 = _rescale(_marginal(n2, es), scenario.truth_scale_b)
+    truth_c3 = _rescale(_marginal(n3, 2 * es), scenario.truth_scale_c)
     llm_a3 = _jb_llm(
         truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
         noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
@@ -4207,6 +4235,8 @@ def generate_judge_bias_cell(
 
     # -- Repeated-measures three-group data (anova_rep, friedman, lmm) --
     truth_A, truth_B, truth_C = _repeated(n1, 3, np.array([0.0, es, 2 * es]))
+    truth_B = _rescale(truth_B, scenario.truth_scale_b)
+    truth_C = _rescale(truth_C, scenario.truth_scale_c)
     llm_A, llm_B, llm_C = _jb_llm_repeated(
         [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
         rng, anchor=anchor, corr=scenario.repeated_corr,

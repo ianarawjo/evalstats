@@ -91,35 +91,30 @@ boundary shows a nonzero diff. At small N it's entirely plausible NONE of
 the sampled items are boundary-adjacent, so the sample's diffs come out
 literally constant, collapsing the sample variance to ~0 regardless of the
 (real, nonzero) population-level diff variance -- any variance-based CI
-built from that is catastrophically overconfident. Confirmed via
-simulations/investigate_likert_family_wise_smalln.py: plain logit_t's
-family-wise (Sidak-widened, k=10 arms) coverage was 14.5% at n=10 (vs. 95%
-nominal); logit_t_dither recovered to a stable ~92% across n=10-60. NOT the
-same mechanism LOGIT_T_2ND targets (that's single-sample boundary-hugging
-skew) and does NOT help ci_single -- see that file's own likert check,
-which showed plain logit_t already well-calibrated there (worst case 93.8%
-at n=10) -- this is a paired-diff-specific pathology. nig_ci_1d fixes the
-SAME failure via a wider prior instead, but was found to cost FAR more:
-near-zero power at small N/moderate k (0.2% at k=3, n=10) vs. dithering's
-much smaller power cost, because nig's conservatism is unconditional while
-dithering targets the actual missing variance directly.
+built from that is catastrophically overconfident. Dithering recovers
+near-nominal coverage where plain logit_t badly under-covers in this
+regime. NOT the same mechanism LOGIT_T_2ND targets (that's single-sample
+boundary-hugging skew) and does NOT help ci_single, where plain logit_t is
+already well-calibrated -- this is a paired-diff-specific pathology.
+nig_ci_1d fixes the SAME failure via a wider prior instead, but costs far
+more power at small N/moderate k, because nig's conservatism is
+unconditional while dithering targets the actual missing variance
+directly.
 
-Also tried on CONTINUOUS data with a hardcoded +-0.5 jitter (for
-transparency/direct comparison against likert) and that was BROKEN: +-0.5
-is calibrated to undo exactly one unit of INTEGER rounding, but on
-continuous's own [0, 1]-scale data it's HALF the entire range, causing
-heavy boundary clipping and a systematic bias in the mean. Unlike random
-noise, that bias doesn't shrink with N while the CI does, so coverage got
-WORSE as N grows rather than converging: 0.936 -> 0.800 (n=10 -> n=100) in
-nested-mode screening. Replacing the hardcoded width with
-_detect_dither_halfwidth's data-driven detection fixes this generally: it
-returns 0.0 (no jitter, dither variant reduces exactly to its base method)
-on genuinely continuous data with no recurring gap, so it's now safe to
-run on any non-binary type, and it ALSO catches the case a fixed
-eval_type check never could -- data labeled "continuous" that's actually
-coarse in practice (e.g. a judge that only emits a handful of distinct
-values), which would otherwise silently re-trigger the same rounding-
-cancellation pathology likert has."""
+A hardcoded +-0.5 jitter (for transparency/direct comparison against
+likert) does NOT work on CONTINUOUS data: +-0.5 is calibrated to undo
+exactly one unit of INTEGER rounding, but on continuous's own [0, 1]-scale
+data it's HALF the entire range, causing heavy boundary clipping and a
+systematic bias in the mean that doesn't shrink with N while the CI does,
+so coverage gets WORSE as N grows rather than converging. Replacing the
+hardcoded width with _detect_dither_halfwidth's data-driven detection
+fixes this generally: it returns 0.0 (no jitter, dither variant reduces
+exactly to its base method) on genuinely continuous data with no
+recurring gap, so it's now safe to run on any non-binary type, and it ALSO
+catches the case a fixed eval_type check never could -- data labeled
+"continuous" that's actually coarse in practice (e.g. a judge that only
+emits a handful of distinct values), which would otherwise silently
+re-trigger the same rounding-cancellation pathology likert has."""
 
 BINARY_SINGLE_EXTRA_METHODS = [WILSON, JEFFREYS, WALD, CLOPPER_PEARSON, BAYES_SINGLE]
 CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
@@ -569,14 +564,10 @@ TTEST_WELCH = Method("ttest_welch", "#d62728")
 # for ppi_t_interval/ppi_logit_t (this estimand, mean(a_i - b_i), is
 # identical to theirs; only Tango's Wilson-style effective-n CI shape
 # differs). Kept selectable for direct comparison and for reproducing
-# pre-flip results, not because it's still recommended: a harness-scale
-# validation (--mode ppi --eval-types binary, 65 scenarios, two seeds)
-# found zero Holm-confirmed miscalibrated cells at either setting, with
-# power_tune=True giving ~13-17% narrower mean CI width and no coverage
-# cost at MCAR or MNAR labeling -- see simulations/investigate_tango_ppi_
-# plus_plus*.py and simulations/investigate_compound_ppi_fwer_power.py
-# (the compound PPI+FWER path's own detection-power measurement) for the
-# validation behind the flip.
+# pre-flip results, not because it's still recommended: power_tune=True
+# gives a meaningfully narrower mean CI width with no coverage cost at
+# MCAR or MNAR labeling, and neither setting showed calibration problems
+# in validation.
 MJ_FLOOR_FIXED_LAMBDA = Method("mj_floor_fixed_lambda", "#41b6c4")  # teal -- distinct from MJ_FLOOR's default grey
 # MWU family: five PPI corrections for the same classical test (Mann-Whitney
 # U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
@@ -605,12 +596,54 @@ FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/
 # alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
+# KRUSKAL_ROWSUM/KRUSKAL_ROWSUM_LABELED: EXPERIMENTAL. Not another rectifier
+# -- the SAME corrected pairwise vector and covariance as KRUSKAL, Wald-tested
+# on its (k-1)-dimensional weighted row-sum projection, which is exactly the
+# part classical Kruskal-Wallis's mean pooled ranks are an affine function of
+# (see evalstats.tests._ppi_kruskal_wallis_rowsum). So KRUSKAL *replaces* the
+# classical statistic and these two *correct* it. "_labeled" weights the
+# projection by labeled counts instead of full group sizes; the two are
+# bit-identical under a balanced design and only diverge when per-group label
+# fractions differ. Same colour convention: lighter tints of KRUSKAL's pink.
+KRUSKAL_ROWSUM = Method("kruskal_rowsum", "#c2559c")           # darker pink
+KRUSKAL_ROWSUM_LABELED = Method("kruskal_rowsum_labeled", "#f7d6e8")  # palest tint
+# KRUSKAL_TWOPART/KRUSKAL_EIGENGAP: EXPERIMENTAL candidates
+# for the k>=5 conservatism of KRUSKAL itself (its df counts C(k,2) directions
+# when Cov(delta_hat) is rank k-1 under H0 -- see
+# evalstats.tests._kw_contrast_subspace and REPORT.md sections B-C). Same one
+# bootstrap as KRUSKAL, different test form only. Not in the official set.
+# The contrast-space Wald itself is KRUSKAL_ROWSUM -- there is deliberately
+# no separate 'kruskal_contrast': an unweighted contrast basis and the
+# n-weighted row space calibrate identically and only the weighted one is
+# the classical KW contrast (see _kw_contrast_subspace).
+KRUSKAL_TWOPART = Method("kruskal_twopart", "#d98cbb")     # mid tint
+KRUSKAL_EIGENGAP = Method("kruskal_eigengap", "#8c5f7d")   # muted plum
+# KRUSKAL_INFLUENCE: the phase-4 candidate -- the SAME estimator as KRUSKAL,
+# with the Wald covariance replaced by a null-structured influence-function one
+# (evalstats.tests._kw_influence_cov). Fixes the df defect by construction
+# (rank k-1, not by truncation) and the variance-assembly conditioning defect
+# (per-item differencing). Opt-in until validated on ppi_real.
+KRUSKAL_INFLUENCE = Method("kruskal_influence", "#7b3f9c")  # violet
+# KRUSKAL_INFLUENCE_LOGO: influence covariance + the two corner corrections
+# (leave-one-group-out reference ECDFs, and a floor on each group's labeled
+# composite variance). See REPORT.md section E.
+KRUSKAL_INFLUENCE_LOGO = Method("kruskal_influence_logo", "#4a2d6b")  # deep violet
+# KRUSKAL_INFLUENCE_FLOOR: the variance floor WITHOUT the LOGO ECDFs. The floor
+# binds only when a group's labeled composite variance collapses, which real
+# judge noise ratios (0.64-1.18 on privacy_judge) should never trigger -- so
+# this is the candidate that fixes the sparse-Likert corner while being
+# provably inert on real data. Inertness is checked by counting binding
+# events (evalstats.tests._KW_FLOOR_AUDIT), not by comparing rejection rates.
+KRUSKAL_INFLUENCE_FLOOR = Method("kruskal_influence_floor", "#9c5fbf")  # light violet
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+    KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
+    LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
 """Every PPI test method the harness knows how to run -- the full set
@@ -620,6 +653,13 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
+        # Experimental, opt-in via --tests kruskal_rowsum /
+        # kruskal_rowsum_labeled: they answer "what does correcting the REAL
+        # Kruskal-Wallis cost/buy", which is a study question, not part of
+        # the shipped default set.
+        KRUSKAL_ROWSUM, KRUSKAL_ROWSUM_LABELED,
+        KRUSKAL_TWOPART, KRUSKAL_EIGENGAP, KRUSKAL_INFLUENCE, KRUSKAL_INFLUENCE_LOGO,
+    KRUSKAL_INFLUENCE_FLOOR,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
         # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via
@@ -652,6 +692,84 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Between-subjects (unpaired) pairwise methods -- cases/ci_unpaired.py
+# ---------------------------------------------------------------------------
+# Two DIFFERENT estimands live here, and they are not interchangeable:
+#
+#   Delta-mean / Delta-p  : mean(A) - mean(B). What compare(design="unpaired")
+#                           reports today for BINARY score types (via Welch's
+#                           t on the 0/1 values -- the linear-probability-model
+#                           patch documented in config.AUTO_UNPAIRED_METHOD_TABLE).
+#   theta = P(A > B) + .5 P(A = B) : stochastic dominance. What
+#                           compare(design="unpaired") reports today for
+#                           CONTINUOUS/LIKERT/GRADE, via the Mann-Whitney /
+#                           Kruskal-Wallis path.
+#
+# A method's coverage target therefore differs by family: mean-family methods
+# are scored against the source's true_diff, theta-family methods against a
+# Monte-Carlo-estimated true theta. cases/ci_unpaired.py records which
+# estimand each row belongs to so the two are never averaged together.
+WELCH_T = Method("welch_t", "#17becf")
+STUDENT_T = Method("student_t", "#bcbd22")
+WALD_UNPAIRED = Method("wald_unpaired", "#7f7f7f")  # grey: the naive baseline, as elsewhere in this file
+AGRESTI_CAFFO = Method("agresti_caffo", "#98df8a")
+NEWCOMBE_HYBRID = Method("newcombe_hybrid", "#c5b0d5")
+MIETTINEN_NURMINEN = Method("miettinen_nurminen", "#ff9896")
+BAYES_BETA_INDEP = Method("bayes_beta_indep", "#f7b6d2")
+
+MOVER_T = Method("mover_t", "#969696")
+MOVER_LOGIT_T = Method("mover_logit_t", "#31a354")
+MOVER_NIG = Method("mover_nig", "#756bb1")
+
+UNPAIRED_MEAN_EXTRA_METHODS = [WELCH_T, STUDENT_T, MOVER_T, MOVER_LOGIT_T, MOVER_NIG]
+"""Applies to every eval type (binary included -- Welch's t on 0/1 is exactly
+what the shipped unpaired binary path does today).
+
+mover_t is the CONTROL, not a candidate: MOVER with plain t-interval arms.
+Without it a win for mover_logit_t over welch_t is uninterpretable, because
+those two differ in BOTH the combination rule and the arm interval. mover_t
+holds the arm fixed at a t-interval and varies only the combination rule, so
+the two comparisons together separate the effects. It also covers the paired
+table's fourth row (unbounded -> t_interval).
+
+A mover_el (empirical-likelihood arms) variant was tried and removed, noted
+here so it is not re-added: it is invalid on binary (EL collapses to the
+degenerate interval [1, 1] on a constant sample), and on continuous/likert it
+was mid-pack on coverage while costing ~30x its MOVER siblings per call
+(2.2 ms vs 0.07-0.10 ms). It never won a column, so it bought nothing for the
+runtime.
+
+mover_logit_t / mover_nig are the unpaired siblings of the PAIRED path's own
+recommendations (config.AUTO_ANALYZE_METHOD_TABLE routes bounded_01 -> logit_t
+and likert -> nig): the same shipped one-sample interval is built per arm and
+the two are combined by MOVER. Included so the unpaired recommendation can be
+consistent with the paired one rather than an unrelated method family."""
+
+AGRESTI_MIN = Method("agresti_min", "#d6616b")
+
+UNPAIRED_BINARY_METHODS = [
+    WALD_UNPAIRED, AGRESTI_CAFFO, NEWCOMBE_HYBRID, MIETTINEN_NURMINEN, BAYES_BETA_INDEP,
+    AGRESTI_MIN,
+]
+"""Binary-only Delta-p intervals from the two-independent-proportions
+literature. None of these are shipped by evalstats today; this is the
+candidate slate the ci_unpaired sweep exists to adjudicate."""
+
+# A dominance-probability (theta) family -- theta_bootstrap, theta_bca,
+# brunner_munzel, brunner_munzel_logit -- was built here and removed.
+# theta = P(A>B) + .5 P(A=B) is what compare(design="unpaired") currently
+# reports for continuous/likert via the Kruskal-Wallis post-hoc, so measuring
+# it looked like due diligence. It is a DIFFERENT ESTIMAND from the mean
+# difference every other recommendation in this project is stated in, which
+# makes its coverage and width numbers incomparable with the rest of the
+# table, and it cost ~65% of the sweep's runtime to produce them. If the
+# shipped theta path ever needs calibrating, it needs its own case, not a
+# second estimand bolted onto this one.
+
+UNPAIRED_METHODS = UNPAIRED_MEAN_EXTRA_METHODS + UNPAIRED_BINARY_METHODS
+
+
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE_MOVER, MJ_FLOOR, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
@@ -666,7 +784,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
-]
+] + UNPAIRED_METHODS
 
 METHODS_BY_NAME: dict[str, Method] = {m.name: m for m in REPORT_METHOD_ORDER}
 

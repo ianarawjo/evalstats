@@ -17,6 +17,25 @@ _alpha: float = 0.05
 # [99%/95%/90%/68%]; keep this list and that legend in step.
 GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
+# Hard minimum sample floor: below this many items per compared entity,
+# evalstats refuses to report statistics at all (too noisy to be
+# meaningful -- see the paper's "enforce a minimum sample floor" principle).
+# Enforced at the top of both compare() (api.py) and the `evalstats analyze`
+# CLI (cli.py), before any analysis runs.
+MIN_SAMPLE_FLOOR: int = 15
+
+# Default seed for every resampling step downstream of compare(): bootstrap
+# CIs, the PPI bootstrap, permutation nulls. Fixed so that the same input
+# gives the same output -- a user passing no rng= reasonably expects a
+# deterministic answer, and before this the PPI omnibus p wandered in the
+# third decimal between identical calls (sd 0.0025 on p=0.388 over 12 runs).
+#
+# The trade this makes: Monte-Carlo variability is now invisible unless asked
+# for. A p-value sitting right at alpha is still seed-dependent; it just looks
+# stable. Pass rng=None explicitly for a fresh nondeterministic draw per call,
+# or sweep rng=0,1,2,... to see the spread.
+DEFAULT_RNG_SEED: int = 37
+
 
 def supports_ansi_color() -> bool:
     """Whether ANSI color escape codes should be emitted for console output.
@@ -173,57 +192,24 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
             "an explicit eval_type='likert', or auto-detected via "
             "detect_quantization_step() (core/resampling.py) when no "
             "eval_type is given, with a UserWarning explaining the switch. "
-            "Uses NIG rather than logit-t for the PAIRWISE case -- both "
-            "single-run AND seeded/multi-run (unlike every other row here, "
-            "this one does not vary pairwise_method by seeded=): a paired "
-            "diff of two highly correlated Likert arms can lose real "
-            "variance to rounding cancellation (most items round "
-            "identically in both arms, only boundary-adjacent items "
-            "differ), which at small N can leave the *sample's* diffs "
-            "literally constant even though the true population diff "
-            "variance is nonzero -- collapsing a variance-based CI like "
-            "logit-t's (measured: family-wise coverage down to 14.5% at "
-            "n=10, k=10 comparisons, nominal 95%; reproduced again in a "
-            "full compare_e2e overnight sweep after NIG had been scoped "
-            "down to single-run-only -- fam.cov 10-26% at n=15, k=10, "
-            "confirming the k>=3 simultaneous-CI router's own logit-t "
-            "fallback carries the exact same failure mode regardless of "
-            "run count, since NIG's paired-diff computation is identical "
-            "for single- and multi-run data -- see the simulation harness's "
-            "simulations/harness/cases/ci_paired.py:_run_nested_pairwise_cell: "
-            "both reduce to the same cell-mean diffs before any CI is "
-            "built, R=5 just averages them first). "
-            "NIG's shrinkage prior protects against this without needing "
-            "dithering/reconstruction. This was in fact the original "
-            "default here (superseded by logit_t in 85df093, 'Refining the "
-            "sims for simultaneous cis and pvalue FWER correction') -- "
-            "that decision predates a fix to a real prior-scale bug "
-            "(nig_ci_1d's default b0 is calibrated for a single-sample "
-            "rescale, silently 4x too wide when reused unchanged on a "
-            "paired diff's rescale span, which is twice as wide -- see "
-            "core.paired._NIG_PAIRED_DIFF_B0), so the historical comparison "
-            "that dropped NIG likely made it look needlessly conservative "
-            "compared to logit-t. Validated post-fix, single-run "
-            "(reps=300, n=10-500, icc=0.01-0.95): NIG beats logit-t on "
-            "likert score at every N up to 500 (17% better at n=10, "
-            "converging to a tie by n=500); nested/multi-run (R=5, "
-            "reps=300): coverage nearly ties logit-t (both well-calibrated "
-            "by R=5, since averaging over runs smooths out the same "
-            "rounding-cancellation quantization that hurts logit-t at "
-            "single-run), but NIG still wins meaningfully on width/score "
-            "(~5-8% better interval score); the k>=3 simultaneous/family-"
-            "wise construction (core.paired._simultaneous_cis_router) now "
-            "also widens NIG instead of logit-t for likert data -- see "
-            "that function's docstring for the same fix.\n\n"
-            "Still NOT extended to marginal/robustness CIs (the "
+            "Uses NIG rather than logit-t for the pairwise case, for both "
+            "single-run and seeded/multi-run data: a paired diff of two "
+            "highly correlated Likert arms can lose real variance to "
+            "rounding cancellation (most items round identically in both "
+            "arms, only boundary-adjacent items differ), which at small N "
+            "can leave the sample's diffs literally constant even though "
+            "the true population diff variance is nonzero -- collapsing a "
+            "variance-based CI like logit-t's. NIG's shrinkage prior "
+            "protects against this without needing dithering/reconstruction. "
+            "The k>=3 simultaneous/family-wise construction "
+            "(core.paired._simultaneous_cis_router) widens NIG instead of "
+            "logit-t for likert data for the same reason.\n\n"
+            "Not extended to marginal/robustness CIs (the "
             "'nig'/'nig_nested' single-sample case in core/variance.py's "
-            "robustness_metrics()) -- never directly tested; a check of a "
-            "*different*, harness-only reimplementation "
-            "(simulations/harness/cases/ci_single.py) isn't a substitute "
-            "for testing this actual production code path. logit-t remains "
-            "the default there, and for genuinely continuous 'bounded_01' "
-            "data everywhere, where NIG's extra conservatism buys no "
-            "corresponding robustness in the first place."
+            "robustness_metrics()) -- logit-t remains the default there, "
+            "and for genuinely continuous 'bounded_01' data everywhere, "
+            "where NIG's extra conservatism buys no corresponding "
+            "robustness."
         ),
     ),
     AutoAnalyzeRule(
@@ -330,9 +316,7 @@ PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
             "logit-t (see evalstats.tests._ppi_paired_logit_t / "
             "_ppi_single_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct), "
             "matching the non-aligned default's own logit_t choice for this "
-            "data_kind (see AUTO_ANALYZE_METHOD_TABLE). RESOLVED 2026-08-05: this "
-            "row previously routed to bootstrap_t as a TEMPORARY stand-in, since no "
-            "PPI-corrected logit_t existed -- that gap is now closed."
+            "data_kind (see AUTO_ANALYZE_METHOD_TABLE)."
         ),
     ),
     PPIAutoMethodRule(
@@ -430,30 +414,23 @@ AUTO_SIMULTANEOUS_CI_METHOD_TABLE: tuple[AutoSimultaneousCIRule, ...] = (
         data_kind="numeric", max_n=None,
         method="sidak",
         reason=(
-            "Numeric data, every N: Sidak, and it is now the only rule -- the "
-            "small-N/large-N split this table used to encode is gone.\n\n"
-            "Sidak was the only construction whose WORST-CASE family coverage "
-            "held across the expanded scenario suite (min 0.913-0.943 for "
-            "every eval type and N). The joint bootstrap ('boot') is better "
-            "centred on average and 3-5%% narrower, but its worst case "
-            "collapses: 0.50 on sparse/lopsided binary at n=15, and it "
-            "under-covers Likert at every N (0.943 pooled, degrading with k) "
-            "because its alpha_eff step converts a bootstrap critical value "
-            "through the NORMAL cdf while the Likert pairwise formula (NIG) "
-            "is a t interval at df=2*a_n.\n\n"
-            "The width Sidak gives up is small and bounded. Tukey's "
+            "Numeric data, every N: Sidak is the only construction whose "
+            "worst-case family coverage held across the expanded scenario "
+            "suite (min 0.913-0.943 for every eval type and N). The joint "
+            "bootstrap ('boot') is better centred on average and 3-5%% "
+            "narrower, but its worst case collapses (0.50 on sparse/lopsided "
+            "binary at n=15) and it under-covers Likert at every N, since its "
+            "alpha_eff step converts a bootstrap critical value through the "
+            "normal cdf while the Likert pairwise formula (NIG) is a t "
+            "interval.\n\n"
+            "The width Sidak gives up is small and bounded: Tukey's "
             "studentized range is the optimal equal-width procedure for "
-            "all-pairwise comparisons, and it beats Sidak by only 1.8-3.0%% "
-            "-- a bound that holds here because the shared-arm contrast "
-            "correlation really is 0.5 (measured 0.498-0.500 across the real "
-            "eval corpora), which is the structure that bound assumes. Tukey "
-            "itself needs normality/homoscedasticity (and sphericity in the "
-            "repeated-measures form that applies to paired evals), which "
-            "binary and Likert data violate. So Sidak sits within ~3%% of the "
-            "achievable optimum while making no distributional assumption at "
-            "all.\n\n"
-            "'boot'/'boot_cal'/'max_t'/'bonferroni' all remain reachable via "
-            "an explicit prefer= argument for anyone who wants them."
+            "all-pairwise comparisons and beats Sidak by only 1.8-3.0%% "
+            "(the shared-arm contrast correlation is close to the 0.5 that "
+            "bound assumes), but Tukey needs normality/homoscedasticity "
+            "(and sphericity for paired evals) that binary and Likert data "
+            "violate. 'boot'/'boot_cal'/'max_t'/'bonferroni' all remain "
+            "reachable via an explicit prefer= argument."
         ),
     ),
 )
@@ -547,7 +524,7 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
 # Separate from AUTO_ANALYZE_METHOD_TABLE above (which is paired-only): that
 # table's data_kind taxonomy ("binary"/"bounded_01"/"likert"/"unbounded") is
 # also different from the one used here ("binary"/"continuous"/"likert"/
-# "grade", matching evalstats.loader._detect_score_type -- kept local rather
+# matching evalstats.loader._detect_score_type -- kept local rather
 # than imported to avoid coupling this low-level module to the loader, same
 # reasoning as DataKind above being declared locally rather than imported).
 #
@@ -568,7 +545,7 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
 #   data -- there is no between-subjects Tango equivalent today). A
 #   deliberate patch, not a clean solution.
 #
-#   continuous / likert / grade -> kruskalwallis (omnibus + θ_ab pairwise
+#   continuous / likert -> kruskalwallis (omnibus + θ_ab pairwise
 #   post-hoc) + mannwhitney (the k=2 special case -- Kruskal-Wallis reduces
 #   to Mann-Whitney at k=2). Reports a stochastic-dominance probability
 #   θ=P(a>b), not a mean difference -- less immediately interpretable for
@@ -576,10 +553,9 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
 #   multi-group (k>=3) pairwise mechanism in the codebase for any score
 #   type; a Tukey-HSD-style joint mean-difference post-hoc for continuous
 #   data does not exist and would itself be new, unvalidated work.
-#   "grade" is treated as "continuous" here (closest existing behavior) --
 #   flagged as an assumption needing real-data validation, not a settled
 #   choice (see PLAN §5).
-UnpairedScoreType = Literal["binary", "continuous", "likert", "grade"]
+UnpairedScoreType = Literal["binary", "continuous", "likert"]
 UnpairedFamily = Literal["binary_proportion", "rank_based"]
 
 
@@ -602,32 +578,35 @@ AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
             "codebase; treating the 0/1 outcome as a numeric mean and "
             "reusing the validated anova_oneway/ttest PPI paths reports "
             "the proportion difference a reader expects for a binary "
-            "outcome, using entirely existing machinery. Known limitation: "
-            "t-intervals on proportions can misbehave at extreme values or "
-            "small N."
+            "outcome, using entirely existing machinery. The non-PPI "
+            "pairwise INTERVAL is Agresti-Caffo rather than Welch's t: "
+            "exact enumeration over every (k_A, k_B) table puts Welch's "
+            "worst-case coverage at 0.641, reached at p near 0 or 1 where "
+            "binary eval data sits, against 0.930 for Agresti-Caffo at a "
+            "narrower width (see core/unpaired._agresti_caffo_ci). This "
+            "retires the 't-intervals on proportions misbehave at extreme "
+            "values or small N' limitation previously noted here."
         ),
     ),
     AutoUnpairedRule(
         score_type="continuous", family="rank_based",
         omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
         reason=(
-            "Kruskal-Wallis's θ_ab pairwise post-hoc is the only validated "
-            "k>=3 pairwise mechanism in this codebase for any score type; "
-            "a PPI-corrected Tukey-HSD-style mean-difference post-hoc does "
-            "not exist and would be new, unvalidated statistical work."
+            "Kruskal-Wallis omnibus with Mann-Whitney U post-hocs -- the "
+            "pairing this project's PPI work validates. 'rank_based' names "
+            "the tests, not the estimand: the reported effect and interval "
+            "are the mean difference (Welch), matching the paired path and "
+            "every other recommendation evalstats makes."
         ),
     ),
     AutoUnpairedRule(
         score_type="likert", family="rank_based",
         omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
-        reason="Ordinal data -- rank-based tests are the standard HCI convention.",
-    ),
-    AutoUnpairedRule(
-        score_type="grade", family="rank_based",
-        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
         reason=(
-            "Treated as continuous for this table (closest existing "
-            "behavior) -- unvalidated assumption, see PLAN §5."
+            "Ordinal data -- rank-based tests are the standard HCI "
+            "convention, so Kruskal-Wallis/Mann-Whitney stay the tests. The "
+            "reported effect is the mean difference (Welch interval); see "
+            "the 'continuous' row for why the estimand is a mean."
         ),
     ),
 )

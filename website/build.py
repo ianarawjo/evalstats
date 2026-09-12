@@ -509,8 +509,7 @@ def make_stub_content(inv):
 def make_notebook_content(nb_html, slug, inv=None):
     nb_url    = f"{GITHUB_BASE}/{slug}.ipynb"
     colab_url = f"{COLAB_BASE}/{slug}.ipynb"
-    intro_html = make_intro_section(inv) if (inv and inv.get("intro") and inv.get("learns")) else ""
-    return intro_html + f"""
+    return f"""
     <section>
       <div class="nb-toolbar">
         <a class="nb-badge" href="{colab_url}" target="_blank" rel="noopener">

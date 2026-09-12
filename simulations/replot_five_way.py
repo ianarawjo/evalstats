@@ -138,6 +138,17 @@ def main() -> int:
                          "curves for squarer ones that read better.")
     ap.add_argument("--legend-frac", type=float, default=0.22,
                     help="fraction of the width reserved for a right-hand legend.")
+    ap.add_argument("--preset", choices=("omnibus",), default=None,
+                    help="Named layout preset. 'omnibus' reproduces "
+                         "fig:five-way-comparison-omnibus exactly: legend on the "
+                         "right, effect-size axis clipped at 0.8 (the curves are "
+                         "flat past it), width 7.10, height 2.37 -- which lands "
+                         "at the committed figure's 3.318 aspect. Explicitly "
+                         "passed flags still win. NOT made the bare default: "
+                         "this script also renders the main-text compact figure "
+                         "(fig:five-way-comparison-ppi-power), whose x axis runs "
+                         "to 1.2 and which passes no --effect-max, so a 0.8 "
+                         "default would silently truncate it.")
     ap.add_argument("--effect-max", type=float, default=None, metavar="X",
                     help="Clip the effect-size row's x axis at X (e.g. 0.8). Every arm "
                          "saturates at 1.0 well before the sweep's largest effect, so the "
@@ -145,6 +156,12 @@ def main() -> int:
                          "width. Off by default -- the full sweep is still what ran.")
     ap.add_argument("--show-provenance", action="store_true")
     a = ap.parse_args()
+    if a.preset == "omnibus":
+        _explicit = set(sys.argv[1:])
+        if not {"--legend"} & _explicit:                       a.legend = "right"
+        if not {"--effect-max"} & _explicit:                   a.effect_max = 0.8
+        if not {"--width"} & _explicit:                        a.width = 7.10
+        if not {"--height"} & _explicit:                       a.height = 2.37
 
     by_et, prov = load(a.csv)
     if not by_et:

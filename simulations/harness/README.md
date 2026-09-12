@@ -684,6 +684,21 @@ same way `evalstats.core.resampling` is.
   These four tests keep their original, fixed-weight PPI correction
   (already validated, no known drawback of its own) rather than an
   unvalidated power-tuned version.
+- **`kruskal_rowsum` / `kruskal_rowsum_labeled`** (EXPERIMENTAL, opt-in via
+  `--tests`; not in `PPI_OFFICIAL_TEST_METHODS`). Not another rectifier:
+  the SAME corrected pairwise dominance vector and joint covariance
+  `kruskal` already produces, Wald-tested on its `(k-1)`-dimensional
+  weighted row-sum projection. That projection is exactly the part of the
+  vector classical Kruskal-Wallis can see, via the identity
+  `Rbar_j = (n_j+1)/2 + sum_{l!=j} n_l*theta_jl` (exact, ties and unequal
+  `n` included), so `kruskal` *replaces* the classical statistic while
+  these two *correct* it. `_labeled` weights the projection by labeled
+  counts instead of full group sizes; the two are bit-identical under a
+  balanced design and diverge only when per-group label fractions differ.
+  Wired into `cases/pvalues.py --mode ppi` and `cases/ppi_real.py`'s
+  omnibus-independent null/power checks. The study behind them --
+  calibration, ordered-vs-cyclic power, and the dense-label limit against
+  `scipy.stats.kruskal` -- lives in `simulations/kw_rowsum/`.
 - `judge_bias.py` (planned, for `alignment`) will keep
   `sim_alignment_methods.py`'s agreement-rate proxy-noise model as its own
   named generator, separate from `scenarios/synthetic.py`'s

@@ -7,7 +7,7 @@ numpy arrays. None of them ever call ``compare()`` -- the actual, real-user
 entrypoint that resolves ``method="auto"``, ``simultaneous_ci=True``,
 ``correction="auto"`` (and, when ``alignment=`` is passed, the PPI-corrected
 "sidak"/"boot" CI construction and "shaffer"/"romano_wolf" p-value
-correction added this session) into one specific concrete pipeline. This
+correction) into one specific concrete pipeline. This
 case closes that gap: it builds a long-format DataFrame from a scenario,
 calls ``compare()`` exactly as a real user would (only `factors=`, `metric=`,
 `alignment=`, and `rng=` are ever set explicitly -- everything else is left
@@ -45,7 +45,7 @@ across the two (different judge, different estimand). The like-for-like
 power comparisons live WITHIN each PPI row, against its own oracle and
 subset-only reference arms (see CompareE2EResult's oracle_*/subset_*).
 
-Coarse/breadth-first by design (see this case's planning doc): the grid is
+Coarse/breadth-first by design: the grid is
 large (eval_type x shape x k x N x ppi_config x null/effect), run at a
 modest ``reps`` per cell. The question this case answers is "does
 compare()'s recommended path hold up broadly," not "get a tight estimate of
@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import io
 import multiprocessing as _mp
 import os
@@ -97,7 +98,8 @@ from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_bias_magnitude,
-    _jb_effect_magnitude, _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
+    _jb_effect_magnitude, _jb_effect_magnitude_binary, _ppi_shape, _tier_shapes,
+    sample_group_truth,
 )
 from . import CaseResult
 
@@ -125,44 +127,32 @@ SHAPES_BY_EVAL_TYPE: dict[str, list[ShapeSpec]] = {
 # eval_type's OWN population standard deviation (arm i's true latent value
 # gets shifted by i * this step, via sample_group_truth's own effects=
 # parameter) -- the SAME standardized-severity convention synthetic.py's
-# _jb_effect_magnitude/_jb_effect_magnitude_binary already use for judge-bias
-# power sweeps (see EVAL_TYPE_POPULATION_SD's docstring). A fixed RAW-unit
-# step (the previous version of this constant) is NOT comparable across eval
-# types: e.g. a step of 0.35 on likert's [1,5] scale (population SD ~1.14) is
-# a much bigger standardized effect than 0.06 on binary's {0,1} scale
-# (population SD 0.5) -- confirmed this was exactly why continuous/likert's
-# power saturated near-immediately while binary's grew slowly across N, once
-# both were checked against the same 0.15-population-SD-per-step convention
-# used below (0.15 matches synthetic.py's own PPI_LABEL_EFF_EFFECT_FRAC, a
-# "moderate-but-not-huge" single-step severity already established
-# elsewhere in this harness). Binary must go through the *_binary wrapper,
-# not _jb_effect_magnitude directly -- see that wrapper's docstring for why
-# (its Beta(icc=1.0) truth model clips near {0,1}, attenuating an
-# uncompensated shift to ~55-59% of its nominal value).
+# _jb_effect_magnitude/_jb_effect_magnitude_binary use for judge-bias power
+# sweeps (see EVAL_TYPE_POPULATION_SD's docstring). A fixed raw-unit step is
+# NOT comparable across eval types, since each has a different population SD.
+# Binary must go through the *_binary wrapper, not _jb_effect_magnitude
+# directly -- see that wrapper's docstring for why (its Beta(icc=1.0) truth
+# model clips near {0,1}, attenuating an uncompensated shift).
 EFFECT_FRAC_BY_EVAL_TYPE: dict[str, float] = {
     "continuous": 0.95, "likert": 0.22, "binary": 0.10,
 }
 """Per-eval-type non-null effect size, calibrated so the ORACLE arm (every
 item human-labelled -- the power ceiling) lands near 0.80 at the mid cell
-(k=3, N=100), measured against each eval type's first four shapes:
+(k=3, N=100):
 
-    continuous 0.95 -> oracle 0.828
-    likert     0.22 -> oracle 0.828
-    binary     0.10 -> oracle 0.750
+    continuous 0.95 -> oracle ~0.83
+    likert     0.22 -> oracle ~0.83
+    binary     0.10 -> oracle ~0.75
 
 Targeting the ORACLE (not PPI) is what makes the power rows readable: the
 ceiling sits mid-range, so the power-vs-N curve rises across the grid
 instead of pinning at 0 or 1, and PPI/subset-only have room to separate
 BELOW it. A ceiling at 1.000 hides every difference the plot exists to show.
 
-Replaces a single shared DEFAULT_EFFECT_FRAC=0.15, which was calibrated
-against the old icc=1.0 generator and did not survive the move to
-DEFAULT_ICC=0.20: at 0.15 the same nominal effect gave oracle power of 0.047
-on continuous (statistically null -- its "PPI beats subset-only" result was
-real but meaningless at that level) while giving 0.953 on binary (saturated).
-_jb_effect_magnitude standardizes to each eval type's own population SD,
-which equalizes the effect in SD units but NOT its detectability once the
-per-item noise this DGP now has is in play."""
+A single shared fraction cannot do this: standardizing to each eval type's
+own population SD equalizes the effect in SD units but NOT its
+detectability once the per-item noise this DGP has is in play, so each eval
+type needs its own calibrated value."""
 
 
 def _effect_frac_for(eval_type: str) -> float:
@@ -171,9 +161,90 @@ def _effect_frac_for(eval_type: str) -> float:
 
 
 def _effect_step_for(eval_type: str, frac: float) -> float:
+    """The NOMINAL per-arm step, before the k/icc corrections _cell_effect_step
+    applies. Kept as its own function because the standalone
+    investigate_joint_bootstrap_* scripts import it directly."""
     if eval_type == "binary":
         return _jb_effect_magnitude_binary(frac)
     return _jb_effect_magnitude(eval_type, frac)
+
+
+MAX_EFFECT_SPAN_STEPS = 2
+"""Cap on the arm-0..arm-(k-1) ramp, in units of the nominal per-arm step, so
+the total spread is k-INVARIANT above k=3 instead of growing without bound.
+
+`effects = arange(k) * step` with an uncapped step can push the top arms of
+a large-k grid past the scale boundary (e.g. continuous's [0, 1] scale),
+where they saturate (P(score=1.0) -> ~1) and a pair drawn from among them
+becomes mostly exact zeros with a rare one-sided tail. No mean-based
+interval is calibrated in that regime: the ramp drives one boundary-hugging
+shape into saturation and the opposite-skewed shape away from it, so
+coverage degrades asymmetrically between them -- a signature of DGP
+saturation rather than a method defect, since no CI formula can care which
+direction an effect points.
+
+The cap is 2 steps = the k=3 span, so k=2 and k=3 keep their exact previous
+effects (min() below is 1.0 there) and only k>3 is compressed, keeping the
+ramp well inside the scale at every k.
+
+Cost: reported POWER at k>3 changes (the extreme pair M0-vs-M(k-1) is now a
+fixed standardized distance regardless of k, rather than growing with k),
+which is the more meaningful power axis anyway -- it no longer pins at 1.000
+for the sole reason that k is large."""
+
+_ICC_SD_MC_N = 1_000_000
+_ICC_SD_MC_SEED = 20260827
+_ICC_SD_RATIO_SNAP = 0.005
+"""Ratios this close to 1.0 are snapped to exactly 1.0. likert and binary are
+STRUCTURALLY icc-invariant (their icc split decomposes a fixed total variance,
+unlike continuous's, which adds to it), so their true ratio is 1.0 and
+anything measured is Monte-Carlo noise -- at _ICC_SD_MC_N the relative SE of
+an SD estimate is ~0.07%, so this 0.5% band is ~7 sigma of noise while
+continuous's real deviations (+55% / -33%) are an order of magnitude outside
+it. Without the snap those two eval types would pick up a spurious ~0.1% step
+change at off-reference icc and stop being bit-identical to previous runs for
+no scientific reason."""
+
+
+@functools.lru_cache(maxsize=None)
+def _representative_sd_at_icc(eval_type: str, icc: float) -> float:
+    """EVAL_TYPE_POPULATION_SD's own methodology -- the representative shape's
+    realized truth SD -- but measured AT `icc` instead of at icc=1.0."""
+    rng = np.random.default_rng(_ICC_SD_MC_SEED)
+    truth = sample_group_truth(_ppi_shape(eval_type), _ICC_SD_MC_N, 1, 1, icc, rng)[0, :, 0]
+    return float(truth.std(ddof=0))
+
+
+def _icc_sd_ratio(eval_type: str, icc: float) -> float:
+    """Rescales the effect step so Cohen's d is CONSTANT across the icc sweep.
+
+    `_jb_effect_magnitude` divides `frac` by a fixed EVAL_TYPE_POPULATION_SD
+    measured once at icc=1.0. But continuous's `_group_noise_var` *adds*
+    var_base*(1/icc - 1) on top of var_base, so its realized SD moves with
+    icc, while likert and binary DECOMPOSE a fixed total and stay flat. With
+    a fixed denominator and a moving realized SD, sweeping icc would silently
+    sweep the standardized effect size too -- for continuous and ONLY
+    continuous.
+
+    Anchored at DEFAULT_ICC rather than at icc=1.0 on purpose: the ratio is
+    exactly 1.0 at the reference, so every icc=DEFAULT_ICC cell -- the
+    realistic point, and the value every PPI cell is pinned to -- keeps its
+    previous effect step bit-for-bit, and EFFECT_FRAC_BY_EVAL_TYPE's
+    oracle-power calibration survives unchanged. Only the off-reference icc
+    values move. For binary/likert the ratio is ~1.0 by construction, so this
+    is a no-op there."""
+    if icc == DEFAULT_ICC:
+        return 1.0
+    ratio = _representative_sd_at_icc(eval_type, icc) / _representative_sd_at_icc(eval_type, DEFAULT_ICC)
+    return 1.0 if abs(ratio - 1.0) < _ICC_SD_RATIO_SNAP else ratio
+
+
+def _cell_effect_step(eval_type: str, frac: float, k: int, icc: float) -> float:
+    """The per-arm effect step for one cell: the nominal step, held at constant
+    Cohen's d across the icc sweep (_icc_sd_ratio) and capped so the total ramp
+    does not outgrow the scale (MAX_EFFECT_SPAN_STEPS)."""
+    step = _effect_step_for(eval_type, frac) * _icc_sd_ratio(eval_type, icc)
+    return step * min(1.0, MAX_EFFECT_SPAN_STEPS / max(k - 1, 1))
 
 DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # k=2 is included deliberately as an UNCORRECTED baseline: with only one pair,
@@ -183,13 +254,6 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # actually engages -- see _aggregate_group, which uses k==2 rows for the
 # "pairwise, uncorrected" metric and k>2 rows for "family-wise, corrected".
 DEFAULT_K_VALUES = [2, 3, 5, 10]
-_K_NOTE = """Type-I error and family-wise coverage are k>2-ONLY metrics (see
-_aggregate_group), so a run passing --k-values 2 3 leaves them a single
-qualifying k value and every k=2 cell contributes nothing to either. Including
-k=5 doubles both denominators for ~1.6x runtime -- the cheapest precision
-available in this case, and it improves two of the four calibration metrics at
-once. Prefer adding a k over raising --reps when Type-I is the binding
-constraint."""
 DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800, 1000]
 """Items per arm. The top end exists for the N/N_lab axis specifically: with
 an absolute label budget (see _n_labeled_for) the ratio is N/n_lab, so
@@ -198,12 +262,19 @@ PPI is actually for -- gain comes from the UNLABELLED items -- and the trend
 is what a fraction-based grid cannot show at all, since a fraction pins the
 ratio to 1/frac for every N."""
 DEFAULT_ICC = 0.20
+"""Item-level reliability of the TRUTH generator, matching
+scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
+in cases/pvalues.py runs at). Below 1.0 so different arms produce genuinely
+different per-item truth (a real per-item paired-difference signal to
+estimate) rather than sharing one latent value shifted by a constant --
+the latter degenerates any variance-based estimator (see
+evalstats.api._JOINT_BOOT_SE_REL_FLOOR) and gives noiseless reference arms
+spurious perfect power, independent of any real statistical effect."""
 
 DEFAULT_ICC_VALUES: tuple[float, ...] = (0.05, 0.20, 0.60)
 """icc values swept on the no-PPI arm. ONE definition, read by both
 official_args and the --icc-values argparse default, so a CLI run and the
-official preset cannot disagree about what the sweep is -- they did briefly,
-and a full-grid run silently produced a single-icc grid.
+official preset cannot disagree about what the sweep is.
 
 0.20 is the realistic point: cross-model correlation measured on the real
 corpora is 0.146 mean / 0.103 median, and icc=0.20 reproduces r=0.170. 0.05
@@ -211,26 +282,6 @@ is a stress point below that and 0.60 a robustness point above (higher than
 any real corpus). Note this is the CROSS-ARM correlation -- different models
 on shared items -- not the multi-run ICC (~0.68), which is a different axis
 and is not exercised at runs=1."""
-"""Item-level reliability of the TRUTH generator, matching
-scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
-in cases/pvalues.py runs at).
-
-Was 1.0 -- "no noise at all, every observed difference is real" -- which
-made each arm share the SAME per-item truth, so an arm-vs-arm paired
-difference was a pure constant shift: measured sd 0.0013 with 68 distinct
-values across 4000 items. That is not a plausible model-comparison setup
-(different models produce different outputs, so their human scores differ
-per item), and it broke two things at once:
-
-  * it is the degenerate input that collapsed the PPI joint bootstrap's
-    per-replicate SE (see evalstats.api._JOINT_BOOT_SE_REL_FLOOR), and
-  * it inflated the subset-only reference arm to power 1.000 on 6 of 7
-    continuous shapes -- 20 noiseless human labels detect a constant
-    difference perfectly -- making "PPI must beat subset-only" an
-    unwinnable bar for reasons that had nothing to do with PPI.
-
-At 0.20 the paired truth difference has sd 0.377 across 3073 distinct
-values, i.e. a real per-item signal to estimate."""
 
 AGREEMENT_RATE_BY_EVAL_TYPE: dict[str, float] = {
     "binary": 0.92, "continuous": 0.40, "likert": 0.60,
@@ -245,42 +296,35 @@ DEFAULT_ICC against each eval type's first shape:
 
 A single shared rate cannot do this: the same nominal "agreement" maps to a
 very different rho per eval type, because _apply_judge_noise's noise is a
-fraction of scale span for numeric data but a flip probability for binary.
-The previous single 0.85 gave rho^2 0.972 (continuous) / 0.937 (likert) --
-a judge far better than any real one, which is exactly the regime where PPI
-has the least to prove."""
+fraction of scale span for numeric data but a flip probability for binary."""
 
 DEFAULT_JUDGE_BIAS_TYPE = "differential"
 """Judge bias applied across arms, mirroring _ppi_power_baseline's own
 bias_type: "differential" biases ONLY arm 0, so a relative/paired comparison
 sees a real judge-induced difference that PPI's rectifier has to remove.
-The previous model had NO bias at all (measured per-arm bias -0.0012 /
--0.0015 / -0.0027), i.e. it never exercised the failure mode PPI exists to
-correct. "constant" biases every arm equally and "none" disables it."""
+"constant" biases every arm equally and "none" disables it."""
 
 # Oracle/subset-only reference estimators (see CompareE2EResult) feed TRUTH
 # values directly to compare(), with NO noise -- correct in principle (an
-# "oracle" IS the ground truth), but a real bug for CONTINUOUS data
+# "oracle" IS the ground truth), but a problem for CONTINUOUS data
 # specifically: sample_group_truth's icc=1.0 applies `effects=` as a
 # deterministic, per-item-IDENTICAL shift (see that function's own
 # docstring: "icc=1.0 means no noise at all"), so for un-rounded continuous
 # values the per-item PAIRED DIFFERENCE between any two arms is exactly
-# constant across every item (confirmed directly: sample std of diffs was
-# 1.1e-17, i.e. zero) -- any variance-based CI (logit_t, smooth_bootstrap,
+# constant across every item -- any variance-based CI (logit_t, smooth_bootstrap,
 # and evalstats' own default construction) built from that collapses to a
-# near-zero-width interval, giving spuriously ~100% power (a symptom of
-# gross overconfidence, not genuine statistical strength) rather than a
+# near-zero-width interval, giving spuriously ~100% power rather than a
 # real small-vs-large-N story. NOT an issue for binary (each item's {0,1}
 # realization is its own independent Bernoulli draw, not a deterministic
 # shift of a shared latent value) or likert (rounding to the integer scale
 # breaks the exact constancy for items near a rounding boundary) -- both
 # already have genuine non-degenerate per-item diff variance under icc=1.0.
-# Fix: apply a SMALL amount of realistic labeler noise (not the LLM judge's
-# own DEFAULT_AGREEMENT_RATE-level noise -- an "oracle" should still be
-# near-perfect) when building oracle/subset's continuous scores specifically,
-# just enough to break the exact-zero-variance degeneracy. Zero-mean
-# (Gaussian) for continuous, so truth_means stays the correct, unbiased
-# coverage-check reference -- no change needed there.
+# Fix: apply a SMALL amount of realistic labeler noise (well below the LLM
+# judge's own AGREEMENT_RATE_BY_EVAL_TYPE-level noise -- an "oracle" should
+# still be near-perfect) when building oracle/subset's continuous scores
+# specifically, just enough to break the exact-zero-variance degeneracy.
+# Zero-mean (Gaussian) for continuous, so truth_means stays the correct,
+# unbiased coverage-check reference.
 ORACLE_NOISE_AGREEMENT_RATE = 0.99
 
 # compare()'s own default is n_bootstrap=10_000 (evalstats/core/router.py's
@@ -361,6 +405,16 @@ class CompareE2EResult:
     split. Part of the cell KEY whenever --icc-values sweeps it: without it
     two cells differing only in icc are indistinguishable in the saved CSV and
     silently pool together in every downstream aggregation."""
+
+    effect_step: float = 0.0
+    """The per-arm effect step this cell actually ran (0.0 for null cells).
+
+    Recorded because it is no longer a per-eval-type constant: _cell_effect_step
+    varies it with k (MAX_EFFECT_SPAN_STEPS caps the total ramp) and with icc
+    (_icc_sd_ratio holds Cohen's d fixed). Derivable from the other key columns,
+    but only by re-running that logic -- storing it keeps the CSV self-describing,
+    so a plot rebuilt from the CSV alone can label what effect size each cell
+    was actually run at instead of assuming one number for the whole sweep."""
     n_errors: int = 0
     """Reps where compare() itself raised (e.g. a genuinely-degenerate draw) --
     excluded from all rate denominators below, which use n_reps - n_errors."""
@@ -742,7 +796,8 @@ def _run_cell(
                   (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1 else f"frac={ppi_frac:.2f}"))
     compute_reference = reference_estimator_k is None or k == reference_estimator_k
 
-    effect_step = 0.0 if is_null else _effect_step_for(eval_type, _effect_frac_for(eval_type))
+    effect_step = (0.0 if is_null else
+                   _cell_effect_step(eval_type, _effect_frac_for(eval_type), k, cell_icc))
     effects = np.arange(k, dtype=float) * effect_step
     agreement_rate = _agreement_for(eval_type)
     # Judge bias applies to the PPI cells ONLY. The no-PPI ("none") cells are
@@ -801,6 +856,7 @@ def _run_cell(
     result = CompareE2EResult(
         eval_type=eval_type, shape_label=shape.label, k=k, n_items=n_items,
         ppi_config=ppi_config, is_null=is_null, n_reps=n_reps, icc=cell_icc,
+        effect_step=float(effect_step),
     )
 
     for _rep in range(n_reps):
@@ -947,6 +1003,9 @@ def _run_cell_worker(args: tuple) -> CompareE2EResult:
 
 
 class _ProgressReporter:
+    """Prints an in-place progress bar or one-line-per-cell status to stdout,
+    rate-limited to avoid flooding the terminal on fast cells."""
+
     def __init__(self, total: int, *, mode: str = "bar", label: str = "") -> None:
         self.total = max(int(total), 1)
         self.mode = mode
@@ -955,6 +1014,7 @@ class _ProgressReporter:
         self.last_print = 0.0
 
     def update(self, step: int, detail: str = "") -> None:
+        """Report progress at *step* out of ``self.total``; a no-op when mode is "off"."""
         if self.mode == "off":
             return
         now = time.time()
@@ -1112,7 +1172,15 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     # k==2's own pairwise_width_sum/pairwise_total.
     fam_pair_den = sum(r.pairwise_total for r in kgt2_rows)
     type1_den = sum(r.n_reps - r.n_errors for r in null_rows)
-    power_den = sum(r.n_reps - r.n_errors for r in eff_rows)
+    # 'power' is printed beside ref.pwr as a like-for-like comparison, so it
+    # must be measured on the same cells. oracle_*/subset_* only exist at
+    # reference_estimator_k, so pooling power over every k made the two
+    # columns different populations -- the same mismatch the sandwich row of
+    # save_calibration_plot had. Derived from the data rather than hardcoded
+    # to 3, so --reference-k None (references at every k) is a no-op here.
+    _ref_ks = {r.k for r in rows if r.oracle_n_ok > 0 or r.subset_n_ok > 0}
+    power_rows = [r for r in eff_rows if not _ref_ks or r.k in _ref_ks]
+    power_den = sum(r.n_reps - r.n_errors for r in power_rows)
     # Reference-estimator power/Type-I: oracle_n_ok is only nonzero on
     # ppi_config=="none" rows, subset_n_ok only nonzero on ppi_config!="none"
     # rows (see CompareE2EResult), so these are automatically NaN wherever
@@ -1132,7 +1200,7 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
         fam_width=(sum(r.pairwise_width_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         fam_score=(sum(r.pairwise_score_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         type1=(sum(r.any_reject for r in null_rows) / type1_den) if type1_den else float("nan"),
-        power=(sum(r.extreme_reject for r in eff_rows) / power_den) if power_den else float("nan"),
+        power=(sum(r.extreme_reject for r in power_rows) / power_den) if power_den else float("nan"),
         oracle_type1=(sum(r.oracle_any_reject for r in null_rows) / oracle_type1_den) if oracle_type1_den else float("nan"),
         oracle_power=(sum(r.oracle_extreme_reject for r in eff_rows) / oracle_power_den) if oracle_power_den else float("nan"),
         subset_type1=(sum(r.subset_any_reject for r in null_rows) / subset_type1_den) if subset_type1_den else float("nan"),
@@ -1187,7 +1255,9 @@ def print_key_summary(rows: list[dict], alpha: float) -> None:
         "guarantee. Both should land near the target; they are not the same rows pooled two ways."
     )
     print(
-        "ref.pwr is a REFERENCE-ESTIMATOR power comparison, same synthetic draw as 'power': for "
+        "ref.pwr is a REFERENCE-ESTIMATOR power comparison, same synthetic draw AND the same "
+        "cells as 'power' (both are restricted to the k values where reference arms were "
+        "measured, i.e. --reference-k): for "
         "ppi_config='none' it is 'oracle' power (as if EVERY item were human-labeled -- the ceiling); "
         "for ppi_config='frac=X' it is 'subset-only' power (as if ONLY the labeled X-fraction existed, "
         "LLM data discarded -- the floor PPI should beat). PPI's own 'power' column should sit between "
@@ -1362,7 +1432,27 @@ def save_calibration_plot(*, results: list[CompareE2EResult], alpha: float, out_
         # main-result fields as row 6; oracle/subset-only pull from the
         # dedicated oracle_*/subset_* fields instead.
         ax = axes[sandwich_row][col]
-        eff_results = [r for r in et_results if not r.is_null]
+        # Restrict to the k values where the reference arms actually EXIST.
+        # oracle_*/subset_* are only computed at reference_estimator_k (the
+        # official preset passes --reference-k 3), but the PPI/none series
+        # read extreme_reject, which every k has. Without this filter the
+        # solid lines pool k=2..10 while the dashed/dotted ones they are
+        # meant to be compared against are k=3 alone -- different
+        # populations on the same axes, which is not the sandwich this row
+        # claims to draw.
+        #
+        # This was masked for as long as the effect ramp grew with k: the
+        # extra k=5/k=10 power inflated the pooled solid line above the
+        # k=3-only dashed one, so the ordering looked right for the wrong
+        # reason. Once MAX_EFFECT_SPAN_STEPS made the ramp k-invariant, the
+        # pooled line fell BELOW its own baseline and the mismatch showed up
+        # as "PPI is worse than using the labels alone" -- a plotting
+        # artefact, not a result: at matched k the PPI gain is unchanged
+        # (binary +11.82% before and after, bit-identical).
+        _ref_ks = {r.k for r in et_results
+                   if r.oracle_n_ok > 0 or r.subset_n_ok > 0}
+        eff_results = [r for r in et_results
+                       if not r.is_null and (not _ref_ks or r.k in _ref_ks)]
         sandwich_sizes: set[int] = set()
 
         def _power_series(rows_by_n_getter, num_attr: str, den_attr: str):
@@ -1490,7 +1580,8 @@ def save_results_artifacts(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "icc", "n_reps", "n_errors",
+            "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "icc", "effect_step",
+            "n_reps", "n_errors",
             "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width", "marginal_mean_score",
             "pairwise_covered", "pairwise_total", "pairwise_coverage", "pairwise_mean_width", "pairwise_mean_score",
             "family_covered", "family_total", "family_coverage",
@@ -1530,7 +1621,10 @@ def save_results_artifacts(
             subset_type1 = r.subset_any_reject / r.subset_n_ok if (r.is_null and r.subset_n_ok) else float("nan")
             subset_power = r.subset_extreme_reject / r.subset_n_ok if (not r.is_null and r.subset_n_ok) else float("nan")
             writer.writerow([
-                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, f"{r.icc:.4f}", r.n_reps, r.n_errors,
+                r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, f"{r.icc:.4f}",
+                # repr(float(...)) not a rounded format: effect_step is a DGP
+                # input, so a run must be reproducible from it exactly.
+                repr(float(r.effect_step)), r.n_reps, r.n_errors,
                 r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}", f"{marg_score:.6f}",
                 r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}", f"{pair_width:.6f}", f"{pair_score:.6f}",
                 r.family_covered, r.family_total, f"{fam_cov:.6f}",
@@ -1729,6 +1823,9 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
 
 
 def run(args: argparse.Namespace) -> CaseResult:
+    """Case entry point: build the cell grid from *args*, run the simulation,
+    print/save reports and the calibration plot, and return a CaseResult
+    summarizing overall marginal/pairwise coverage."""
     t0 = time.time()
     try:
         if getattr(args, "data_source", "synthetic") == "real":

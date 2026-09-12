@@ -16,25 +16,29 @@ import sys
 import time
 from pathlib import Path
 
-from .cases import ci_single, ci_paired, pvalues, ppi_real, compare_e2e
+from .cases import ci_single, ci_paired, ci_unpaired, pvalues, ppi_real, compare_e2e, irr_peak
 from .manifest import write_manifest
 
 CASES = {
     ci_single.CASE_NAME: ci_single,
     ci_paired.CASE_NAME: ci_paired,
+    ci_unpaired.CASE_NAME: ci_unpaired,
     pvalues.CASE_NAME: pvalues,
     ppi_real.CASE_NAME: ppi_real,
     compare_e2e.CASE_NAME: compare_e2e,
+    irr_peak.CASE_NAME: irr_peak,
 }
 
 
 def _case_summary(module) -> str:
+    """First non-blank line of a case module's docstring, used as its --list-cases/subparser help text."""
     doc = module.__doc__ or ""
     lines = [ln.strip() for ln in doc.strip().splitlines() if ln.strip()]
     return lines[0] if lines else ""
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level parser: --list-cases/--official-tests/--quick-test flags plus one subparser per case."""
     parser = argparse.ArgumentParser(
         prog="python -m simulations.harness.cli",
         description=__doc__,
@@ -189,6 +193,7 @@ def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str
 
 
 def main(argv: list[str] | None = None) -> None:
+    """CLI entry point: dispatches to --list-cases, --official-tests, --quick-test, or a single named case."""
     parser = build_parser()
     args = parser.parse_args(argv)
 

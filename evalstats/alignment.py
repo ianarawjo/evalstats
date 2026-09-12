@@ -15,6 +15,24 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, chi2_contingency, pearsonr, spearmanr, norm
+from scipy.stats import ConstantInputWarning
+
+
+def _quiet_corr(fn, a, b) -> float:
+    """Correlation without scipy's constant-input warning: a bootstrap
+    resample can be constant, and NaN is the right answer there."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConstantInputWarning)
+        r, _ = fn(a, b)
+    return float(r)
+
+
+def _quiet_ks_2samp(a, b):
+    """ks_2samp without the 'exact calculation unsuccessful, switching to
+    asymp' RuntimeWarning; the asymptotic p-value is what gets used."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return ks_2samp(a, b)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,7 +54,7 @@ class AlignmentResult:
         Column name of the human-label scores.
     score_type : str
         Detected score type: ``"binary"``, ``"likert"``, ``"continuous"``,
-        or ``"grade"``.
+.
     n_labeled : int
         Number of items with human labels (alignment set size).
     n_total : int
@@ -58,7 +76,7 @@ class AlignmentResult:
         Representativeness check results (distribution, slice columns, and
         label-position contiguity).
     bias_check : dict or None
-        For likert/continuous/grade score types, compares the correlation-type
+        For likert/continuous score types, compares the correlation-type
         metric (weighted κ or Pearson r) against ICC(2,1) to flag whether the
         judge is systematically biased in absolute scale despite tracking
         human relative ordering.  ``None`` for binary score types, where ICC
@@ -73,6 +91,21 @@ class AlignmentResult:
         that governs ``test``'s PPI variance reduction. For
         ``test="mean_estimate"`` this is identical to ``alignment_metrics
         ["pearson_r"]``. :attr:`n_eff`/:attr:`multiplier` read from here.
+    per_condition_metrics : dict or None
+        Only set for form 1 (an ``EvalResults`` with a ``model``/condition
+        column). The same headline metric ``bias_check`` uses (e.g.
+        weighted κ for likert), recomputed separately within each
+        condition's labeled items -- point estimates only, no CI (see
+        :func:`_compute_per_condition_alignment`'s docstring for why).
+        Shape: ``{"column": str, "spread": float, "conditions": {label:
+        {"n": int, "too_few": bool, "label": str, "estimate": float}}}``.
+        A pooled metric can look fine while a judge is biased *differently*
+        per condition -- generous to one, stingy to another -- which is
+        invisible to any pooled statistic; this is printed automatically in
+        :meth:`summary` so that risk isn't discovered only after a
+        PPI-corrected ``compare()`` disagrees with the naive one. ``None``
+        when there's no condition column, or fewer than 2 conditions have
+        any labeled items.
     """
 
     def __init__(
@@ -90,6 +123,7 @@ class AlignmentResult:
         selection: str = "unknown",
         test: Optional[str] = None,
         test_metric: Optional[dict] = None,
+        per_condition_metrics: Optional[dict] = None,
     ) -> None:
         self.llm_metric = llm_metric
         self.human_col = human_col
@@ -103,6 +137,7 @@ class AlignmentResult:
         self.selection = selection
         self.test = test
         self.test_metric = test_metric
+        self.per_condition_metrics = per_condition_metrics
 
     @property
     def n_eff(self) -> float:
@@ -176,7 +211,7 @@ class AlignmentResult:
                 idx = rng.choice(n_cats, p=cat_probs)
                 imputed[i] = float(human_cats[idx])
 
-        else:  # "continuous" or "grade"
+        else:  # "continuous"
             # Sample (intercept, slope, σ²) from Normal-Inverse-Gamma posterior
             # σ² ~ InvGamma(an, bn); coefs | σ² ~ N(mun, σ² * Vn)
             sigma2 = 1.0 / rng.gamma(shape=cal["an"], scale=1.0 / cal["bn"])
@@ -201,7 +236,7 @@ class AlignmentResult:
             one line per check/metric, with an explanation only where
             something looks off. Aimed at readers who don't need the
             statistical background spelled out every time.
-            If ``True``, print the full report — every metric's definition,
+            If ``True``, print the full report: every metric's definition,
             why it was chosen, how to interpret it, and citation-ready
             wording for a paper.
         """
@@ -222,7 +257,7 @@ class AlignmentResult:
         print(f"Label selection: {sel_icon} {self.selection}")
         print(
             "Note: corrections below assume the labeled subset is a random "
-            "sample of the full item pool (MCAR) — see 'Representativeness'."
+            "sample of the full item pool (MCAR). See 'Representativeness'."
         )
         print()
 
@@ -231,9 +266,7 @@ class AlignmentResult:
 
         # This check compares a correlation against ICC(2,1), so the only thing
         # it can see is a systematic shift or compression of the judge's raw
-        # scores. PPI absorbs that either way (verified: a judge compressed to
-        # 0.55x with a +0.9 offset understates a true +0.50 effect as +0.27 raw,
-        # and the corrected estimate recovers +0.51), so the result never changes
+        # scores. PPI corrects for that regardless, so the result never changes
         # whether to correct. Only the FAILING branch is printed here, because it
         # says something about the judge worth knowing; a passing result is not
         # evidence that correction can be skipped -- the bias PPI is most needed
@@ -244,8 +277,8 @@ class AlignmentResult:
             bc = self.bias_check
             print(
                 f"⚠ Possible judge scale bias: {bc['corr_label']} = "
-                f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f} "
-                "— the judge ranks items like humans do, but its raw scores "
+                f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f}. "
+                "The judge ranks items like humans do, but its raw scores "
                 "look shifted or compressed relative to human scores."
             )
             print(
@@ -270,7 +303,11 @@ class AlignmentResult:
         score_type_note = _SCORE_TYPE_NOTES.get(
             self.score_type, f"score type detected as {self.score_type!r}"
         )
-        print(f"Alignment metrics ({self.score_type} scores — {score_type_note}):")
+        print(f"Alignment metrics ({self.score_type} scores, {score_type_note}):")
+        label_width = max(
+            (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
+            default=20,
+        )
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
             est = entry["estimate"]
@@ -278,11 +315,49 @@ class AlignmentResult:
             hi = entry["ci_high"]
             band = entry.get("band")
             tail = f"  {band}" if band else ""
-            print(f"  {label:<20} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
+            print(f"  {label:<{label_width}} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
         print()
+        self._print_per_condition_block()
         print("Run .summary(verbose=True) for definitions, rationale, and")
         print("citation-ready wording for each check above.")
         print("─" * 58)
+
+    def _print_per_condition_block(self, *, verbose: bool = False) -> None:
+        """Per-condition alignment breakdown, shared by both summary modes.
+
+        See :func:`_compute_per_condition_alignment`'s docstring for why
+        this exists: a pooled IRR number can look fine while hiding a judge
+        biased differently per condition, which no pooled statistic --
+        including the scale-bias check above -- can catch.
+        """
+        pc = self.per_condition_metrics
+        if pc is None:
+            return
+        conds = pc["conditions"]
+        widest = max((len(str(c)) for c in conds), default=8)
+        print(f"Per-condition alignment ({pc['column']!r}):")
+        if verbose:
+            print(
+                "  The pooled metric above averages over every condition. It "
+                "stays high even if the judge is generous to one condition and "
+                "stingy to another, as long as the two roughly cancel out."
+            )
+        for cond, entry in conds.items():
+            cond_str = f"{str(cond):<{widest}}"
+            if entry.get("too_few"):
+                print(f"  {cond_str}   too few human labels (n={entry['n']}) to estimate")
+            else:
+                print(f"  {cond_str}   {entry['label']} = {entry['estimate']:.2f}  (n={entry['n']})")
+        spread = pc["spread"]
+        if spread >= _PER_CONDITION_SPREAD_FLAG:
+            print(
+                f"  ⚠ Spread of {spread:.2f} across conditions on the same scale "
+                "as the pooled metric above. The judge may be tracking humans "
+                "unevenly."
+            )
+        else:
+            print("  ✓ No condition stands out from the others on this metric.")
+        print()
 
     def _summary_verbose(self) -> None:
         self._header()
@@ -330,12 +405,16 @@ class AlignmentResult:
         print(f"Alignment metrics (score type: {self.score_type}):")
         print(f"  ({score_type_note})")
         print()
+        verbose_label_width = max(
+            (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
+            default=24,
+        )
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
             est = entry["estimate"]
             lo = entry["ci_low"]
             hi = entry["ci_high"]
-            print(f"  {label:<24}: {est:.3f}  [{lo:.3f}, {hi:.3f}]")
+            print(f"  {label:<{verbose_label_width}}: {est:.3f}  [{lo:.3f}, {hi:.3f}]")
             what = entry.get("what")
             why = entry.get("why")
             interpretation = entry.get("interpretation")
@@ -349,6 +428,8 @@ class AlignmentResult:
             if example:
                 print(f"      -> Example paper reporting: {example}")
             print()
+
+        self._print_per_condition_block(verbose=True)
 
         if self.bias_check is not None:
             print("Bias diagnostics:")
@@ -451,9 +532,6 @@ _SCORE_TYPE_NOTES = {
     "continuous": (
         "labels are on a continuous scale, so correlation metrics are used"
     ),
-    "grade": (
-        "labels are numeric grades, so correlation metrics are used"
-    ),
 }
 
 
@@ -525,7 +603,7 @@ def _interpret_icc(est: float, lo: float, hi: float, n: int, label: str) -> tupl
 
 def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: str) -> tuple[Optional[str], str, str]:
     interpretation = (
-        "no universally-agreed threshold exists for raw percent agreement — read it "
+        "no universally-agreed threshold exists for raw percent agreement. Read it "
         "alongside Cohen's κ, since it does not correct for chance and can look high "
         "purely from imbalanced label classes"
     )
@@ -658,7 +736,7 @@ def _build_bias_check(
     if flagged:
         interpretation = (
             "the judge tracks human relative ordering but disagrees on "
-            "absolute scale — treat raw judge scores as biased; consider "
+            "absolute scale. Treat raw judge scores as biased; consider "
             "using the Bayesian calibration model fit by judge_alignment "
             "(e.g. via compare(alignment=...)) to correct for it before "
             "drawing conclusions from raw judge scores"
@@ -666,7 +744,7 @@ def _build_bias_check(
     else:
         interpretation = (
             "the correlation and absolute-agreement metrics tell a "
-            "consistent story — no sign that the judge's ranking ability is "
+            "consistent story. No sign that the judge's ranking ability is "
             "masking a scale or offset problem"
         )
     return {
@@ -759,58 +837,36 @@ def _compute_alignment_metrics(
             "example": example,
         }
 
-        def pe(a, b):
-            r, _ = pearsonr(a, b)
-            return float(r)
-
-        def sp(a, b):
-            r, _ = spearmanr(a, b)
-            return float(r)
-
-        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
-        metrics["pearson_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Pearson r",
-            "band": band,
-            "what": (
+        metrics.update(_pearson_spearman_metrics(
+            llm, human, alpha=alpha, rng=rng, ci2_fn=_ci2,
+            pearson_label="Pearson r", spearman_label="Spearman r",
+            pearson_what=(
                 "Linear correlation coefficient between judge and human labels -- "
                 "for two binary (0/1) variables this is the phi coefficient, "
                 "algebraically equivalent to Cohen's κ's numerator rescaled by "
                 "the marginal proportions."
             ),
-            "why": (
+            pearson_why=(
                 "Reported alongside Cohen's κ/percent agreement because a "
                 "PPI-corrected hypothesis test's variance reduction is governed "
                 "by this correlation (or its rank-based counterpart below), not "
                 "by κ -- see the label-efficiency guidance in the package docs "
                 "for which one your test needs."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
-        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
-        metrics["spearman_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Spearman r",
-            "band": band,
-            "what": (
+            spearman_what=(
                 "Rank correlation between judge and human labels -- for two "
                 "binary (0/1) variables this is numerically identical to "
                 "Pearson r above (rank-transforming a two-valued variable is "
                 "just an increasing affine rescaling of it, which Pearson r is "
                 "invariant to)."
             ),
-            "why": (
+            spearman_why=(
                 "Reported for consistency with the continuous/likert score "
                 "types, and because rank-based hypothesis tests (e.g. "
                 "Mann-Whitney) predict their PPI variance reduction from this "
                 "correlation, not Pearson's."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
+        ))
 
     elif score_type == "likert":
         cats = sorted(set(llm.tolist()) | set(human.tolist()))
@@ -830,45 +886,37 @@ def _compute_alignment_metrics(
             p_e = float((p_a[:, None] * p_b[None, :] * wm).sum())
             return (p_o - p_e) / (1.0 - p_e) if p_e < 1.0 else 1.0
 
-        def sp(a, b):
-            r, _ = spearmanr(a, b)
-            return float(r)
-
-        def pe(a, b):
-            r, _ = pearsonr(a, b)
-            return float(r)
-
         if k >= 2:
             est, lo, hi = _ci2(wk, llm, human, alpha=alpha, rng=rng)
-            band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
+            band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Quadratic-weighted Cohen's κ")
             metrics["weighted_kappa"] = {
                 "estimate": est, "ci_low": lo, "ci_high": hi,
-                "label": "Weighted Cohen's κ",
+                "label": "Quadratic-weighted Cohen's κ",
                 "band": band,
                 "what": (
-                    "Cohen's κ extended so that disagreements receive larger penalties "
-                    "as ratings become farther apart on the ordinal scale (Cohen, 1968)."
+                    "Cohen's κ with quadratic weights, so disagreements are penalized "
+                    "in proportion to the square of their distance on the ordinal "
+                    "scale (Cohen, 1968). The other common convention, linear "
+                    "weighting, penalizes distance directly rather than its square."
                 ),
                 "why": (
                     "Your judge produces ordered categorical (Likert) labels, so an "
                     "ordinal-aware kappa is used instead of the unweighted version, "
                     "which would penalize a near-miss (e.g. judge=4 vs human=5) as "
-                    "harshly as a large disagreement."
+                    "harshly as a large disagreement. Quadratic weighting is the more "
+                    "common convention for Likert-scale IRR and is used here."
                 ),
                 "interpretation": interp,
                 "example": example,
             }
-        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
-        metrics["pearson_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Pearson r",
-            "band": band,
-            "what": (
+        metrics.update(_pearson_spearman_metrics(
+            llm, human, alpha=alpha, rng=rng, ci2_fn=_ci2,
+            pearson_label="Pearson r", spearman_label="Spearman r",
+            pearson_what=(
                 "Linear correlation coefficient between judge and human scores, "
                 "treating the Likert categories as equally-spaced numeric values."
             ),
-            "why": (
+            pearson_why=(
                 "Reported alongside weighted κ/Spearman r because a PPI-corrected "
                 "parametric or mean-based test (e.g. a $t$-test on Likert scores "
                 "treated as numeric) draws its variance reduction from this "
@@ -876,28 +924,17 @@ def _compute_alignment_metrics(
                 "see the label-efficiency guidance in the package docs for which "
                 "one your test needs."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
-        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
-        metrics["spearman_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Spearman r",
-            "band": band,
-            "what": (
-                "Rank correlation between judge and human scores — checks whether "
+            spearman_what=(
+                "Rank correlation between judge and human scores. Checks whether "
                 "higher judge scores correspond to higher human scores, without "
                 "assuming the categories are equally spaced."
             ),
-            "why": (
+            spearman_why=(
                 "Reported alongside weighted κ to show whether the judge preserves "
                 "relative ordering, which matters if judge scores are mainly used "
                 "to rank or compare outputs."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
+        ))
 
         if k >= 2:
             icc_est, icc_lo, icc_hi = _ci2(_icc_21, llm, human, alpha=alpha, rng=rng)
@@ -925,48 +962,29 @@ def _compute_alignment_metrics(
 
             gap_est, gap_lo, gap_hi = _cigap(wk, _icc_21, llm, human, alpha=alpha, rng=rng)
             metrics["_bias_check"] = _build_bias_check(
-                "Weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
+                "Quadratic-weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
                 icc_est, gap_est, gap_lo, gap_hi,
             )
 
-    else:  # continuous / grade
+    else:  # continuous
         def pe(a, b):
-            r, _ = pearsonr(a, b)
-            return float(r)
+            return _quiet_corr(pearsonr, a, b)
 
-        def sp(a, b):
-            r, _ = spearmanr(a, b)
-            return float(r)
-
-        est, lo, hi = _ci2(pe, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
-        metrics["pearson_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Pearson r",
-            "band": band,
-            "what": "Linear correlation coefficient between judge and human scores.",
-            "why": (
+        metrics.update(_pearson_spearman_metrics(
+            llm, human, alpha=alpha, rng=rng, ci2_fn=_ci2,
+            pearson_label="Pearson r", spearman_label="Spearman r",
+            pearson_what="Linear correlation coefficient between judge and human scores.",
+            pearson_why=(
                 "Your judge produces continuous/numeric scores, so a correlation "
                 "coefficient is the standard way to summarize agreement."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
-        est, lo, hi = _ci2(sp, llm, human, alpha=alpha, rng=rng)
-        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
-        metrics["spearman_r"] = {
-            "estimate": est, "ci_low": lo, "ci_high": hi,
-            "label": "Spearman r",
-            "band": band,
-            "what": "Rank correlation between judge and human scores.",
-            "why": (
+            spearman_what="Rank correlation between judge and human scores.",
+            spearman_why=(
                 "Reported alongside Pearson r to check whether agreement holds even "
                 "if the judge-human relationship is monotonic but non-linear (e.g. "
                 "the judge saturates at high scores)."
             ),
-            "interpretation": interp,
-            "example": example,
-        }
+        ))
 
         icc_est, icc_lo, icc_hi = _ci2(_icc_21, llm, human, alpha=alpha, rng=rng)
         band, interp, example = _interpret_icc(icc_est, icc_lo, icc_hi, len(llm), "ICC(2,1)")
@@ -1033,6 +1051,103 @@ _REPRESENTATIVENESS_WHY = (
 _REP_ALPHA = 0.02
 
 
+# Which alignment_metrics key is "the" headline metric per score type --
+# the same one _build_bias_check compares against ICC(2,1) (see the
+# score-type branches inside _compute_alignment_metrics above). Reused here
+# so the per-condition breakdown reports the same metric a reader already
+# saw pooled, rather than introducing a second unfamiliar number.
+_PRIMARY_ALIGNMENT_KEY = {
+    "binary": "cohens_kappa",
+    "likert": "weighted_kappa",
+    "continuous": "pearson_r",
+}
+
+# Below this many labeled items in a single condition, the primary metric
+# is little more than noise (e.g. a single disagreement can swing Cohen's
+# kappa by 0.3+) -- flagged as "too few" rather than shown with a
+# misleadingly precise-looking number.
+_PER_CONDITION_MIN_N = 5
+
+# A same-direction-for-everyone judge is the ONLY failure mode a pooled
+# metric can catch; a spread this large across conditions in the metric's
+# own [-1, 1]-ish scale is large enough to be worth a reader's attention
+# even without a formal test (no CI is computed per condition -- see
+# _compute_per_condition_alignment's docstring for why).
+_PER_CONDITION_SPREAD_FLAG = 0.15
+
+
+def _compute_per_condition_alignment(
+    df: pd.DataFrame,
+    labeled_mask: "pd.Series[bool]",
+    model_col: str,
+    llm_metric: str,
+    human_col: str,
+    score_type: str,
+    *,
+    alpha: float,
+) -> Optional[dict]:
+    """Per-condition/model breakdown of the headline alignment metric.
+
+    A single *pooled* IRR number can look perfectly fine while hiding a
+    judge that is biased *differently* per condition -- generous to one
+    model, stingy to another -- which is exactly the failure mode PPI
+    correction exists to catch, and exactly what no pooled statistic
+    (including this function's own bias_check) can see. Surfacing the
+    per-condition numbers here means a user sees that risk at
+    judge_alignment() time, rather than discovering it only after a
+    PPI-corrected compare() call disagrees with the naive one.
+
+    Point estimates only, no bootstrap CI: each condition's labeled subset
+    is a fraction of an already-small alignment set split across k
+    conditions, so a per-condition CI would mostly be noise, and computing
+    a full 2000-resample CI per condition would multiply
+    judge_alignment()'s cost by k for little benefit. Returns None when
+    there's no model column in the data, or fewer than 2 conditions have
+    any labeled items at all.
+    """
+    if model_col not in df.columns:
+        return None
+    primary_key = _PRIMARY_ALIGNMENT_KEY.get(score_type)
+    if primary_key is None:
+        return None
+
+    labeled_df = df.loc[labeled_mask]
+    conditions = labeled_df[model_col].unique().tolist()
+    if len(conditions) < 2 or len(conditions) > 20:
+        # >20: model_col almost certainly isn't a small factor of interest
+        # here (same cardinality cap the categorical slice-column check
+        # uses elsewhere in this file) -- a per-condition table that long
+        # would bury the signal it's meant to surface, not highlight it.
+        return None
+
+    rng = np.random.default_rng(42)
+    out: dict = {}
+    for cond in conditions:
+        cond_mask = (labeled_df[model_col] == cond).to_numpy()
+        n = int(cond_mask.sum())
+        if n < _PER_CONDITION_MIN_N:
+            out[cond] = {"n": n, "too_few": True}
+            continue
+        cond_llm = labeled_df.loc[cond_mask, llm_metric].to_numpy(dtype=float)
+        cond_human = labeled_df.loc[cond_mask, human_col].to_numpy(dtype=float)
+        metrics = _compute_alignment_metrics(
+            cond_llm, cond_human, score_type, alpha=alpha, rng=rng, ci=False,
+        )
+        entry = metrics.get(primary_key)
+        if entry is None:
+            continue
+        out[cond] = {
+            "n": n, "too_few": False,
+            "label": entry["label"], "estimate": entry["estimate"],
+        }
+
+    if not out:
+        return None
+    estimates = [v["estimate"] for v in out.values() if not v.get("too_few")]
+    spread = (max(estimates) - min(estimates)) if len(estimates) >= 2 else 0.0
+    return {"conditions": out, "spread": spread, "column": model_col}
+
+
 def _rep_check_display_name(key: str) -> str:
     """Human-readable label for a representativeness-check dict key, for
     the short/simple summary (:meth:`AlignmentResult._summary_simple`)."""
@@ -1049,12 +1164,12 @@ def _interpret_representativeness(passed: bool, subject: str) -> str:
     if passed:
         return (
             f"no evidence (p ≥ {_REP_ALPHA:g}) that {subject} differs between the "
-            "labeled subset and the full pool — alignment estimates should "
+            "labeled subset and the full pool. Alignment estimates should "
             "generalize reasonably well"
         )
     return (
         f"{subject} differs between the labeled subset and the full pool "
-        f"(p < {_REP_ALPHA:g}) — treat alignment estimates as potentially biased "
+        f"(p < {_REP_ALPHA:g}). Treat alignment estimates as potentially biased "
         "for unlabeled items; consider expanding or re-sampling the alignment set"
     )
 
@@ -1090,7 +1205,7 @@ def _check_score_distribution(
                 "what": what,
                 "why": _REPRESENTATIVENESS_WHY,
                 "interpretation": (
-                    "not applicable — every item already has a human label, so "
+                    "not applicable: every item already has a human label, so "
                     "there is no unlabeled pool to generalize to"
                 ),
             }
@@ -1103,7 +1218,7 @@ def _check_score_distribution(
         passed = p >= _REP_ALPHA
         msg = f"χ² p={p:.3f}"
         if not passed:
-            msg += " — labeled 0/1 distribution differs from unlabeled pool"
+            msg += ": labeled 0/1 distribution differs from unlabeled pool"
     else:
         compare_target = unlabeled_scores if unlabeled_scores is not None and len(unlabeled_scores) > 0 else all_scores
         what = (
@@ -1118,16 +1233,16 @@ def _check_score_distribution(
                 "what": what,
                 "why": _REPRESENTATIVENESS_WHY,
                 "interpretation": (
-                    "not applicable — the labeled scores don't vary enough to run "
+                    "not applicable: the labeled scores don't vary enough to run "
                     "this test"
                 ),
             }
-        _, p = ks_2samp(labeled_scores, compare_target)
+        _, p = _quiet_ks_2samp(labeled_scores, compare_target)
         p = float(p)
         passed = p >= _REP_ALPHA
         msg = f"KS p={p:.3f}"
         if not passed:
-            msg += " — labeled subset appears non-representative of full score range"
+            msg += ": labeled subset appears non-representative of full score range"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what,
@@ -1147,7 +1262,7 @@ def _check_slice_column(
     )
     why = (
         "Checks whether the alignment set is representative across this "
-        "categorical variable — important if judge accuracy might vary by "
+        "categorical variable. Important if judge accuracy might vary by "
         "subgroup (e.g. domain, difficulty, model)."
     )
     labeled = df.loc[labeled_mask, col].dropna()
@@ -1157,7 +1272,7 @@ def _check_slice_column(
             "passed": True, "message": "no unlabeled items", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — there are no unlabeled items to compare against"
+                "not applicable: there are no unlabeled items to compare against"
             ),
         }
     cats = sorted(df[col].dropna().unique())
@@ -1172,7 +1287,7 @@ def _check_slice_column(
     passed = p >= _REP_ALPHA
     msg = f"χ² p={p:.3f}"
     if not passed:
-        msg += " — labeled subset is over/under-represented in some categories"
+        msg += ": labeled subset is over/under-represented in some categories"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what, "why": why,
@@ -1195,7 +1310,7 @@ def _check_slice_column_numeric(
     )
     why = (
         "Checks whether the alignment set is representative across this "
-        "numeric covariate — important if judge accuracy might vary with it "
+        "numeric covariate. Important if judge accuracy might vary with it "
         "(e.g. difficulty, length, latency). Categorical (string) columns are "
         "checked with a chi-square test instead; this covers the numeric "
         "columns that check silently skips."
@@ -1207,7 +1322,7 @@ def _check_slice_column_numeric(
             "passed": True, "message": "no unlabeled items", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — there are no unlabeled items to compare against"
+                "not applicable: there are no unlabeled items to compare against"
             ),
         }
     if len(np.unique(labeled)) < 2:
@@ -1215,16 +1330,16 @@ def _check_slice_column_numeric(
             "passed": True, "message": "insufficient labeled variation to test", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable — the labeled values don't vary enough to run "
+                "not applicable: the labeled values don't vary enough to run "
                 "this test"
             ),
         }
-    _, p = ks_2samp(labeled, unlabeled)
+    _, p = _quiet_ks_2samp(labeled, unlabeled)
     p = float(p)
     passed = p >= _REP_ALPHA
     msg = f"KS p={p:.3f}"
     if not passed:
-        msg += " — labeled subset differs from unlabeled pool on this covariate"
+        msg += ": labeled subset differs from unlabeled pool on this covariate"
     return {
         "passed": passed, "message": msg, "p_value": p,
         "what": what, "why": why,
@@ -1263,12 +1378,12 @@ def _apply_family_correction(results: dict[str, dict], method: str = "holm") -> 
         if raw_p_k < _REP_ALPHA:
             if passed:
                 res["message"] += (
-                    f" — no longer significant after Holm correction across "
+                    f". No longer significant after Holm correction across "
                     f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
                 )
             else:
                 res["message"] += (
-                    f" — still significant after Holm correction across "
+                    f". Still significant after Holm correction across "
                     f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
                 )
             res["interpretation"] = _interpret_representativeness(passed, "this covariate")
@@ -1332,7 +1447,9 @@ def _runs_test_pvalue(n1: int, n2: int, r_obs: int) -> float:
     return float(2 * norm.sf(abs(z)))
 
 
-def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
+def _check_label_contiguity(
+    n_total: int, labeled_mask: np.ndarray, item_ids: Optional[np.ndarray] = None,
+) -> dict:
     """Runs test on where the labeled items sit in the dataset.
 
     Unlike the distribution-based checks above, this doesn't look at scores
@@ -1363,7 +1480,19 @@ def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
         "blocks, or artificially regular spacing) in one check, rather than "
         "only the single-contiguous-block special case."
     )
-    n_labeled = int(labeled_mask.sum())
+    mask = np.asarray(labeled_mask).astype(bool)
+    if item_ids is not None and len(item_ids) == len(mask):
+        # One entry per distinct item, in first-appearance order. In a paired
+        # design every condition's row for a labeled item is labeled, so the
+        # row sequence has runs of length k by construction; the question is
+        # whether the labeled ITEMS cluster.
+        codes, uniques = pd.factorize(pd.Series(np.asarray(item_ids)), sort=False)
+        if len(uniques) < len(mask):
+            item_mask = np.zeros(len(uniques), dtype=bool)
+            np.logical_or.at(item_mask, codes, mask)
+            mask = item_mask
+            n_total = len(uniques)
+    n_labeled = int(mask.sum())
     n_unlabeled = n_total - n_labeled
     if n_labeled < 2 or n_unlabeled < 2:
         return {
@@ -1374,7 +1503,6 @@ def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
                 "so there's no position pattern to check"
             ),
         }
-    mask = labeled_mask.astype(bool)
     r_obs = _count_runs(mask)
     p = _runs_test_pvalue(n_labeled, n_unlabeled, r_obs)
     mu = 1.0 + 2.0 * n_labeled * n_unlabeled / n_total
@@ -1440,6 +1568,48 @@ def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
 _VALID_SELECTIONS = ("random", "stratified", "manual", "unknown")
 
 
+def _validate_and_warn_selection(selection: str, warn_stacklevel: int) -> None:
+    """Validate ``selection=`` and warn about its MCAR implications.
+
+    Shared by :func:`_judge_alignment_core` and :func:`_judge_alignment_pairwise`.
+    """
+    if selection not in _VALID_SELECTIONS:
+        raise ValueError(
+            f"selection={selection!r} -- must be one of {_VALID_SELECTIONS}."
+        )
+    if selection == "unknown":
+        warnings.warn(
+            "judge_alignment() was not told how the labeled subset was "
+            "selected (selection=). Every correction it and "
+            "compare(alignment=...) apply assumes the labeled items are a "
+            "random sample of the full item pool -- pass selection='random' "
+            "to confirm that's the case, or selection='manual'/'stratified' "
+            "if not, so this is a deliberate acknowledgment rather than an "
+            "unexamined default.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+    elif selection == "manual":
+        warnings.warn(
+            "selection='manual': the labeled subset was NOT randomly "
+            "sampled. PPI/alignment correction assumes random sampling "
+            "(MCAR) to be valid -- with a manually-chosen subset, the "
+            "corrected estimates and CIs compare()/judge_alignment() report "
+            "may be miscalibrated, not just imprecise. Treat them as "
+            "informal unless the alignment set is re-sampled at random.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+    elif selection == "stratified":
+        warnings.warn(
+            "selection='stratified': evalstats' current correction doesn't "
+            "account for stratification weights, so this is only valid if "
+            "each stratum was itself sampled uniformly at random and the "
+            "strata are otherwise ignorable for the metric being judged. "
+            "If items were hand-picked within strata, treat corrected "
+            "estimates as potentially biased, same as selection='manual'.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+
+
 def _judge_alignment_core(
     llm_aligned: np.ndarray,
     human_aligned: np.ndarray,
@@ -1455,8 +1625,10 @@ def _judge_alignment_core(
     slice_labeled_mask: Optional[pd.Series] = None,
     slice_exclude_cols: frozenset = frozenset(),
     labeled_mask: Optional[np.ndarray] = None,
+    item_ids: Optional[np.ndarray] = None,
     selection: str = "unknown",
     test: Optional[str] = None,
+    per_condition_metrics: Optional[dict] = None,
     warn_stacklevel: int = 3,
 ) -> AlignmentResult:
     """Shared core behind both :func:`judge_alignment` call forms: fits the
@@ -1472,10 +1644,7 @@ def _judge_alignment_core(
     when this is called from raw paired arrays with no further context,
     see :func:`judge_alignment`.
     """
-    if selection not in _VALID_SELECTIONS:
-        raise ValueError(
-            f"selection={selection!r} -- must be one of {_VALID_SELECTIONS}."
-        )
+    _validate_and_warn_selection(selection, warn_stacklevel)
     n_labeled = int(len(llm_aligned))
 
     calibration = _fit_calibration(llm_aligned, human_aligned, score_type)
@@ -1544,7 +1713,7 @@ def _judge_alignment_core(
                 )
 
     if labeled_mask is not None:
-        contiguity_result = _check_label_contiguity(n_total, labeled_mask)
+        contiguity_result = _check_label_contiguity(n_total, labeled_mask, item_ids=item_ids)
         rep["label_contiguity"] = contiguity_result
         if not contiguity_result["passed"]:
             warnings.warn(
@@ -1555,41 +1724,6 @@ def _judge_alignment_core(
                 UserWarning,
                 stacklevel=warn_stacklevel,
             )
-
-    if selection == "unknown":
-        warnings.warn(
-            "judge_alignment() was not told how the labeled subset was "
-            "selected (selection=). Every correction it and "
-            "compare(alignment=...) apply assumes the labeled items are a "
-            "random sample of the full item pool -- pass selection='random' "
-            "to confirm that's the case, or selection='manual'/'stratified' "
-            "if not, so this is a deliberate acknowledgment rather than an "
-            "unexamined default.",
-            UserWarning,
-            stacklevel=warn_stacklevel,
-        )
-    elif selection == "manual":
-        warnings.warn(
-            "selection='manual': the labeled subset was NOT randomly "
-            "sampled. PPI/alignment correction assumes random sampling "
-            "(MCAR) to be valid -- with a manually-chosen subset, the "
-            "corrected estimates and CIs compare()/judge_alignment() report "
-            "may be miscalibrated, not just imprecise. Treat them as "
-            "informal unless the alignment set is re-sampled at random.",
-            UserWarning,
-            stacklevel=warn_stacklevel,
-        )
-    elif selection == "stratified":
-        warnings.warn(
-            "selection='stratified': evalstats' current correction doesn't "
-            "account for stratification weights, so this is only valid if "
-            "each stratum was itself sampled uniformly at random and the "
-            "strata are otherwise ignorable for the metric being judged. "
-            "If items were hand-picked within strata, treat corrected "
-            "estimates as potentially biased, same as selection='manual'.",
-            UserWarning,
-            stacklevel=warn_stacklevel,
-        )
 
     for key in ("pearson_r", "spearman_r"):
         if key in alignment_metrics:
@@ -1622,7 +1756,54 @@ def _judge_alignment_core(
         selection=selection,
         test=test,
         test_metric=test_metric,
+        per_condition_metrics=per_condition_metrics,
     )
+
+
+def _resolve_per_condition_col(evaldata, df, factors) -> Optional[str]:
+    """Pick the column whose per-condition alignment breakdown to report.
+
+    In order: an explicit ``factors=``, the column declared to ``load_from``,
+    the "model" role column, then the sole factor column. Raises when that
+    leaves two or more candidates, since there is then no right grouping to pick.
+    """
+    if factors is not None:
+        if isinstance(factors, (list, tuple)):
+            if len(factors) != 1:
+                raise ValueError(
+                    "judge_alignment(factors=...) takes a single column name; "
+                    f"got {list(factors)!r}."
+                )
+            factors = factors[0]
+        if factors not in df.columns:
+            raise ValueError(
+                f"factors='{factors}' is not a column in this data. "
+                f"Available columns: {list(df.columns)}"
+            )
+        return factors
+
+    declared = [c for c in (getattr(evaldata, "_declared_factors", None) or [])
+                if c in df.columns]
+    if len(declared) == 1:
+        return declared[0]
+
+    model_col = evaldata._col.get("model")
+    if model_col is not None:
+        return model_col
+
+    factor_cols = [c for c in (declared or getattr(evaldata, "_factor_cols", None) or [])
+                   if c in df.columns]
+    if len(factor_cols) == 1:
+        return factor_cols[0]
+    if len(factor_cols) > 1:
+        raise ValueError(
+            "This data has more than one factor column "
+            f"({', '.join(repr(c) for c in factor_cols)}) and no 'model' role, so "
+            "there is no single grouping to report per-condition alignment over. "
+            "Pass the one you are comparing, e.g. "
+            f"judge_alignment(..., factors='{factor_cols[0]}')."
+        )
+    return None
 
 
 def _judge_alignment_from_evaldata(
@@ -1633,6 +1814,7 @@ def _judge_alignment_from_evaldata(
     alpha: float,
     selection: str = "unknown",
     ci: bool = True,
+    factors=None,
 ) -> AlignmentResult:
     df = evaldata._df
 
@@ -1680,10 +1862,20 @@ def _judge_alignment_from_evaldata(
     # index (or unique per row), which the numeric-covariate check would
     # otherwise happily test, redundantly rediscovering (in a noisier form)
     # exactly what the position-based label-contiguity check already covers.
+    group_col = _resolve_per_condition_col(evaldata, df, factors)
+
     structural_cols = {
-        c for c in (evaldata._col.get("model"), evaldata._col.get("item"), evaldata._col.get("run"))
+        c for c in (evaldata._col.get("model"), evaldata._col.get("item"),
+                    evaldata._col.get("run"), group_col)
         if c is not None
     }
+
+    per_condition_metrics = None
+    if group_col is not None:
+        per_condition_metrics = _compute_per_condition_alignment(
+            df, labeled_mask, group_col, llm_metric, human_groundtruth, score_type,
+            alpha=alpha,
+        )
 
     return _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
@@ -1691,7 +1883,11 @@ def _judge_alignment_from_evaldata(
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=df, slice_labeled_mask=labeled_mask,
         slice_exclude_cols=frozenset({llm_metric, human_groundtruth}) | structural_cols,
-        labeled_mask=labeled_mask.to_numpy(), selection=selection, ci=ci,
+        labeled_mask=labeled_mask.to_numpy(),
+        item_ids=(df[evaldata._col["item"]].to_numpy()
+                  if evaldata._col.get("item") in df.columns else None),
+        selection=selection, ci=ci,
+        per_condition_metrics=per_condition_metrics,
         warn_stacklevel=4,
     )
 
@@ -1789,18 +1985,15 @@ def _judge_alignment_from_arrays(
 _VALID_DESIGNS = ("within", "between")
 
 # Which correlation governs each evalstats.tests function's PPI variance
-# reduction, precisely -- NOT a fixed "Pearson for mean tests, Spearman for
-# rank tests" recipe (an earlier version of this table used that split; it's
-# WRONG for rank tests). Every test's rho is actually a Pearson correlation
-# on a test-specific LINEARIZATION of the raw values -- identity for
-# mean-type tests (whose influence function psi(y)=y-mu is already linear,
-# hence exactly effect-size-invariant), but a genuine transform for rank-type
-# tests, whose named/raw-Spearman recipe DRIFTS with effect size (confirmed
-# via Monte Carlo: -13% to -38% at d=2 for mwu/kruskal/wilcoxon, -89% for
-# friedman at higher effects -- see notes/omnibus_label_efficiency.html and
-# the git history around commits 8460a16/eca96d8/23ffbc5). See
+# reduction, precisely -- not a fixed "Pearson for mean tests, Spearman for
+# rank tests" recipe (wrong for rank tests). Every test's rho is actually a
+# Pearson correlation on a test-specific LINEARIZATION of the raw values --
+# identity for mean-type tests (whose influence function psi(y)=y-mu is
+# already linear, hence exactly effect-size-invariant), but a genuine
+# transform for rank-type tests, whose named/raw-Spearman recipe drifts with
+# effect size instead (see notes/omnibus_label_efficiency.html). See
 # _linearize_for_test for the dispatch and each _linearize_* function for
-# the actual recipe + validation provenance.
+# the actual recipe.
 #
 # design: the design each test implies, or None if the caller must say
 # ("within"/"between" both valid, e.g. ttest/anova_oneway paired vs
@@ -1887,16 +2080,13 @@ def _linearize_wilcoxon(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     reported here is taken against the very quantity the correction's own
     variance is computed on, rather than a re-derived lookalike.
 
-    Note this is deliberately NOT ``sign(d) * (2*F_{|D|}(|d|) - 1)``: that
-    expands to ``4*F_D(d) - sign(d) - 2``, which is not affine in
-    ``F_D(d)`` (the ``sign`` term survives) and is non-monotonic in ``d``,
-    returning about -1 just above zero and about +1 just below it. An
-    earlier version of this function used exactly that (borrowed from the
-    since-removed ``hajek_experimental`` path) and measured about 0.6x the
-    directly-measured ``Var(classical)/Var(PPI)``.
+    Deliberately not ``sign(d) * (2*F_{|D|}(|d|) - 1)``: that expands to
+    ``4*F_D(d) - sign(d) - 2``, which is not affine in ``F_D(d)`` (the
+    ``sign`` term survives) and is non-monotonic in ``d``, returning about
+    -1 just above zero and about +1 just below it.
 
-    Replaces the raw-Spearman-of-differences recipe, which drifts -25% by
-    d=2 (notes/omnibus_label_efficiency.html)."""
+    Replaces the raw-Spearman-of-differences recipe, which drifts with
+    effect size (see notes/omnibus_label_efficiency.html)."""
     from evalstats.ppi import _walsh_theta_h1_components
 
     names = list(conditions.keys())
@@ -1920,33 +2110,24 @@ def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
 
     For item ``x_i`` in group A the score is ``F_Y(x_i)``, its mid-rank
     placement within group B; for item ``y_j`` in group B it is
-    ``P(X > y_j) = 1 - F_X(y_j)``. Built on the same searchsorted mid-rank
-    construction already used and tested in
-    ``evalstats.tests._p_x_gt_y_midrank`` for the point estimate itself,
-    extracted PER ITEM instead of summed to one ``P(X > Y)`` number.
+    ``P(X > y_j) = 1 - F_X(y_j)`` -- not ``-F_X(y_j)``: both have the same
+    spread, but their means differ by 1 (``theta - 1`` vs ``theta``), so
+    pooling would put the two halves a constant ~1.0 apart on both the
+    judge and human side, a lockstep offset that Pearson would then score
+    as agreement. Built on the same searchsorted mid-rank construction
+    already used and tested in ``evalstats.tests._p_x_gt_y_midrank`` for
+    the point estimate itself, extracted per item instead of summed to one
+    ``P(X > Y)`` number.
 
-    Both halves are then centered on their OWN mean before pooling. Two
-    reasons, and skipping either one was a real measured bug:
+    Both halves are then centered on their own mean before pooling: the
+    pooled correlation must be the within-group one, since any
+    between-group difference in mean placement is shared by judge and
+    humans and would again be counted as agreement -- the same fix as the
+    uncentered pooling corrected in ``_pooled_two_group_lambda``, and as
+    ``_linearize_mean``'s "between" branch.
 
-    1. Sign, not negation. An earlier version scored group B as
-       ``-F_X(y_j)`` rather than ``1 - F_X(y_j)``. Both have the same
-       spread, but their MEANS differ by 1 (``theta - 1`` vs ``theta``),
-       so pooling put the two halves a constant ~1.0 apart on both the
-       judge and human side -- a lockstep offset that both sides share and
-       that Pearson therefore scores as agreement. Measured effect: rho^2
-       inflated to ~0.92-0.98 and the predicted multiplier roughly 2x the
-       directly-measured ``Var(classical)/Var(PPI)``.
-    2. Per-group centering. Even with the correct sign, the pooled
-       correlation must be the WITHIN-group one: any between-group
-       difference in mean placement is shared by judge and humans and
-       would again be counted as agreement. This is the same failure mode
-       -- and the same fix -- as the uncentered pooling corrected in
-       ``_pooled_two_group_lambda``, and as ``_linearize_mean``'s
-       "between" branch, which centers each condition before pooling for
-       exactly this reason.
-
-    The raw-Spearman recipe this replaces drifts -13% by d=2
-    (notes/omnibus_label_efficiency.html).
+    Replaces the raw-Spearman recipe, which drifts with effect size (see
+    notes/omnibus_label_efficiency.html).
 
     Coarse-scale caveat (likert): placement values take only ~k distinct
     levels on a k-point scale, so the influence function loses most of its
@@ -1982,36 +2163,25 @@ def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _linearize_kruskal(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Spearman of within-condition-CENTERED, pooled values -- the
+    """Spearman of within-condition-centered, pooled values -- the
     validated recipe for Kruskal-Wallis (notes/omnibus_label_efficiency.html
     Method 2): each condition's judge/human values centered on that
     condition's own mean (removing the between-condition location signal,
-    exactly like _linearize_mean's "between" branch), THEN pooled
-    (concatenated) across conditions, THEN rank-transformed as one combined
-    array -- NOT ranked within each condition separately first. Spearman
-    correlation of the pooled-then-globally-ranked residuals is, by
-    definition, Pearson correlation of their ranks; that's what's returned
-    here for the caller to correlate. (Ranking within each condition
-    separately before pooling -- an earlier, wrong version of this
-    function -- discards the very between-condition-relative information
-    centering-then-pooling is supposed to preserve, and empirically came
-    out suspiciously perfectly flat across effect sizes, unlike the note's
-    documented "mild drift" -- a sign it wasn't computing the validated
-    recipe.)
+    exactly like ``_linearize_mean``'s "between" branch), then pooled
+    (concatenated) across conditions, then rank-transformed as one combined
+    array -- not ranked within each condition separately first, which would
+    discard the between-condition-relative information centering-then-
+    pooling is meant to preserve. Spearman correlation of the
+    pooled-then-globally-ranked residuals is, by definition, Pearson
+    correlation of their ranks; that's what's returned here.
 
-    VALIDATED against the note's published figures: with its fixed judge
-    (within-condition rho^2 = 0.64) this returns 0.6151 where the note
-    reports 0.620 for the same recipe.
-
-    INHERITED CAVEAT, documented in the note and not fixed here: this
-    recipe is effect-invariant (flat at 0.6151 for d=0.5 and d=1.0) while
-    the TRUE implied rho^2 falls (0.606 -> 0.578 over that range), so it
-    runs mildly optimistic -- about 8% on N_eff at d=1.0 -- and more so
-    further out. Treat Kruskal-Wallis's number as a ceiling rather than a
-    point estimate when a large effect is expected. This is the same
-    rank-drift phenomenon that hits Friedman much harder, in mild form;
-    unlike Friedman (see :func:`_linearize_friedman`), no
-    doubly-centred/plug-in replacement for it has been validated."""
+    Inherited caveat, documented in the note and not fixed here: this
+    recipe is effect-invariant while the true implied rho^2 falls with
+    effect size, so it runs mildly optimistic -- treat Kruskal-Wallis's
+    number as a ceiling rather than a point estimate when a large effect is
+    expected. Same rank-drift phenomenon that hits Friedman harder (see
+    :func:`_linearize_friedman`), in mild form; no doubly-centred/plug-in
+    replacement for it has been validated."""
     from scipy.stats import rankdata
 
     judge_parts, human_parts = [], []
@@ -2033,21 +2203,11 @@ def _linearize_friedman(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     Friedman (notes/omnibus_label_efficiency.html Method 4): rank each
     participant's k conditions (row-wise) for judge and humans alike,
     subtract each condition's (column) mean rank, correlate the pooled
-    residuals. Emphatically NOT the average per-participant Spearman (an
-    earlier, wrong version of this function's design) -- that recipe moves
-    in the OPPOSITE direction from the truth as effect size grows (rises
-    while the truth falls), reaching +89% N_eff overstatement at k=5, d=1.0
-    in the note's measurements. The row-wise rank transform substitutes for
-    row-centering (ranks are already row-normalized by construction); only
-    the column (condition) mean needs explicit removal.
-
-    VALIDATED against the note's published figures: with its fixed judge
-    (within-condition rho^2 = 0.64, k=3) this returns 0.4106 / 0.3953 /
-    0.3628 at d = 0.0 / 0.5 / 1.0, against the note's 0.409 / 0.394 /
-    0.356 for the same recipe -- within 0.007 throughout, and correctly
-    FALLING with effect size, tracking the note's implied 0.422 / 0.388 /
-    0.348 rather than rising the way the naive average per-participant
-    Spearman does."""
+    residuals. Not the average per-participant Spearman -- that recipe
+    moves in the opposite direction from the truth as effect size grows
+    (rising while the truth falls). The row-wise rank transform substitutes
+    for row-centering (ranks are already row-normalized by construction);
+    only the column (condition) mean needs explicit removal."""
     from scipy.stats import rankdata
 
     names = list(conditions.keys())
@@ -2112,41 +2272,52 @@ def _linearize_for_test(
 def _pearson_spearman_metrics(
     judge: np.ndarray, human: np.ndarray, *, alpha: float, rng: np.random.Generator,
     pearson_label: str, spearman_label: str, what_suffix: str = "",
+    ci2_fn=_bootstrap_ci_2,
+    pearson_what: Optional[str] = None,
+    pearson_why: Optional[str] = None,
+    spearman_what: Optional[str] = None,
+    spearman_why: Optional[str] = None,
 ) -> dict:
     """Pearson r and Spearman r (point estimate + bootstrap CI) between two
     already-prepared 1-D arrays -- the shared low-level computation behind
-    the multi-condition pairwise path below, so there is exactly one place
-    this math lives. Callers are responsible for whatever
-    differencing/pooling/masking the two arrays need before calling this
-    (see :func:`_condition_pair_arrays`).
+    both the multi-condition pairwise path and the single-condition
+    :func:`_compute_alignment_metrics`, so there is exactly one place this
+    math lives. Callers are responsible for whatever differencing/pooling/
+    masking the two arrays need before calling this (see
+    :func:`_condition_pair_arrays`).
+
+    ``ci2_fn`` defaults to :func:`_bootstrap_ci_2` but can be swapped for a
+    cheaper stand-in (e.g. skipping the bootstrap entirely) by callers that
+    don't need a CI, matching :func:`_compute_alignment_metrics`'s ``ci=``
+    parameter. ``pearson_what``/``pearson_why``/``spearman_what``/
+    ``spearman_why`` override the generic "what"/"why" text below when a
+    caller has more specific, score-type-tailored wording to show instead.
     """
     n = len(judge)
 
     def pe(a, b):
-        r, _ = pearsonr(a, b)
-        return float(r)
+        return _quiet_corr(pearsonr, a, b)
 
     def sp(a, b):
-        r, _ = spearmanr(a, b)
-        return float(r)
+        return _quiet_corr(spearmanr, a, b)
 
-    est, lo, hi = _bootstrap_ci_2(pe, judge, human, alpha=alpha, rng=rng)
+    est, lo, hi = ci2_fn(pe, judge, human, alpha=alpha, rng=rng)
     band, interp, example = _interpret_corr(est, lo, hi, n, pearson_label)
     pearson_entry = {
         "estimate": est, "ci_low": lo, "ci_high": hi, "label": pearson_label, "band": band, "n": n,
-        "what": f"Linear correlation coefficient between judge and human values{what_suffix}.",
-        "why": (
+        "what": pearson_what or f"Linear correlation coefficient between judge and human values{what_suffix}.",
+        "why": pearson_why or (
             "Governs the label-efficiency multiplier for parametric/mean-based "
             "tests (t-test, ANOVA, mean estimation) -- see judge_alignment()'s test=."
         ),
         "interpretation": interp, "example": example,
     }
-    est, lo, hi = _bootstrap_ci_2(sp, judge, human, alpha=alpha, rng=rng)
+    est, lo, hi = ci2_fn(sp, judge, human, alpha=alpha, rng=rng)
     band, interp, example = _interpret_corr(est, lo, hi, n, spearman_label)
     spearman_entry = {
         "estimate": est, "ci_low": lo, "ci_high": hi, "label": spearman_label, "band": band, "n": n,
-        "what": f"Rank correlation coefficient between judge and human values{what_suffix}.",
-        "why": (
+        "what": spearman_what or f"Rank correlation coefficient between judge and human values{what_suffix}.",
+        "why": spearman_why or (
             "Governs the label-efficiency multiplier for rank-based tests "
             "(Mann-Whitney, Wilcoxon, Friedman) -- see judge_alignment()'s test=."
         ),
@@ -2219,8 +2390,7 @@ def _single_metric(
     n = len(judge)
 
     def pe(a, b):
-        r, _ = pearsonr(a, b)
-        return float(r)
+        return _quiet_corr(pearsonr, a, b)
 
     est, lo, hi = _bootstrap_ci_2(pe, judge, human, alpha=alpha, rng=rng)
     band, interp, example = _interpret_corr(est, lo, hi, n, label)
@@ -2365,41 +2535,54 @@ def _pair_total_n(conditions: dict, names: list, design: str) -> int:
     return sum(len(np.asarray(conditions[n][0])) for n in names)
 
 
+def _full_linearized_n(conditions: dict, *, test: str, design: Optional[str]) -> int:
+    """The savings formula's total item count, in the SAME units as the
+    linearized arrays whose correlation feeds it.
+
+    ``_pair_total_n`` counts items, which is right whenever a test's
+    linearization emits one number per item (``ttest``/``wilcoxon`` score
+    differences; the between-design tests emit one per observation, and its
+    ``design="between"`` branch sums to match). ``friedman`` is the exception:
+    ``_linearize_friedman`` ravels an (items x k) matrix, so its labeled count
+    is ``k`` times the item count. Pairing that with an item-scale total made
+    ``n_lab/N`` about ``k`` times too large, collapsing the multiplier toward 1
+    and reporting an ``n_eff`` on the wrong scale.
+
+    Relabeling every human score as observed and re-linearizing gives the
+    length the arrays would have under full labeling -- correct for any test,
+    without a per-test table of emission rates. Only lengths are read, so the
+    placeholder value never reaches a correlation.
+    """
+    full = {}
+    for name, (judge, human) in conditions.items():
+        human = np.asarray(human, dtype=float)
+        full[name] = (np.asarray(judge, dtype=float), np.zeros_like(human))
+    judge_full, _, _ = _linearize_for_test(full, test=test, design=design)
+    return int(len(judge_full))
+
+
 def _attach_savings(metric: dict, N: int) -> dict:
     """Attach multiplier/n_eff to a correlation metric dict, using `N`
     (see :func:`_pair_total_n`) as the savings formula's total item count.
 
-    VALIDATED. With ``lam*`` the variance-minimizing PPI++ weight, the
-    algebra gives ``Var_min = (V_h/n_lab) * [1 - rho^2 * (n_unlab/N)]``,
-    i.e. exactly ``multiplier = 1/(1 - rho^2*(1 - n_lab/N))`` with ``rho``
-    the correlation of the two sides' INFLUENCE FUNCTIONS. Confirmed
-    numerically against a direct oracle-lambda simulation (no bootstrap,
-    N=1000, n_lab=200, 4000 reps): predicted/oracle multiplier ratios were
-    0.975 / 1.009 / 1.017 for wilcoxon and 0.987 / 1.008 / 0.993 for
-    mannwhitney at d = 0 / 0.3-0.5 / 1.0 -- within 1.7% and stable across
-    effect sizes.
+    With ``lam*`` the variance-minimizing PPI++ weight, the algebra gives
+    ``Var_min = (V_h/n_lab) * [1 - rho^2 * (n_unlab/N)]``, i.e. exactly
+    ``multiplier = 1/(1 - rho^2*(1 - n_lab/N))`` with ``rho`` the
+    correlation of the two sides' influence functions. The multiplier
+    depends on ``N`` and ``n_lab`` only through their ratio, so pooling
+    equal-sized groups preserves it exactly.
 
-    Note the ``N`` passed here cannot itself be a source of error: the
-    multiplier depends on ``N`` and ``n_lab`` only through their RATIO, and
-    pooling equal-sized groups preserves that ratio exactly (60/300 =
-    120/600). An earlier revision of this docstring blamed a measured
-    discrepancy on "N-aggregation"; that was wrong on both counts -- see
-    :func:`_linearize_mannwhitney` and :func:`_linearize_wilcoxon` for the
-    two real (now-fixed) bugs, which were in the linearizations.
-
-    ONE STANDING CAVEAT, and it is about the library's lambda, not this
-    formula: ``multiplier``/``n_eff`` are the ORACLE bound -- what is
+    One standing caveat, about the library's lambda rather than this
+    formula: ``multiplier``/``n_eff`` are the oracle bound -- what is
     achievable at the variance-minimizing lambda. ``evalstats.tests``
-    deliberately does not always use that lambda. In particular
-    ``wilcoxon(power_tune=True)`` evaluates the human term's variance under
-    H0 (sign-flip null variance) rather than plug-in, a deliberate
-    calibration trade documented in
-    ``evalstats.ppi._analytic_walsh_theta_correct``. That lambda is
-    intentionally sub-optimal, and drifts further from optimal as the true
-    effect moves away from H0 -- measured at n_lab=60, the realized
-    multiplier fell to ~1/1.17 of this bound at d=0 and ~1/1.74 at d=0.3.
-    So report these as "the efficiency this judge makes available", not as
-    a guarantee of what a particular corrected test will realize."""
+    deliberately does not always use that lambda: ``wilcoxon(power_tune=True)``
+    evaluates the human term's variance under H0 (sign-flip null variance)
+    rather than plug-in, a deliberate calibration trade documented in
+    ``evalstats.ppi._analytic_walsh_theta_correct``, which is intentionally
+    sub-optimal and drifts further from optimal as the true effect moves
+    away from H0. So report these as "the efficiency this judge makes
+    available", not as a guarantee of what a particular corrected test
+    will realize."""
     mult, n_eff = _n_eff(metric["estimate"], metric["n"], N)
     metric["N"] = N
     metric["multiplier"] = mult
@@ -2417,8 +2600,7 @@ def _judge_alignment_pairwise(
             "For a single condition, call judge_alignment(judge_scores, human_scores) "
             "with plain arrays instead."
         )
-    if selection not in _VALID_SELECTIONS:
-        raise ValueError(f"selection={selection!r} -- must be one of {_VALID_SELECTIONS}.")
+    _validate_and_warn_selection(selection, warn_stacklevel)
 
     resolved_design = design
     if test is not None:
@@ -2440,38 +2622,6 @@ def _judge_alignment_pairwise(
             "alone -- two conditions look the same positionally whether they're "
             "a paired comparison or two independent groups, and each needs "
             "different math."
-        )
-
-    if selection == "unknown":
-        warnings.warn(
-            "judge_alignment() was not told how the labeled subset was "
-            "selected (selection=). Every correction it and "
-            "compare(alignment=...) apply assumes the labeled items are a "
-            "random sample of the full item pool -- pass selection='random' "
-            "to confirm that's the case, or selection='manual'/'stratified' "
-            "if not, so this is a deliberate acknowledgment rather than an "
-            "unexamined default.",
-            UserWarning, stacklevel=warn_stacklevel,
-        )
-    elif selection == "manual":
-        warnings.warn(
-            "selection='manual': the labeled subset was NOT randomly "
-            "sampled. PPI/alignment correction assumes random sampling "
-            "(MCAR) to be valid -- with a manually-chosen subset, the "
-            "corrected estimates and CIs compare()/judge_alignment() report "
-            "may be miscalibrated, not just imprecise. Treat them as "
-            "informal unless the alignment set is re-sampled at random.",
-            UserWarning, stacklevel=warn_stacklevel,
-        )
-    elif selection == "stratified":
-        warnings.warn(
-            "selection='stratified': evalstats' current correction doesn't "
-            "account for stratification weights, so this is only valid if "
-            "each stratum was itself sampled uniformly at random and the "
-            "strata are otherwise ignorable for the metric being judged. "
-            "If items were hand-picked within strata, treat corrected "
-            "estimates as potentially biased, same as selection='manual'.",
-            UserWarning, stacklevel=warn_stacklevel,
         )
 
     names = list(conditions.keys())
@@ -2519,7 +2669,7 @@ def _judge_alignment_pairwise(
                 test_pairwise_metrics[(name_a, name_b)] = _attach_savings(m, pair_n)
         else:
             jl, hl, _ = _linearize_for_test(conditions, test=test, design=resolved_design)
-            whole_n = _pair_total_n(conditions, names, resolved_design)
+            whole_n = _full_linearized_n(conditions, test=test, design=resolved_design)
             m = _single_metric(
                 jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (whole-design)",
                 why=f"{test}'s own validated correlation across all conditions at once -- not decomposable into pairs.",
@@ -2546,11 +2696,16 @@ def judge_alignment(
     alpha: float = 0.05,
     selection: str = "unknown",
     ci: bool = True,
+    factors=None,
 ) -> "AlignmentResult | PairwiseAlignmentResult":
     """Validate how well an LLM judge aligns with human graders.
 
     Parameters
     ----------
+    factors : str, optional
+        Column to break the alignment down by for the per-condition report.
+        Defaults to the ``model`` role column, then to the sole factor column.
+        Required when the data has more than one factor and no ``model`` role.
     ci : bool, default True
         Whether to bootstrap confidence intervals for the alignment metrics.
         ``ci=False`` returns the point estimates with NaN bounds and skips
@@ -2655,7 +2810,7 @@ def judge_alignment(
         that shouldn't just be ``judge_scores_or_evaldata`` itself.
     score_type : str, optional
         Form 2 only: override the auto-detected score type (``"binary"``,
-        ``"likert"``, ``"continuous"``, or ``"grade"``). Auto-detected from
+        ``"likert"``, or ``"continuous"``). Auto-detected from
         the labeled judge scores when not given.
     alpha : float
         Significance level for alignment metric CIs.  Default ``0.05``.
@@ -2735,7 +2890,7 @@ def judge_alignment(
             )
         return _judge_alignment_from_evaldata(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-            selection=selection, ci=ci,
+            selection=selection, ci=ci, factors=factors,
         )
 
     if human_scores is None:
@@ -2773,3 +2928,69 @@ def _n_eff(r: float, n_lab: int, N: int) -> tuple[float, float]:
     return mult, n_lab * mult
 
 
+# ── Label efficiency for a comparison that has already run ─────────────────
+#
+# compare() knows which tests it ran; these turn that knowledge into the
+# rho^2/N_eff a reader needs beside each estimate. Kept here, next to
+# judge_alignment, because they are thin wrappers over it rather than new
+# statistics -- and shared so the paired and unpaired paths cannot drift into
+# reporting the same quantity two different ways.
+
+
+def _efficiency_metric(conds, *, test, design, want_pairs):
+    """One judge_alignment call, reduced to what a summary table needs.
+
+    Returns ``(omnibus, pairs)`` where omnibus is ``(rho2, n_eff_total)`` or
+    None, and pairs maps ``(a, b) -> (rho2, n_eff_total)``. n_eff is left as
+    the TOTAL judge_alignment returns; dividing it by the conditions a given
+    correlation spans is the caller's job, since only the caller knows whether
+    a row is an omnibus (k conditions), a pair (2), or a single mean (1).
+
+    Never raises: this is reporting, and a failure must cost a column rather
+    than the comparison that produced it.
+    """
+    import contextlib as _c, io as _io
+    try:
+        with _c.redirect_stdout(_io.StringIO()):
+            res = judge_alignment(conds, design=design, test=test,
+                                  selection="random", ci=False)
+    except Exception:
+        return None, {}
+    om = None
+    m = getattr(res, "omnibus_metric", None)
+    if m is not None:
+        try:
+            om = (float(m["estimate"]) ** 2, float(m["n_eff"]))
+        except Exception:
+            om = None
+    pairs = {}
+    if want_pairs:
+        for key, mm in (getattr(res, "test_pairwise_metrics", None) or {}).items():
+            try:
+                pairs[(str(key[0]), str(key[1]))] = (float(mm["estimate"]) ** 2,
+                                                     float(mm["n_eff"]))
+            except Exception:
+                pass
+    return om, pairs
+
+
+def _marginal_efficiency(judge, human):
+    """rho^2 and N_eff for ONE entity's marginal mean.
+
+    The estimand is a plain mean, whose influence function is the identity, so
+    this is exactly Pearson r^2 on the labeled pairs (verified bit-identical
+    against scipy). Routed through judge_alignment anyway so the number a user
+    sees here is produced by the same code path as every other rho^2 we report.
+
+    n_eff comes back against this entity's own item count, so it needs no
+    division: one condition spans itself.
+    """
+    import contextlib as _c, io as _io
+    try:
+        with _c.redirect_stdout(_io.StringIO()):
+            res = judge_alignment(np.asarray(judge, dtype=float),
+                                  np.asarray(human, dtype=float),
+                                  test="mean_estimate", selection="random", ci=False)
+        return float(res.test_metric["estimate"]) ** 2, float(res.n_eff)
+    except Exception:
+        return None, None

@@ -41,12 +41,17 @@ from matplotlib.legend_handler import HandlerTuple
 # Order matches save_ppi_factorial_typeI_violin_plot: the five two-group /
 # paired tests, then the four omnibus ones.
 ORDER = ["ttest", "ttest_welch", "paired_t", "mwu", "wilcoxon",
-         "anova_ind", "anova_rep", "friedman", "kruskal"]
+         "anova_ind", "anova_rep", "friedman", "kruskal", "kruskal_influence"]
+# kruskal_influence is BRANCH-LOCAL (REPORT.md section E candidate). It is
+# appended, never substituted for "kruskal", so the two sit side by side and
+# the shipped test's conservatism stays visible in the same frame. A CSV
+# without it simply plots nine violins as before.
 SHORT = {"ttest": "$t$-test (indep)", "ttest_welch": "Welch's $t$",
          "paired_t": "paired $t$", "mwu": "Mann-Whitney",
          "wilcoxon": "Wilcoxon", "anova_ind": "ANOVA (indep)",
          "anova_rep": "RM-ANOVA", "friedman": "Friedman",
-         "kruskal": "Kruskal-Wallis"}
+         "kruskal": "Kruskal-Wallis",
+         "kruskal_influence": "K-W (influence)"}
 
 # Per-test colours, taken from the harness's own get_method_color so this
 # figure matches every other per-method plot in the paper rather than
@@ -55,6 +60,7 @@ METHOD_COLOR = {
     "ttest": "#1f77b4", "ttest_welch": "#d62728", "paired_t": "#bd9e39",
     "mwu": "#2ca02c", "wilcoxon": "#8ca252", "anova_ind": "#e6550d",
     "anova_rep": "#fd8d3c", "friedman": "#756bb1", "kruskal": "#e377c2",
+    "kruskal_influence": "#7b3f9c",
 }
 
 C_UNC = "#9AA0A6"   # uncorrected

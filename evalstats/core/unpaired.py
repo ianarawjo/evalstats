@@ -13,17 +13,28 @@ as its statistical engine rather than reimplementing anything.
 Two test families (see ``config.AUTO_UNPAIRED_METHOD_TABLE`` for the
 decision and full rationale):
 
+Every family reports the same estimand -- the **mean difference** between
+two groups (a difference of proportions on binary data, which is the mean
+of a 0/1 variable). Only the interval construction and the accompanying
+test differ:
+
 * **binary** data -- ``anova_oneway`` (omnibus, k>=3 only) + pairwise
-  Welch's ``ttest``-equivalent CIs (mean/proportion difference).
+  Agresti-Caffo intervals on Δp, with Welch's t-test supplying the p-value.
 * **continuous / likert / grade** data -- ``kruskalwallis`` (omnibus,
-  k>=3 only) + pairwise Mann-Whitney-equivalent CIs (stochastic-dominance
-  probability θ=P(a>b)).
+  k>=3 only) + pairwise Welch t-intervals on the mean difference, with
+  Mann-Whitney U -- Kruskal-Wallis's own post-hoc -- supplying the p-value.
+
+Because Mann-Whitney tests θ=P(a>b) against 1/2 rather than the mean
+difference the interval covers, the two can disagree; each pair therefore
+also carries ``mean_test_p``, the interval's own p-value. This mirrors the
+paired path, which has always reported mean differences and carried its
+rank test (``PairedDiffResult.wilcoxon_p``) alongside.
 
 At k=2 there is only one possible comparison, so there is no separate
 omnibus test and no multiple-comparison correction to apply (Bonferroni/
 Holm are no-ops at a family size of 1) -- the single pairwise result *is*
 the answer. At k>=3, pairwise CIs get a Bonferroni correction and pairwise
-p-values get a Holm correction, two independent axes mirroring how the
+p-values get a Shaffer correction, two independent axes mirroring how the
 paired path separates its own simultaneous-CI and p-value-correction
 machinery (see ``core/paired.py``'s ``_simultaneous_cis_router`` and
 ``correct_pvalues``).
@@ -31,16 +42,19 @@ machinery (see ``core/paired.py``'s ``_simultaneous_cis_router`` and
 from __future__ import annotations
 
 import contextlib
+import warnings
 import io
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
+from scipy import stats as _scipy_stats
 import pandas as pd
 
 from evalstats.config import resolve_auto_unpaired_methods, get_alpha_ci
 from evalstats.core.stats_utils import correct_pvalues
 from evalstats.loader import _CANONICAL_ALIASES, _find_col, _detect_score_type
+from evalstats.labeling import VALID_SCORE_TYPES
 
 if TYPE_CHECKING:
     from evalstats.alignment import AlignmentResult
@@ -73,6 +87,12 @@ class GroupStat:
     ci_high: float
     method: str
     multi_ci: Optional[dict] = None  # {alpha: (lo, hi)} gradient CI bands
+    # median/cv/iqr/cvar_10/percentiles from the RAW (uncorrected) scores --
+    # mirrors the paired path's Descriptive Statistics table, which likewise
+    # leaves these uncorrected even when its mean/CI are PPI-corrected (only
+    # RobustnessResult.mean/ci_low/ci_high/multi_ci get overridden in place;
+    # see api.py's PPI-correction block).
+    descriptive: Optional[dict] = None
 
 
 class _GroupStatsAsRobustness:
@@ -102,15 +122,53 @@ class GroupDiffResult:
     """
     label_a: str
     label_b: str
-    estimand: str          # "mean_diff" (binary family) or "dominance" (rank-based family)
-    null_value: float       # 0.0 for mean_diff, 0.5 for dominance
+    estimand: str           # always "mean_diff" -- see compare_unpaired's note
+    null_value: float       # always 0.0 (mean_diff's null)
     point_estimate: float
     ci_low: float
     ci_high: float          # Bonferroni-corrected at k>=3; nominal alpha at k=2
-    p_value: float          # Holm-corrected at k>=3; raw at k=2
+    p_value: float          # Shaffer-corrected at k>=3; raw at k=2
     raw_p_value: float      # always uncorrected, for transparency
     n_a: int
     n_b: int
+    mean_test_p: Optional[float] = None
+    """Uncorrected p-value from the test that MATCHES ``ci_low``/``ci_high``
+    (Welch's t, or its PPI-corrected form). ``p_value`` is the headline test,
+    which for the rank_based family is Mann-Whitney U -- a different estimand
+    from the reported mean difference, so it can disagree with the interval.
+    This field makes the mean-difference decision inspectable alongside it.
+    None for the binary family, where ``p_value`` already is the Welch p."""
+
+    rho2: Optional[float] = None
+    """Judge-human alignment governing THIS pair's PPI variance reduction --
+    the squared correlation of the two influence functions, for the test
+    actually run on this pair. Not the raw kappa/Spearman from the alignment
+    report: those are score-level, this is test-specific. None when the
+    comparison is uncorrected, or when the alignment call could not supply it."""
+
+    rank_biserial: Optional[float] = None
+    """Independent-samples rank-biserial correlation, ``2*theta`` with
+    ``theta = P(X>Y) + 0.5*P(X=Y) - 0.5``. Same scale and interpretation bands
+    as the paired path's effect size, and the estimand Mann-Whitney's p-value
+    already tests. PPI-corrected when the comparison is: the corrected theta is
+    what the PPI MWU estimates, so the effect size never sits uncorrected
+    beside a corrected interval."""
+
+    n_eff: Optional[float] = None
+    """Effective human-label count PER CONDITION for this pair: how many
+    hand-labeled items per condition would have matched this pair's precision.
+
+    judge_alignment returns n_eff against the TOTAL item count a correlation
+    spans (``_pair_total_n`` sums across conditions for design="between"), so
+    the stored value here is that total divided by the 2 conditions the pair
+    spans. The omnibus figure divides by k instead. Getting that divisor wrong
+    silently inflates the number by a factor of k/2, which is why the two are
+    computed in one place (:func:`_ppi_label_efficiency`) rather than at each
+    call site.
+
+    This is the ORACLE bound, the efficiency available at the variance-
+    minimizing lambda; the shipped test may realize less (see
+    AlignmentResult's note on _attach_savings)."""
 
     @property
     def significant(self) -> bool:
@@ -133,8 +191,9 @@ class _GroupDiffResultsAsPairwiseMatrix:
     (Bonferroni), so ``simultaneous_ci_method`` is set to a matching
     sentinel and the p-value-threshold branch never fires.
     ``point_diff``/``ci_low``/``ci_high`` are the same null-shifted
-    quantities the pairwise table itself displays (Δθ/Δp), so "CI excludes
-    zero" means exactly what it already means there.
+    quantities the pairwise table itself displays (Δ/Δp -- the null is 0 for
+    every family, so the shift is a no-op), so "CI excludes zero" means
+    exactly what it already means there.
     """
 
     def __init__(self, pairwise: list["GroupDiffResult"]):
@@ -170,7 +229,7 @@ class GroupComparisonResult:
     metric_col: str
     item_col: str
     item_col_synthetic: bool
-    score_type: str          # "binary" | "continuous" | "likert" | "grade"
+    score_type: str          # "binary" | "continuous" | "likert"
     family: str              # "binary_proportion" | "rank_based"
     groups: list[GroupStat]
     pairwise: list[GroupDiffResult]
@@ -181,9 +240,34 @@ class GroupComparisonResult:
     alpha: float
     n_pairs: int
     ci_correction: str        # "bonferroni" or "none" (k=2, single comparison)
-    pvalue_correction: str    # "holm" or "none" (k=2, single comparison)
+    pvalue_correction: str    # the correction= actually applied, or "none" at k=2
     ppi_applied: bool
+    rng_seed: Optional[int] = None
+    pairwise_ci_method: Optional[str] = None  # interval construction behind ci_low/ci_high
+    """The integer seed every resampling step ran under, when one is knowable.
+
+    None when the caller passed a Generator (whose seed cannot be recovered) or
+    passed rng=None to opt out of determinism. Reported in the summary so a
+    stable-looking p-value is never mistaken for a seed-independent one."""
     alignment_result: Optional["AlignmentResult"] = None
+    omnibus_rho2: Optional[float] = None
+    """Whole-design judge-human alignment for the omnibus test, when one ran
+    and PPI is applied. Not decomposable into the pairwise values: the omnibus
+    correlation is defined across all conditions at once."""
+    omnibus_n_eff: Optional[float] = None
+    """Effective human labels PER CONDITION for the omnibus test (the total
+    judge_alignment returns, divided by the k conditions it spans)."""
+    n_lab_per_condition: Optional[float] = None
+    """Mean human labels actually collected per condition, for the
+    "N_eff against what you collected" comparison the summary prints."""
+    marginal_n_eff: Optional[list] = None
+    marginal_rho2: Optional[list] = None
+    """Per-group judge-human rho^2 for the marginal mean, beside marginal_n_eff.
+    The mean's influence function is the identity, so this is that group's own
+    Pearson r^2 -- not the test-specific rho^2 the pairwise rows carry."""
+    """Per-group effective label count for the MARGINAL mean CIs, in `groups`
+    order. A group's marginal mean spans only itself, so this needs no
+    per-condition division. None unless every group produced one."""
     show_p_values: bool = True
     pareto: Optional[dict] = None
 
@@ -231,9 +315,15 @@ class GroupComparisonResult:
 
     # ── reporting ───────────────────────────────────────────────────────────
 
-    def summary(self) -> None:
+    def summary(self, *, verbose: bool = False) -> None:
+        """Print the comparison report.
+
+        ``verbose=True`` adds the qualifications behind the label-efficiency
+        columns: that N_eff is the best case at the variance-minimizing lambda,
+        and that a rank-based rho^2 is tied to this dataset's effect size.
+        """
         from evalstats.core.summary import print_group_comparison_summary
-        print_group_comparison_summary(self)
+        print_group_comparison_summary(self, verbose=verbose)
 
     def plot(self, **kwargs):
         raise NotImplementedError(
@@ -274,6 +364,7 @@ class GroupComparisonResult:
                     "point_estimate": p.point_estimate,
                     "ci_low": p.ci_low, "ci_high": p.ci_high,
                     "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                    "mean_test_p": p.mean_test_p,
                     "significant": p.significant,
                     "n_a": p.n_a, "n_b": p.n_b,
                 }
@@ -281,6 +372,7 @@ class GroupComparisonResult:
             ],
             "ci_correction": self.ci_correction,
             "pvalue_correction": self.pvalue_correction,
+            "rng_seed": self.rng_seed,
             **self._pareto_to_dict(),
         }
 
@@ -312,6 +404,7 @@ class GroupComparisonResult:
                 "point_estimate": p.point_estimate,
                 "ci_low": p.ci_low, "ci_high": p.ci_high,
                 "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                "mean_test_p": p.mean_test_p,
                 "significant": p.significant,
                 "n_a": p.n_a, "n_b": p.n_b,
             }
@@ -354,6 +447,44 @@ class _GroupComparisonResultAsBundle:
 # FWER helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Everything correct_pvalues() implements. All are closed-form: the resampling
+# corrections (Romano-Wolf, Westfall-Young, max-T, joint bootstrap) need a joint
+# null resampled across a shared item set, which a between-subjects design does
+# not have.
+_SUPPORTED_CORRECTIONS = frozenset({"shaffer", "holm", "bonferroni", "hochberg", "fdr_bh"})
+
+
+@contextlib.contextmanager
+def _quiet_internal_alignment(alignment_result):
+    """Suppress the internal alignment report AND its selection= warning.
+
+    The evalstats.tests entry points re-run judge_alignment() from scratch on the
+    raw arrays, with no selection= (so "unknown"), and print a second, worse-
+    disclosed report. Its stdout was already suppressed here; the warning it
+    raises escaped anyway, because warnings go to stderr. That warning told
+    callers they had "not told" evalstats how the subset was selected even when
+    they had -- in exactly the flow compare(alignment=...) documents.
+
+    The caller's own AlignmentResult is the authority: it records the selection
+    it was constructed with, and compare() has already reported it. So the
+    warning is suppressed only when that authority actually declared something.
+    When the caller's own selection is "unknown", the warning is still correct
+    and is allowed through.
+    """
+    declared = getattr(alignment_result, "selection", None) not in (None, "unknown")
+    with contextlib.redirect_stdout(io.StringIO()):
+        if not declared:
+            yield
+            return
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*was not told how the labeled subset was selected.*",
+                category=UserWarning,
+            )
+            yield
+
+
 def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
     """Bonferroni-adjusted alpha for a family of n_pairs comparisons.
 
@@ -372,47 +503,88 @@ def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
 # a point-estimate array, "ci_lo"/"ci_hi", and "pair_p" (uncorrected).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _rank_based_pairwise_ppi(
+def _numeric_pairwise_ppi(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], alpha: float, n_boot: int, rng,
 ) -> dict:
-    """θ_ab = P_mid(a>b) for every pair, PPI-corrected. Thin wrapper around
-    the private kruskalwallis machinery -- valid at any k>=2 (kruskalwallis's
-    own docstring: "For k=2 groups Kruskal-Wallis reduces to Mann-Whitney;
-    this pairwise-θ framework is the direct generalization to k>2"), so this
-    is reused uniformly rather than special-casing k=2 through mannwhitney().
-    """
-    from evalstats.tests import _ppi_kruskal_wallis_pairwise
-    out = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
-    return {
-        "pairs": out["pairs"], "point": out["theta_hat"],
-        "ci_lo": out["ci_lo"], "ci_hi": out["ci_hi"], "pair_p": out["pair_p"],
-    }
+    """PPI-corrected mean difference mean(a) - mean(b) for every pair, with a
+    PPI-corrected Mann-Whitney U p-value alongside.
 
+    The interval comes from :func:`evalstats.tests._ppi_two_sample_t_interval`
+    -- the closed-form independent-groups mean-difference correction, i.e. the
+    same construction the binary family uses, which is a mean of a 0/1 variable
+    and needs no separate machinery. It is scale-agnostic, so a 1-5 Likert
+    outcome needs no ``score_range`` for the pairwise interval to be on the
+    right scale (the *marginal* group CIs do use the range -- see
+    ``_compute_group_stats``).
 
-def _rank_based_pairwise_uncorrected(
-    groups: list[np.ndarray], alpha: float, n_boot: int, rng,
-) -> dict:
-    """Non-PPI analog of :func:`_rank_based_pairwise_ppi` -- a stripped-down
-    copy of ``_ppi_kruskal_wallis_pairwise`` with the rectifier terms
-    removed (plain bootstrap of the same θ_ab estimator, no human labels).
+    ``pair_p`` stays the PPI-corrected Mann-Whitney U p-value -- the post-hoc
+    that follows the Kruskal-Wallis omnibus above it, and the one this
+    project's PPI work validates. It tests theta = P_mid(a>b) against 1/2,
+    which is NOT the estimand the interval covers, so ``mean_test_p`` carries
+    the interval's own p-value for comparison.
     """
-    from evalstats.tests import _kw_pairwise_thetas
+    from evalstats.tests import (
+        _ppi_two_sample, _ppi_two_sample_t_interval, _p_x_gt_y_midrank,
+    )
+
+    def _auc_shifted(xa, ya):
+        return _p_x_gt_y_midrank(xa, ya) - 0.5
+
     rng = np.random.default_rng(rng)
     k = len(groups)
     pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
-    n_per_group = [len(g) for g in groups]
-    theta_hat = _kw_pairwise_thetas(groups, pairs)
+    point = np.empty(len(pairs)); ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs)); pair_p = np.empty(len(pairs))
+    mean_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        t = _ppi_two_sample_t_interval(
+            groups[a], groups[b], groups_lab[a], groups_lab[b], alpha,
+        )
+        point[idx] = float(t.estimate)
+        ci_lo[idx] = float(t.ci_low)
+        ci_hi[idx] = float(t.ci_high)
+        mean_p[idx] = float(t.p_value)
+        u = _ppi_two_sample(groups[a], groups[b], groups_lab[a], groups_lab[b],
+                            _auc_shifted, alpha, n_boot, rng)
+        pair_p[idx] = 1.0 if u.p_value is None else float(u.p_value)
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": mean_p,
+            "ci_method": "PPI two-sample t"}
 
-    boots = np.empty((n_boot, len(pairs)))
-    for bi in range(n_boot):
-        resampled = [groups[j][rng.integers(0, n_per_group[j], n_per_group[j])] for j in range(k)]
-        boots[bi] = _kw_pairwise_thetas(resampled, pairs)
 
-    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
-    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
-    pair_p = 2.0 * np.minimum((boots <= 0.5).mean(axis=0), (boots >= 0.5).mean(axis=0))
-    pair_p = np.minimum(pair_p, 1.0)
-    return {"pairs": pairs, "point": theta_hat, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+def _numeric_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict:
+    """Non-PPI analog: Welch's t-interval on the mean difference, with a
+    Mann-Whitney U p-value alongside.
+
+    Welch rather than Student throughout: between-subjects groups routinely
+    differ in both size and variance, and Welch costs almost nothing when the
+    variances happen to match (Delacre, Lakens & Leys 2017; Ruxton 2006). It
+    is also what ``cases/ci_unpaired.py`` measured as the safe default across
+    both continuous and Likert real corpora -- ``mover_logit_t`` scores
+    slightly better on Likert alone, but Welch is one method for all numeric
+    data and does not degrade on ceiling-saturated continuous shapes, where
+    MOVER constructions fall to ~0.72 coverage.
+    """
+    from scipy.stats import ttest_ind
+    k = len(groups)
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    point = np.empty(len(pairs)); ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs)); pair_p = np.empty(len(pairs))
+    mean_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        r = ttest_ind(groups[a], groups[b], equal_var=False)
+        ci = r.confidence_interval(confidence_level=1.0 - alpha)
+        point[idx] = float(np.mean(groups[a]) - np.mean(groups[b]))
+        ci_lo[idx] = float(ci.low)
+        ci_hi[idx] = float(ci.high)
+        mean_p[idx] = float(r.pvalue)
+        # Post-hoc after the Kruskal-Wallis omnibus = the Mann-Whitney U test,
+        # which is what a reader expects there and can reproduce in scipy.
+        pair_p[idx] = float(_scipy_stats.mannwhitneyu(
+            groups[a], groups[b], alternative="two-sided").pvalue)
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": mean_p,
+            "ci_method": "Welch t"}
 
 
 def _binary_pairwise_ppi(
@@ -440,12 +612,51 @@ def _binary_pairwise_ppi(
         ci_lo[idx] = res.ci_low
         ci_hi[idx] = res.ci_high
         pair_p[idx] = res.p_value
-    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": None,
+            "ci_method": "PPI two-sample t"}
+
+
+def _agresti_caffo_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Agresti & Caffo (2000) interval for a difference of two independent
+    proportions, The American Statistician 54(4):280-288.
+
+    Add one success and one failure to EACH arm, then apply the plain Wald
+    formula to the adjusted counts -- the two-sample analogue of the
+    Agresti-Coull single-proportion adjustment, and a one-line change to Wald
+    that removes most of Wald's small-sample undercoverage.
+
+    Replaces a Welch t-interval on the raw 0/1 scores. Exact coverage
+    enumerated over every (k_A, k_B) table (simulations/harness/cases/
+    ci_unpaired.py's exact mode, no Monte Carlo) puts Welch's worst case at
+    0.641 -- reached at p near 0 or 1, which is where binary eval data
+    actually sits -- against 0.930 here, at a *narrower* mean width (0.472 vs
+    0.511) and half the runtime. Agresti-Min is the only method in that
+    comparison never dipping below nominal, but costs ~600x the time and
+    roughly half the power, so it is not the default.
+    """
+    a_bin = (np.asarray(a, dtype=float) >= 0.5).astype(float)
+    b_bin = (np.asarray(b, dtype=float) >= 0.5).astype(float)
+    na, nb = a_bin.size, b_bin.size
+    if na == 0 or nb == 0:
+        return (0.0, 0.0)
+    pa = (float(np.sum(a_bin)) + 1.0) / (na + 2.0)
+    pb = (float(np.sum(b_bin)) + 1.0) / (nb + 2.0)
+    se = float(np.sqrt(pa * (1.0 - pa) / (na + 2.0) + pb * (1.0 - pb) / (nb + 2.0)))
+    z = float(_scipy_stats.norm.ppf(1.0 - alpha / 2.0))
+    d = pa - pb
+    return max(-1.0, d - z * se), min(1.0, d + z * se)
 
 
 def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict:
-    """Non-PPI analog: ordinary Welch's t-interval per pair (closed-form,
-    via scipy -- no bootstrap needed since this has no PPI rectifier).
+    """Non-PPI analog: Agresti-Caffo interval per pair, with Welch's t-test
+    supplying the p-value.
+
+    The point estimate stays the raw difference of proportions -- the +1/+1
+    adjustment is a variance-stabilising device for the *interval*, and
+    reporting the shrunken proportion as the effect would misstate the
+    observed difference. The interval is therefore very slightly off-centre
+    relative to the point estimate, which is expected and standard.
     """
     from scipy.stats import ttest_ind
     k = len(groups)
@@ -456,12 +667,12 @@ def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict
     pair_p = np.empty(len(pairs))
     for idx, (a, b) in enumerate(pairs):
         r = ttest_ind(groups[a], groups[b], equal_var=False)
-        ci = r.confidence_interval(confidence_level=1.0 - alpha)
         point[idx] = float(np.mean(groups[a]) - np.mean(groups[b]))
-        ci_lo[idx] = float(ci.low)
-        ci_hi[idx] = float(ci.high)
+        ci_lo[idx], ci_hi[idx] = _agresti_caffo_ci(groups[a], groups[b], alpha)
         pair_p[idx] = float(r.pvalue)
-    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi,
+            "pair_p": pair_p, "mean_test_p": None,
+            "ci_method": "Agresti-Caffo"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -471,6 +682,7 @@ def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict
 def _compute_group_stats(
     labels: list[str], arrays: list[np.ndarray], *, alpha: float, n_bootstrap: int, rng,
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[str] = None,
     lab_arrays: Optional[list[np.ndarray]] = None,
 ) -> list[GroupStat]:
     """Per-group mean + calibrated marginal CI (with gradient multi_ci
@@ -520,12 +732,22 @@ def _compute_group_stats(
         # not a subtle miscalibration). See evalstats.api's matching fix.
         pooled = np.concatenate(arrays).reshape(1, -1)
         _, _, ppi_score_range, data_kind = resolve_auto_robustness_method(
-            pooled, score_range=score_range, stacklevel=4,
+            pooled, score_range=score_range, eval_type=eval_type, stacklevel=4,
         )
         _, ppi_robustness_method = resolve_ppi_auto_methods(data_kind)
 
+    def _desc_dict(rob) -> dict:
+        return {
+            "median": float(rob.median[0]), "cv": float(rob.cv[0]), "iqr": float(rob.iqr[0]),
+            "cvar_10": float(rob.cvar_10[0]),
+            "p10": float(rob.percentiles[10][0]), "p25": float(rob.percentiles[25][0]),
+            "p50": float(rob.percentiles[50][0]), "p75": float(rob.percentiles[75][0]),
+            "p90": float(rob.percentiles[90][0]),
+        }
+
     out = []
     for i, (label, arr) in enumerate(zip(labels, arrays)):
+        a2d = arr.reshape(1, -1)
         if ppi_applied:
             lab_arr = lab_arrays[i]
             res = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, alpha, n_bootstrap, rng, ppi_score_range)
@@ -533,16 +755,19 @@ def _compute_group_stats(
             for a in GRADIENT_CI_ALPHAS:
                 g = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, a, n_bootstrap, rng, ppi_score_range)
                 multi_ci[a] = (float(g.ci_low), float(g.ci_high))
+            # Cheap extra pass (n_bootstrap=None -> no CI computed) purely for
+            # the raw median/cv/iqr/percentiles the PPI dispatch above doesn't
+            # provide -- see GroupStat.descriptive.
+            desc = _desc_dict(robustness_metrics(a2d, ["_"], n_bootstrap=None))
             out.append(GroupStat(
                 label=label, n=int(arr.size), mean=float(res.estimate), std=float(np.std(arr)),
                 ci_low=float(res.ci_low), ci_high=float(res.ci_high),
-                method=ppi_robustness_method, multi_ci=multi_ci,
+                method=ppi_robustness_method, multi_ci=multi_ci, descriptive=desc,
             ))
             continue
 
-        a2d = arr.reshape(1, -1)
         _, robustness_method, resolved_score_range, _ = resolve_auto_robustness_method(
-            a2d, score_range=score_range, stacklevel=4,
+            a2d, score_range=score_range, eval_type=eval_type, stacklevel=4,
         )
         rob = robustness_metrics(
             a2d, ["_"],
@@ -558,7 +783,7 @@ def _compute_group_stats(
             label=label, n=int(arr.size), mean=float(rob.mean[0]), std=float(rob.std[0]),
             ci_low=float(rob.ci_low[0]) if rob.ci_low is not None else float("nan"),
             ci_high=float(rob.ci_high[0]) if rob.ci_high is not None else float("nan"),
-            method=robustness_method, multi_ci=multi_ci,
+            method=robustness_method, multi_ci=multi_ci, descriptive=_desc_dict(rob),
         ))
     return out
 
@@ -566,6 +791,77 @@ def _compute_group_stats(
 # ─────────────────────────────────────────────────────────────────────────────
 # Main dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
+
+_EFFICIENCY_TESTS = {
+    # family -> (omnibus test, pairwise test), in judge_alignment's vocabulary.
+    # These MUST track what compare_unpaired actually runs a few hundred lines
+    # below: anova_oneway/Welch t for binary, Kruskal-Wallis/Mann-Whitney for
+    # the rank_based family. A mismatch would report the efficiency of a test
+    # the user never ran, which is worse than reporting nothing.
+    "binary_proportion": ("anova_oneway", "ttest"),
+    "rank_based": ("kruskalwallis", "mannwhitney"),
+}
+
+
+def _ppi_label_efficiency(labels, group_arrays, group_lab_arrays, family):
+    """Judge-human alignment and effective label count for the tests just run.
+
+    Returns ``(omnibus_rho2, omnibus_n_eff, {(a, b): (rho2, n_eff)})``, with
+    every n_eff expressed PER CONDITION. Any element may be None: this is a
+    reporting extra, so a failure here must never take down a comparison that
+    otherwise succeeded.
+
+    Why judge_alignment is called again here rather than reusing the caller's
+    AlignmentResult: that one is score-level (kappa, Pearson, Spearman on the
+    raw scores) and carries no n_eff at all unless the caller happened to pass
+    ``test=``, which the documented workflow does not. The number that governs
+    a PPI variance reduction is the correlation of the two INFLUENCE functions
+    for the specific test, so it has to be requested per test. Form 3 takes the
+    same (judge, human) arrays already in hand.
+
+    n_eff arrives as a total over the conditions a correlation spans (see
+    ``_pair_total_n``), so it is divided by k for the omnibus and by 2 for each
+    pair. That divisor is the whole reason this lives in one function.
+    """
+    tests = _EFFICIENCY_TESTS.get(family)
+    if tests is None or len(labels) < 2:
+        return None, None, {}
+    omnibus_test, pairwise_test = tests
+    conds = {
+        str(lbl): (np.asarray(g, dtype=float), np.asarray(lab, dtype=float))
+        for lbl, g, lab in zip(labels, group_arrays, group_lab_arrays)
+    }
+    k = len(conds)
+
+    def _call(test):
+        from evalstats.alignment import judge_alignment
+        # Suppressed for the same reason the omnibus call above is: this
+        # constructs its own AlignmentResult with no selection=, and letting it
+        # print would drop a second, worse-disclosed alignment report into the
+        # middle of ours.
+        with contextlib.redirect_stdout(io.StringIO()):
+            return judge_alignment(conds, design="between", test=test,
+                                   selection="random", ci=False)
+
+    om_rho2 = om_neff = None
+    if k >= 3:
+        try:
+            m = _call(omnibus_test).omnibus_metric
+            if m is not None:
+                om_rho2 = float(m["estimate"]) ** 2
+                om_neff = float(m["n_eff"]) / k
+        except Exception:
+            pass
+
+    pairs = {}
+    try:
+        pm = _call(pairwise_test).test_pairwise_metrics or {}
+        for (a, b), m in pm.items():
+            pairs[(str(a), str(b))] = (float(m["estimate"]) ** 2, float(m["n_eff"]) / 2)
+    except Exception:
+        pairs = {}
+    return om_rho2, om_neff, pairs
+
 
 def compare_unpaired(
     df: pd.DataFrame,
@@ -578,6 +874,9 @@ def compare_unpaired(
     n_boot: int = 2000,
     rng=None,
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[str] = None,
+    score_type: Optional[str] = None,
+    correction: Optional[str] = None,
     p_values: bool = True,
     omnibus: bool = True,
     secondary_metric: Optional[dict] = None,
@@ -672,6 +971,9 @@ def compare_unpaired(
 
     if alpha is None:
         alpha = get_alpha_ci()
+    # Capture the seed before default_rng() turns it into a Generator -- the
+    # result reports it, and a Generator's seed cannot be recovered afterwards.
+    rng_seed_used = int(rng) if isinstance(rng, (int, np.integer)) else None
     rng = np.random.default_rng(rng)
 
     resolved_item = item_col or _find_col(df, _CANONICAL_ALIASES["item"])
@@ -689,8 +991,36 @@ def compare_unpaired(
             "need at least 2 groups to compare."
         )
 
-    score_type = _detect_score_type(df[metric_col].dropna())
+    # A declared score type wins over detection. Detection reads the sample and
+    # can only ever guess: a 1-5 rubric that happens to contain no 1s looks the
+    # same as a 2-5 one, and the family it picks decides whether groups are
+    # compared as proportions or as ranks.
+    if score_type is None:
+        score_type = _detect_score_type(df[metric_col].dropna())
+    elif score_type not in VALID_SCORE_TYPES:
+        raise ValueError(
+            f"score_type must be one of {sorted(VALID_SCORE_TYPES)}, got {score_type!r}"
+        )
     family, _, _ = resolve_auto_unpaired_methods(score_type)
+
+    # A judged SECONDARY metric is not supported and must not fail quietly.
+    # PPI reaches the primary metric only: the Pareto joint bootstrap
+    # (core.pareto.pareto_bootstrap_unpaired) takes no labels, and the
+    # secondary metric's own marginal CIs are computed without them -- so an
+    # alignment entry for the secondary column would be accepted and then
+    # silently ignored, reporting uncorrected frontier probabilities as if
+    # they were corrected. Refuse instead. The common case (a cost/latency
+    # secondary, which has no judge and needs no correction) is unaffected.
+    if alignment is not None and secondary_col and secondary_col in alignment:
+        raise ValueError(
+            f"secondary_metric={secondary_col!r} also has a judge-alignment "
+            f"entry, but PPI correction of a secondary metric is not supported: "
+            f"the Pareto frontier bootstrap and the secondary metric's CIs are "
+            f"computed on raw scores, so the correction would be silently "
+            f"dropped. Pass alignment for the primary metric "
+            f"({metric_col!r}) only -- a secondary metric measured without a "
+            f"judge (cost, latency, length) needs no correction and works as-is."
+        )
 
     ppi_applied = alignment is not None and metric_col in alignment
     alignment_result = alignment[metric_col] if ppi_applied else None
@@ -770,7 +1100,7 @@ def compare_unpaired(
 
     group_stats = _compute_group_stats(
         labels, group_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
-        score_range=score_range,
+        score_range=score_range, eval_type=eval_type,
         lab_arrays=group_lab_arrays if ppi_applied else None,
     )
 
@@ -794,7 +1124,7 @@ def compare_unpaired(
     # suppressed only at this call site.
     omnibus_test_name = omnibus_statistic = omnibus_p_value = omnibus_corrected_p_value = None
     if k >= 3 and omnibus:
-        with contextlib.redirect_stdout(io.StringIO()) if ppi_applied else contextlib.nullcontext():
+        with _quiet_internal_alignment(alignment_result) if ppi_applied else contextlib.nullcontext():
             if family == "binary_proportion":
                 from evalstats.tests import anova_oneway
                 om = anova_oneway(
@@ -816,32 +1146,120 @@ def compare_unpaired(
         )
 
     # ── Pairwise table (all k>=2 -- Bonferroni/Holm no-op at n_pairs=1) ─────
+    #
+    # ONE estimand for every family: the mean difference (a difference of
+    # proportions for binary data, which is the same thing on a 0/1 variable).
+    # The rank_based family previously reported theta = P(a>b) + .5 P(a=b)
+    # here, because no validated mean-difference post-hoc existed for
+    # between-subjects data; simulations/harness/cases/ci_unpaired.py is that
+    # validation, so the reason no longer holds. Reporting a dominance
+    # probability also made this the only surface in evalstats stated in
+    # something other than a mean -- the paired path has always reported mean
+    # differences and carried its rank test (Wilcoxon) alongside as a
+    # supplementary p-value. This mirrors that arrangement exactly: means are
+    # the estimand, the rank test is still run and still reported.
     if family == "binary_proportion":
         pw = (
             _binary_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha)
             if ppi_applied else _binary_pairwise_uncorrected(group_arrays, ci_alpha)
         )
-        estimand, null_value = "mean_diff", 0.0
     else:
         pw = (
-            _rank_based_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha, n_boot, rng)
-            if ppi_applied else _rank_based_pairwise_uncorrected(group_arrays, ci_alpha, n_boot, rng)
+            _numeric_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha, n_boot, rng)
+            if ppi_applied else _numeric_pairwise_uncorrected(group_arrays, ci_alpha)
         )
-        estimand, null_value = "dominance", 0.5
+    estimand, null_value = "mean_diff", 0.0
 
     raw_p = np.asarray(pw["pair_p"], dtype=float)
-    corrected_p = correct_pvalues(raw_p, method="holm") if n_pairs > 1 else raw_p.copy()
+    # Shaffer's modified step-down rather than plain Holm. For an ALL-PAIRWISE
+    # family the two are identical at step 1 (Shaffer's first divisor is the
+    # largest achievable true-null count, which is m -- all groups equal), so
+    # the family-wise error rate is provably the same; measured identical to
+    # 4 decimals across k in {3,4,5} x likert/normal x 4000 reps. Shaffer is
+    # then strictly more powerful from step 2 on, because pairwise equality is
+    # transitive and not every remaining true-null count is achievable
+    # (measured +0.03 to +0.13 extra rejections per family under alternatives
+    # at k=4). Free power at identical FWER, so there is no reason to prefer
+    # Holm here. Needs n_groups to derive the divisor sequence.
+    pvalue_method = "shaffer" if correction is None else correction
+    if pvalue_method not in _SUPPORTED_CORRECTIONS:
+        raise ValueError(
+            f"correction={correction!r} is not available for design=\"unpaired\". "
+            f"Supported: {', '.join(sorted(_SUPPORTED_CORRECTIONS))} (default "
+            '"shaffer"). The resampling-based corrections -- romano_wolf, '
+            "westfall_young, max_t and the joint bootstrap -- build a joint null "
+            "across the family and are only implemented on the paired path, where "
+            "items are shared across conditions; between-subjects groups have no "
+            "such joint structure to resample. Note fdr_bh controls the false "
+            "discovery rate, not the family-wise error rate, so it is not "
+            "comparable to the others."
+        )
+    corrected_p = (
+        correct_pvalues(raw_p, method=pvalue_method, n_groups=k)
+        if n_pairs > 1 else raw_p.copy()
+    )
 
-    pairwise = [
-        GroupDiffResult(
+    # Judge-human alignment and effective label count for the tests just run.
+    # Reporting only: never allowed to fail the comparison, and skipped
+    # entirely when the metric is not judge-corrected (there is no PPI variance
+    # reduction to describe).
+    _om_rho2 = _om_neff = _n_lab_per_cond = None
+    _marginal_rho2 = None
+    _pair_eff = {}
+    _marginal_neff = None
+    if ppi_applied:
+        _om_rho2, _om_neff, _pair_eff = _ppi_label_efficiency(
+            labels, group_arrays, group_lab_arrays, family)
+        # Marginal means are PPI-corrected here too (see _compute_group_stats'
+        # lab_arrays), and their estimand is a plain mean, so each group's own
+        # Pearson r^2 governs. One number per group, spanning that group only.
+        from evalstats.alignment import _marginal_efficiency
+        _marg = [_marginal_efficiency(g, lab) for g, lab in zip(group_arrays, group_lab_arrays)]
+        _marginal_neff = [m[1] for m in _marg]
+        _marginal_rho2 = [m[0] for m in _marg]
+        if any(v is None for v in _marginal_neff):
+            _marginal_neff = None
+        if any(v is None for v in _marginal_rho2):
+            _marginal_rho2 = None
+        _counts = [int(np.count_nonzero(~np.isnan(lab))) for lab in group_lab_arrays]
+        _n_lab_per_cond = float(np.mean(_counts)) if _counts else None
+
+    def _eff_for(a, b):
+        """Pair efficiency, tolerating either key order from judge_alignment."""
+        return _pair_eff.get((a, b)) or _pair_eff.get((b, a)) or (None, None)
+
+    def _rank_biserial_for(i, j):
+        """2*theta for this pair, corrected when the metric is judge-corrected.
+
+        Reporting only, like the efficiency numbers above: a failure here must
+        cost a column, not the comparison.
+        """
+        try:
+            from evalstats.tests import _midrank_theta, _p_x_gt_y_midrank, _ppi_two_sample
+            if not ppi_applied:
+                return 2.0 * float(_midrank_theta(group_arrays[i], group_arrays[j]))
+            res = _ppi_two_sample(
+                group_arrays[i], group_arrays[j], group_lab_arrays[i], group_lab_arrays[j],
+                lambda _x, _y: _p_x_gt_y_midrank(_x, _y) - 0.5,
+                alpha, n_boot, rng,
+            )
+            return 2.0 * float(res.estimate)
+        except Exception:
+            return None
+
+    pairwise = []
+    for idx, (i, j) in enumerate(pw["pairs"]):
+        _r2, _ne = _eff_for(str(labels[i]), str(labels[j]))
+        pairwise.append(GroupDiffResult(
             label_a=labels[i], label_b=labels[j], estimand=estimand, null_value=null_value,
             point_estimate=float(pw["point"][idx]),
             ci_low=float(pw["ci_lo"][idx]), ci_high=float(pw["ci_hi"][idx]),
             p_value=float(corrected_p[idx]), raw_p_value=float(raw_p[idx]),
             n_a=int(group_arrays[i].size), n_b=int(group_arrays[j].size),
-        )
-        for idx, (i, j) in enumerate(pw["pairs"])
-    ]
+            mean_test_p=(None if pw["mean_test_p"] is None
+                         else float(pw["mean_test_p"][idx])),
+            rho2=_r2, n_eff=_ne, rank_biserial=_rank_biserial_for(i, j),
+        ))
 
     pareto_dict = None
     if secondary_col:
@@ -875,8 +1293,13 @@ def compare_unpaired(
         omnibus_test_name=omnibus_test_name, omnibus_statistic=omnibus_statistic,
         omnibus_p_value=omnibus_p_value, omnibus_corrected_p_value=omnibus_corrected_p_value,
         alpha=alpha, n_pairs=n_pairs,
+        rng_seed=rng_seed_used,
+        pairwise_ci_method=pw.get("ci_method"),
         ci_correction="bonferroni" if n_pairs > 1 else "none",
-        pvalue_correction="holm" if n_pairs > 1 else "none",
+        pvalue_correction=pvalue_method if n_pairs > 1 else "none",
         ppi_applied=ppi_applied, alignment_result=alignment_result,
+        omnibus_rho2=_om_rho2, omnibus_n_eff=_om_neff,
+        n_lab_per_condition=_n_lab_per_cond,
+        marginal_n_eff=_marginal_neff, marginal_rho2=_marginal_rho2,
         show_p_values=p_values, pareto=pareto_dict,
     )

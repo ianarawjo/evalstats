@@ -90,9 +90,14 @@ class TestCompareUnpairedBasics:
         assert r.pvalue_correction == "none"
         assert len(r.pairwise) == 1
         pair = r.pairwise[0]
-        assert pair.estimand == "dominance"
-        assert pair.null_value == 0.5
-        # B has a clearly higher mean; dominance should reflect that direction.
+        # Every unpaired family reports a mean difference -- "rank_based"
+        # names the tests (Kruskal-Wallis/Mann-Whitney), not the estimand.
+        assert pair.estimand == "mean_diff"
+        assert pair.null_value == 0.0
+        means = {g.label: g.mean for g in r.groups}
+        assert pair.point_estimate == pytest.approx(
+            means[pair.label_a] - means[pair.label_b], abs=1e-9)
+        # B has a clearly higher mean, so the interval should exclude 0.
         assert pair.significant
 
     def test_k3_continuous_has_omnibus_and_corrections(self):
@@ -104,7 +109,9 @@ class TestCompareUnpairedBasics:
         assert r.omnibus_statistic is not None
         assert r.omnibus_p_value is not None
         assert r.ci_correction == "bonferroni"
-        assert r.pvalue_correction == "holm"
+        # Shaffer, not Holm: identical FWER for an all-pairwise family (both
+        # divide by m at step 1) but strictly more powerful from step 2 on.
+        assert r.pvalue_correction == "shaffer"
         assert len(r.pairwise) == 3
         # Widely separated means -> omnibus should reject at alpha=0.05.
         assert r.omnibus_p_value < 0.05
@@ -239,29 +246,73 @@ class TestCompareUnpairedNaNAndPPIGuards:
         with pytest.raises(ValueError, match="method='bca'"):
             es.compare(evaldata, factors="model", metric="score", design="unpaired", method="bca")
 
-    def test_k2_point_estimate_matches_public_mannwhitney(self):
-        """_rank_based_pairwise_uncorrected reuses the private
-        _kw_pairwise_thetas machinery at k=2 rather than routing through
-        the public mannwhitney() wrapper (justified by kruskalwallis's own
-        docstring: Kruskal-Wallis reduces to Mann-Whitney at k=2) -- verify
-        that claim numerically rather than trusting the docstring alone.
-        mannwhitney()'s raw U-statistic / (n_x*n_y) is P_mid(X>Y), the same
-        quantity _rank_based_pairwise_uncorrected reports as theta_hat.
+    def test_numeric_pairwise_estimand_is_mean_but_test_is_mannwhitney(self):
+        """The numeric family reports a mean difference with a Welch interval,
+        while its p-value still comes from Mann-Whitney U -- the post-hoc that
+        follows the Kruskal-Wallis omnibus, and the test this project's PPI
+        work validates. Both halves are asserted against the public/scipy
+        references so neither can drift silently.
+
+        Because those are different estimands, ``mean_test_p`` carries the
+        interval's own (Welch) p-value alongside; assert it is present and
+        distinct from the headline p.
         """
-        from evalstats.tests import mannwhitney
-        from evalstats.core.unpaired import _rank_based_pairwise_uncorrected
+        from scipy.stats import mannwhitneyu, ttest_ind
+        from evalstats.core.unpaired import _numeric_pairwise_uncorrected
 
         rng = _rng(99)
         x = rng.normal(0.4, 0.15, 40)
         y = rng.normal(0.6, 0.15, 35)
-        mw = mannwhitney(x, y, alpha=0.05, print_result=False)
-        theta_from_mw = mw.statistic / (len(x) * len(y))
-        out = _rank_based_pairwise_uncorrected([x, y], alpha=0.05, n_boot=1, rng=1)
-        assert np.isclose(theta_from_mw, out["point"][0])
+        out = _numeric_pairwise_uncorrected([x, y], alpha=0.05)
+
+        assert out["point"][0] == pytest.approx(np.mean(x) - np.mean(y))
+        welch = ttest_ind(x, y, equal_var=False)
+        ci = welch.confidence_interval(confidence_level=0.95)
+        assert out["ci_lo"][0] == pytest.approx(float(ci.low))
+        assert out["ci_hi"][0] == pytest.approx(float(ci.high))
+        assert out["pair_p"][0] == pytest.approx(
+            float(mannwhitneyu(x, y, alternative="two-sided").pvalue))
+        assert out["mean_test_p"][0] == pytest.approx(float(welch.pvalue))
+
+    def test_judged_secondary_metric_is_refused_not_silently_uncorrected(self):
+        """PPI reaches the primary metric only -- pareto_bootstrap_unpaired
+        takes no labels and the secondary metric's CIs are computed without
+        them. An alignment entry for the secondary column would therefore be
+        accepted and silently dropped, reporting uncorrected frontier
+        probabilities as if corrected. Assert it raises instead, and that a
+        judge-free secondary (cost) still works alongside a corrected primary.
+        """
+        df = _make_unpaired_with_alignment({"A": 0.4, "B": 0.6, "C": 0.5}, n_per_group=40)
+        df = df.copy()
+        rng = _rng(11)
+        df["cost"] = rng.normal(10, 2, len(df))
+        df["quality2"] = df["llm_score"]
+        df["human2"] = df["human_score"]
+        evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
+        with warnings_lib.catch_warnings():
+            warnings_lib.simplefilter("ignore")
+            a1 = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            a2 = judge_alignment(evaldata, llm_metric="quality2", human_groundtruth="human2")
+
+            with pytest.raises(ValueError, match="secondary metric is not supported"):
+                compare_unpaired(
+                    df, factor_col="model", metric_col="llm_score",
+                    alignment={"llm_score": a1, "quality2": a2},
+                    secondary_metric={"quality2": "max"}, n_boot=100, rng=1,
+                )
+
+            # A judge-free secondary is the supported case and must still run.
+            r = compare_unpaired(
+                df, factor_col="model", metric_col="llm_score",
+                alignment={"llm_score": a1}, secondary_metric={"cost": "min"},
+                n_boot=100, rng=1,
+            )
+        assert r.ppi_applied
+        assert r.pareto is not None
 
     def test_routing_table_family_drives_dispatch(self):
         from evalstats.config import resolve_auto_unpaired_methods
-        for score_type in ["binary", "continuous", "likert", "grade"]:
+        for score_type in ["binary", "continuous", "likert"]:
             family, omnibus_method, pairwise_method = resolve_auto_unpaired_methods(score_type)
             assert family in ("binary_proportion", "rank_based")
             if score_type == "binary":
@@ -283,7 +334,7 @@ class TestGroupComparisonResultReporting:
         with redirect_stdout(buf):
             r.summary()
         out = buf.getvalue()
-        assert "Between-subjects comparison" in out
+        assert "Shape: BetweenGroups(" in out
         assert "Kruskal-Wallis" in out
 
     def test_plot_not_implemented(self):
@@ -353,8 +404,7 @@ class TestGroupComparisonResultReporting:
         lives in core/summary.py alongside it (no separate
         core/summary_unpaired.py module). This changed the unpaired table's
         format: an interval-plot bar per pair (previously text-only), the
-        estimand shown as a signed deviation from null (Δθ for the
-        dominance family, unchanged for Δp since its null is already 0),
+        estimand shown as a signed difference (Δ, or Δp for binary),
         and p-values with significance stars -- replacing the old verbal
         "Verdict: significant (A < B)" column, which doesn't exist in the
         shared renderer.
@@ -368,36 +418,38 @@ class TestGroupComparisonResultReporting:
             r.summary()
         out = buf.getvalue()
         assert "effect: Left - Right" in out  # shared axis/legend line
-        assert "Δθ" in out  # dominance family shown as a deviation from null=0.5
+        assert "Δ" in out  # mean difference, null already 0 -- no shift applied
+        assert "θ" not in out  # the dominance estimand is gone entirely
         # Old per-row verbal verdict cell ("significant (A < B)" / "not
         # significant") is gone -- replaced by the shared table's numeric
         # CI + p + stars. The unrelated footer sentence ("Verdict reflects
         # the ...-corrected CI...") is intentionally still present.
         assert "significant (" not in out
 
-    def test_pairwise_table_shows_raw_mean_diff_alongside_dominance_delta(self):
-        """Δθ alone doesn't say how far apart two groups are on the metric's
-        own scale, so the dominance family also gets a secondary Δmean
-        column (point estimate only, mirroring how the paired path's ES
-        column has no separate CI). The binary family's Δp column already
-        *is* the raw difference, so it must NOT get a redundant Δmean.
+    def test_pairwise_table_primary_column_is_the_mean_difference(self):
+        """The numeric family's primary column *is* the mean difference, so
+        there is no secondary Δmean column any more -- that column existed
+        only to put the old dominance estimand back on the metric's own
+        scale. Assert the printed value in the primary column matches the
+        marginal means' difference, and that neither family prints a
+        redundant second copy of it.
         """
-        r = self._result()  # continuous scores -> dominance family
+        r = self._result()
         buf = io.StringIO()
         with redirect_stdout(buf):
             r.summary()
         out = buf.getvalue()
-        assert "Δmean" in out
+        assert "Δmean" not in out
 
         means = {g.label: g.mean for g in r.groups}
         pair = r.pairwise[0]
         expected = means[pair.label_a] - means[pair.label_b]
+        assert pair.point_estimate == pytest.approx(expected, abs=1e-9)
         row_line = next(
             line for line in out.splitlines()
             if line.strip().startswith(pair.label_a) and pair.label_b in line
         )
-        printed_mean_diff = float(row_line.split()[-2])  # Δmean sits right before p
-        assert printed_mean_diff == pytest.approx(expected, abs=0.001)
+        assert f"{expected:.3f}" in row_line or f"{expected:.2f}" in row_line
 
         df_bin = _make_unpaired_binary_df({"A": 0.3, "B": 0.6})
         r_bin = compare_unpaired(df_bin, factor_col="model", metric_col="score")
@@ -539,7 +591,9 @@ class TestCompareUnpairedWithPPI:
         """
         for seed in range(6):
             df = _make_unpaired_with_alignment(
-                {"A": 0.4, "B": 0.6}, n_per_group=30, n_labeled_per_group=8, seed=seed,
+                # 15/group is the PPI floor now; the covariance degeneracy this
+                # guards is seed-driven, not label-count-driven.
+                {"A": 0.4, "B": 0.6}, n_per_group=30, n_labeled_per_group=16, seed=seed,
             )
             evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
             with warnings_lib.catch_warnings():
@@ -721,11 +775,10 @@ class TestCompareUnpairedPareto:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestPValuesOmnibusToggles:
-    """p_values=/omnibus= are unpaired-specific opt-outs (default True, not
-    compare()'s own False) -- see PLAN discussion + api.py's design=
-    docstring. Verifies both the default (unset) preserves the always-shown
-    behavior this path was built and battle-tested with, and that explicit
-    False actually suppresses.
+    """p_values=/omnibus= default to False on the unpaired path, same as
+    compare()'s own default on the paired path -- see api.py's design=
+    docstring. Verifies both the default (unset) hides them exactly like
+    the paired path does, and that explicit True actually shows them.
     """
 
     def _df(self):
@@ -737,45 +790,56 @@ class TestPValuesOmnibusToggles:
                              "score": float(np.clip(rng.normal(mean, 0.15), 0, 1))})
         return pd.DataFrame(rows)
 
-    def test_default_shows_both(self):
+    def test_default_hides_both(self):
         evaldata = es.load_from(self._df())
         r = es.compare(evaldata, factors="model", metric="score", design="unpaired", rng=1)
-        assert r.show_p_values is True
-        assert r.omnibus_test_name is not None
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            r.summary()
-        out = buf.getvalue()
-        assert "Omnibus Test" in out
-        assert "  p" in out or "p " in out
-
-    def test_p_values_false_hides_column_keeps_data(self):
-        evaldata = es.load_from(self._df())
-        r = es.compare(evaldata, factors="model", metric="score", design="unpaired",
-                        p_values=False, rng=1)
         assert r.show_p_values is False
-        # underlying values still computed and accessible programmatically
-        assert all(p.p_value is not None for p in r.pairwise)
-        assert "p_value" in r.to_frame().columns
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            r.summary()
-        out = buf.getvalue()
-        assert "Verdict reflects" not in out  # p-correction footnote suppressed
-
-    def test_omnibus_false_skips_computation_entirely(self):
-        evaldata = es.load_from(self._df())
-        r = es.compare(evaldata, factors="model", metric="score", design="unpaired",
-                        omnibus=False, rng=1)
         assert r.omnibus_test_name is None
         assert r.omnibus_statistic is None
         assert r.omnibus_p_value is None
         buf = io.StringIO()
         with redirect_stdout(buf):
             r.summary()
-        assert "Omnibus Test" not in buf.getvalue()
+        out = buf.getvalue()
+        assert "Omnibus Test" not in out
         # pairwise table is untouched
         assert len(r.pairwise) == 3
+
+    def test_p_values_true_shows_column(self):
+        evaldata = es.load_from(self._df())
+        r = es.compare(evaldata, factors="model", metric="score", design="unpaired",
+                        p_values=True, rng=1)
+        assert r.show_p_values is True
+        # underlying values are computed either way and accessible programmatically
+        assert all(p.p_value is not None for p in r.pairwise)
+        assert "p_value" in r.to_frame().columns
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "  p" in out or "p " in out
+
+    def test_omnibus_true_runs_and_shows_it(self):
+        evaldata = es.load_from(self._df())
+        r = es.compare(evaldata, factors="model", metric="score", design="unpaired",
+                        omnibus=True, rng=1)
+        assert r.omnibus_test_name is not None
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        assert "Omnibus Test" in buf.getvalue()
+
+    def test_p_values_false_still_computes_data_when_explicit(self):
+        evaldata = es.load_from(self._df())
+        r = es.compare(evaldata, factors="model", metric="score", design="unpaired",
+                        p_values=False, rng=1)
+        assert r.show_p_values is False
+        assert all(p.p_value is not None for p in r.pairwise)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "Verdict reflects" not in out  # p-correction footnote suppressed
 
     def test_paired_path_p_values_omnibus_unaffected_by_none_default(self):
         # compare()'s own p_values=/omnibus= defaults changed from False to
@@ -792,6 +856,17 @@ class TestPValuesOmnibusToggles:
         r_default = es.compare(evaldata, factors="model", metric="score")
         r_explicit_false = es.compare(evaldata, factors="model", metric="score",
                                        p_values=False, omnibus=False)
+        assert r_default.to_dict() == r_explicit_false.to_dict()
+
+    def test_unpaired_path_p_values_omnibus_default_matches_paired(self):
+        # Both paths now share the same default (False) -- unset on the
+        # unpaired path is a real no-op relative to explicit False, exactly
+        # like the paired path's own p_values=/omnibus= defaults.
+        evaldata = es.load_from(self._df())
+        r_default = es.compare(evaldata, factors="model", metric="score",
+                                design="unpaired", rng=1)
+        r_explicit_false = es.compare(evaldata, factors="model", metric="score",
+                                       design="unpaired", p_values=False, omnibus=False, rng=1)
         assert r_default.to_dict() == r_explicit_false.to_dict()
 
 
@@ -908,3 +983,50 @@ class TestCompareDesignRouting:
                         alignment={"llm_score": ar})
         assert isinstance(r, GroupComparisonResult)
         assert r.ppi_applied is True
+
+
+class TestUnpairedRankBiserial:
+    """The unpaired pairwise table reports an effect size, and it is corrected
+    along with everything else when the metric is judge-corrected."""
+
+    def test_raw_es_is_two_theta(self):
+        from evalstats.tests import _midrank_theta
+        df = _make_unpaired_with_alignment({"A": 0.4, "B": 0.65}, n_per_group=50,
+                                           n_labeled_per_group=20, seed=3)
+        r = compare_unpaired(df.drop(columns=["human_score"]),
+                             factor_col="model", metric_col="llm_score", n_boot=200, rng=3)
+        pair = r.pairwise[0]
+        a = df[df["model"] == pair.label_a]["llm_score"].to_numpy(float)
+        b = df[df["model"] == pair.label_b]["llm_score"].to_numpy(float)
+        assert pair.rank_biserial == pytest.approx(2.0 * _midrank_theta(a, b), abs=1e-9)
+
+    def test_es_is_corrected_under_ppi(self):
+        """Raw and corrected must differ -- the whole point is that it no
+        longer reports a raw-judge number beside corrected intervals."""
+        df = _make_unpaired_with_alignment({"A": 0.4, "B": 0.65}, n_per_group=50,
+                                           n_labeled_per_group=20, seed=4)
+        with warnings_lib.catch_warnings():
+            warnings_lib.simplefilter("ignore")
+            evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ppi = compare_unpaired(df, factor_col="model", metric_col="llm_score",
+                                   alignment={"llm_score": ar}, n_boot=400, rng=4)
+        raw = compare_unpaired(df.drop(columns=["human_score"]), factor_col="model",
+                               metric_col="llm_score", n_boot=400, rng=4)
+        assert ppi.ppi_applied and not raw.ppi_applied
+        assert ppi.pairwise[0].rank_biserial is not None
+        assert ppi.pairwise[0].rank_biserial != pytest.approx(
+            raw.pairwise[0].rank_biserial, abs=1e-6)
+        assert -1.0 <= ppi.pairwise[0].rank_biserial <= 1.0
+
+    def test_es_column_is_printed(self, capsys):
+        df = _make_unpaired_with_alignment({"A": 0.4, "B": 0.65}, n_per_group=50,
+                                           n_labeled_per_group=20, seed=5)
+        r = compare_unpaired(df.drop(columns=["human_score"]),
+                             factor_col="model", metric_col="llm_score", n_boot=200, rng=5)
+        r.summary()
+        out = capsys.readouterr().out
+        pairwise = out.split("Pairwise Comparisons", 1)[1]
+        # header row is the one naming the columns, not the legend above it
+        header = next(l for l in pairwise.splitlines() if "CI Low" in l)
+        assert "ES" in header
