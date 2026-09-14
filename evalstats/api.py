@@ -49,6 +49,7 @@ from evalstats.core.summary import (
     _pretty_correction,
     _pretty_marginal_ci_method,
     _pretty_simultaneous_ci,
+    _pairwise_ci_name,
 )
 
 
@@ -641,11 +642,6 @@ class ComparisonResult:
         n_pairs = len(pw.results)
         p_test = pw.p_value_test
         correction = (pw.correction_method or "none") if n_pairs > 1 else "none"
-        pair_code = bundle.resolved_method
-        pair_name_code = (
-            f"ppi_{pair_code}" if bundle.ppi_applied and pair_code and not pair_code.startswith("ppi_")
-            else pair_code
-        )
         friedman = pw.friedman
         kind = bundle.resolved_data_kind
         return json_safe({
@@ -667,8 +663,8 @@ class ComparisonResult:
                 "name": _pretty_marginal_ci_method(bundle.resolved_ci_method),
             },
             "pairwise_ci": {
-                "code": pair_code,
-                "name": _pretty_marginal_ci_method(pair_name_code),
+                "code": bundle.resolved_method,
+                "name": _pairwise_ci_name(pw),
                 "simultaneous": {
                     "code": pw.simultaneous_ci_method,
                     "name": _pretty_simultaneous_ci(pw.simultaneous_ci_method),

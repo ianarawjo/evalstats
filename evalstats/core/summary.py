@@ -104,6 +104,14 @@ def _p_test_label(p_test: Optional[str]) -> str:
     return P_TEST_NAMES.get(p_test or "", p_test or "p-value")
 
 
+def _pairwise_ci_name(pairwise: PairwiseMatrix) -> Optional[str]:
+    """Display name of the pairwise CI method, as the pairwise table prints it."""
+    first_result = next(iter(pairwise.results.values()), None)
+    if first_result is None:
+        return None
+    return _pretty_marginal_ci_method(first_result.test_method) or first_result.test_method
+
+
 def _p_column_header(p_test: Optional[str], *, ppi_tag: str, binary: bool) -> str:
     """Pairwise-table column header for the stored p-value."""
     if p_test == "romano_wolf":
@@ -279,6 +287,7 @@ def print_analysis_summary(
             show_rank_probabilities=show_rank_probabilities,
             factor_singular=factor_singular,
             factor_plural=factor_plural,
+            ci_alpha=ci_alpha,
         )
         return
 
@@ -315,6 +324,7 @@ def print_analysis_summary(
                 show_rank_probabilities=show_rank_probabilities,
                 factor_singular=factor_singular,
                 factor_plural=factor_plural,
+                ci_alpha=ci_alpha,
             )
         else:
             _print_bundle_summary(
@@ -329,6 +339,7 @@ def print_analysis_summary(
                 item_singular=item_singular,
                 item_plural=item_plural,
                 show_rank_probabilities=show_rank_probabilities,
+                ci_alpha=ci_alpha,
             )
         print()
 
@@ -669,6 +680,7 @@ def _print_multi_model_summary(
     show_rank_probabilities: bool = False,
     factor_singular: str = "model",
     factor_plural: str = "models",
+    ci_alpha: Optional[float] = None,
 ) -> None:
     """Print a multi-factor summary.
 
@@ -676,6 +688,7 @@ def _print_multi_model_summary(
     carries that axis in its model slot whatever the source column was called,
     so every label here comes from these rather than the word "model".
     """
+    _mm_alpha = get_alpha_ci() if ci_alpha is None else ci_alpha
     _print_loud_section("Analysis Summary")
     # Same "a × b × c" phrasing the per-section Shape lines use, rather than
     # the BenchmarkShape repr. Dimensions that are a single implicit level
@@ -729,6 +742,7 @@ def _print_multi_model_summary(
         style=style,
         min_meaningful_diff=min_meaningful_diff,
         show_rank_probabilities=show_rank_probabilities,
+        ci_alpha=ci_alpha,
     )
     print()
 
@@ -744,6 +758,7 @@ def _print_multi_model_summary(
             style=style,
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
+            ci_alpha=ci_alpha,
         )
         print()
 
@@ -770,6 +785,7 @@ def _print_multi_model_summary(
                 style=style,
                 guidance=False,
                 show_rank_probabilities=show_rank_probabilities,
+                ci_alpha=ci_alpha,
             )
 
     print()
@@ -780,7 +796,7 @@ def _print_multi_model_summary(
         # per-template section above is already gated the same way.
         return
     _print_loud_section(f"Cross-{factor_singular.capitalize()} Ranking (all {factor_singular}/template pairs)")
-    _print_model_template_matrix(bundle)
+    _print_model_template_matrix(bundle, alpha=_mm_alpha)
 
     # The unconditional "Mean Performance" listing orders by mean, so it
     # needs nothing from the rank distribution. P(Best)/E[Rank] are read
@@ -853,9 +869,9 @@ def _print_multi_model_summary(
     print()
     _print_subsection(
         f"--- {stat_label} Performance: All {n_show} "
-        f"(marginal {int(round((1 - get_alpha_ci()) * 100))}% CIs) ---"
+        f"(marginal {int(round((1 - _mm_alpha) * 100))}% CIs) ---"
     )
-    _ci_legend_mm = _legend_ci_label(style, int(round((1 - get_alpha_ci()) * 100)), cross_rob.multi_ci is not None)
+    _ci_legend_mm = _legend_ci_label(style, int(round((1 - _mm_alpha) * 100)), cross_rob.multi_ci is not None)
     _mean_marker_mm = _mean_marker_legend(style, stat_label.lower())
     print(
         f"{_DIM}  axis: [{ma_low:.3f}, {ma_high:.3f}]  "
@@ -908,11 +924,11 @@ def _print_multi_model_summary(
         )
 
     print()
-    _print_cross_model_executive_summary(bundle)
+    _print_cross_model_executive_summary(bundle, alpha=_mm_alpha)
     print()
 
 
-def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
+def _print_model_template_matrix(bundle: MultiModelBundle, *, alpha: Optional[float] = None) -> None:
     """Print a model × template score matrix (mean ±std, heat encoding)."""
     model_labels = bundle.benchmark.model_labels
     template_labels = bundle.benchmark.template_labels
@@ -943,7 +959,7 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     cross_means_all = cross.robustness.mean
     sort_idx = leaderboard_order(cross_means_all)
     labels_sorted = [cross_labels_all[i] for i in sort_idx]
-    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
+    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted, alpha=alpha)
     best_cells: set[tuple[str, str]] = set()
     for label, group in label_to_group.items():
         if group == "#1" and label in levels:
@@ -994,13 +1010,14 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # Footer
     print(div)
     print(
-        f"  * = statistically tied for best (95% CI, not significantly beaten)  |  "
+        f"  * = statistically tied for best "
+        f"({int(round((1 - (get_alpha_ci() if alpha is None else alpha)) * 100))}% CI, not significantly beaten)  |  "
         f"heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]"
     )
     print()
 
 
-def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
+def _print_cross_model_executive_summary(bundle: MultiModelBundle, *, alpha: Optional[float] = None) -> None:
     """Print executive leaderboard for cross-model (model/template) pairs."""
     cross = bundle.cross_model
     labels = list(cross.labels)
@@ -1011,7 +1028,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     means = cross.robustness.mean
     sort_idx = leaderboard_order(means)
     labels_sorted = [labels[i] for i in sort_idx]
-    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
+    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted, alpha=alpha)
 
     levels = cell_levels(bundle.benchmark)
     split_pairs = [levels.get(label, (label, "")) for label in labels]
@@ -1211,7 +1228,7 @@ def _prepare_paired_pairwise_rows(
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
     # Same formatter the marginal section uses, so one run does not name the
     # same method two ways ("PPI Logit-t" above, "PPI ppi_logit_t" here).
-    _pretty_ci_method = _pretty_marginal_ci_method(first_result.test_method) or first_result.test_method
+    _pretty_ci_method = _pairwise_ci_name(bundle.pairwise)
     pair_results = list(bundle.pairwise.results.values())
 
     # Canonical left/right ordering based on expected-rank order keeps rows
@@ -1379,6 +1396,7 @@ def _prepare_paired_pairwise_rows(
         _print_critical_difference_groups(
             bundle.pairwise,
             labels_sorted=labels_sorted,
+            alpha=_alpha,
         )
 
     meta = {
@@ -1675,7 +1693,7 @@ def _print_pairwise_section(
         _any_multi_ci = (style == "gradient") or any(
             row.get("multi_ci") is not None for row in rows[:max_pairs]
         )
-        _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
+        _pair_ci_pct = int(round((1 - (get_alpha_ci() if ci_alpha is None else ci_alpha)) * 100))
         _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
         _pair_mean_marker = _mean_marker_legend(style, pair_stat_label.lower())
         print(
@@ -2109,7 +2127,8 @@ def _print_bundle_summary(
     metric: Optional[str] = None,
 ) -> None:
     if p_value_method is _UNSET:
-        p_value_method = bundle.p_value_method
+        # The stored request already chose the test; only an explicit override is checked.
+        p_value_method = None if bundle.p_value_method is None else "auto"
     template_col_width = min(
         24, max(len(item_singular), max(len(l) for l in bundle.robustness.labels)) + 2
     )

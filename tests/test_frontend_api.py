@@ -260,6 +260,43 @@ def test_methods_record_names_what_ran():
     assert m["resampling"]["n_bootstrap"] > 0 and m["resampling"]["rng_seed"] == result.rng_seed
 
 
+def _summary_text(result) -> str:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result.summary()
+    return buf.getvalue()
+
+
+def test_methods_names_match_the_printed_summary():
+    result = _compare(_df({"a": 0.0, "b": 0.05, "c": 0.1}, n=20), factors="model")
+    m, text = result.methods(), _summary_text(result)
+    assert f"--- Pairwise Comparisons (95% {m['pairwise_ci']['name']} CIs) ---" in text
+    assert f"95% CI method: {m['mean_ci']['name']}\n" in text
+    assert f"Simultaneous CI method: {m['pairwise_ci']['simultaneous']['name']}" in text
+    assert f"p-value method: {m['p_values']['test']['name']}" in text
+    assert f"FWER correction for p-values: {m['p_values']['correction']['name']}" in text
+
+
+def test_nemenyi_with_two_entities_falls_back_with_a_note():
+    result = _compare(_df({"a": 0.0, "b": 0.1}, n=20), factors="model", pairwise_test="nemenyi")
+    assert "p (wsr)" in _summary_text(result)
+    assert result.methods()["p_values"]["test"]["code"] == "wilcoxon_signed_rank"
+    assert "nemenyi_unavailable" in {n.code for n in result.notes}
+
+
+def test_summary_labels_use_the_result_alpha():
+    single = _compare(_df({"a": 0.0, "b": 0.05, "c": 0.1}, n=20), factors="model", alpha=0.1)
+    text = _summary_text(single)
+    assert "computed from 90% CI" in text and "95% CI" not in text
+
+    two = _compare(_two_factor_df(["m1", "m2", "m3"], ["p1", "p2"]), factors=["model", "prompt"], alpha=0.1)
+    text = _summary_text(two)
+    assert "90% CI method: Logit-t" in text and "95% CI method" not in text
+    assert "α=0.1" in text and "α=0.05" not in text
+    assert "(90% CI, not significantly beaten)" in text
+
+
 # ── one pairwise p-value ────────────────────────────────────────────────────
 
 def test_pairs_carry_one_p_value_named_by_p_test():

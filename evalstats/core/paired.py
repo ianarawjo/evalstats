@@ -2910,6 +2910,12 @@ def all_pairwise(
     )
     chosen = p_test
     if chosen == "nemenyi" and friedman is None:
+        _note_warn(
+            "Nemenyi p-values are unavailable (they need three or more entities), "
+            "so the default pairwise p-values are reported instead.",
+            code="nemenyi_unavailable",
+            stacklevel=2,
+        )
         chosen = "auto"
     if chosen == "auto":
         chosen = "ci" if (rw_pvalues is not None or data_kind == "binary") else "wilcoxon"

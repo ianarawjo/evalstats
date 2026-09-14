@@ -63,6 +63,11 @@ in place of `evalstats>=0.3.1` and drop its imports of private helpers.
   (k >= 3).
 - A Wilcoxon p-value for a pair whose differences are all zero is 1.0; it was
   missing before.
+- `pairwise_test="nemenyi"` with two entities reports the default p-values and
+  adds a `nemenyi_unavailable` note; `.summary()` used to show a column of N/A.
+- `.summary()` labels intervals with the result's alpha everywhere. Two-factor
+  summaries printed "95%" and "α=0.05" for other alphas, and the rank-band line
+  and pairwise legend used the global alpha.
 
 ### Removed
 
