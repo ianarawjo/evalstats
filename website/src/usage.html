@@ -346,8 +346,8 @@ result.summary()</code></pre>
   gpt-4o-mini     gemma-3-4b-it               ·······░│▓▓█████▓▒░·······     +0.0792   -0.0025   +0.1598    0.480  0.007264*
   ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
   CI method: Paired logit-t  |  p-value method: Wilcoxon signed-rank  |  α=0.05
-  Simultaneous CI method: Šidák  |  FWER correction for p-values: Romano-Wolf
-  p (wsr) = Wilcoxon signed-rank (romano_wolf-corrected)
+  Simultaneous CI method: Šidák  |  FWER correction for p-values: Shaffer
+  p (wsr) = Wilcoxon signed-rank (Shaffer-corrected)
   stars: * p<0.01, ** p<0.001, *** p<0.0001
 
   Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI:
@@ -367,7 +367,8 @@ result.summary()</code></pre>
     variation across models. In the pairwise comparisons, <code>qwen3-8b</code> vs
     <code>gpt-4o-mini</code> has a CI that crosses zero ([-0.020, +0.111] — not
     significant), so both land in rank group <strong>#1</strong>. The
-    <code>p (wsr)</code> column reports Romano&ndash;Wolf-corrected Wilcoxon p-values for each pair.
+    <code>p (wsr)</code> column reports Shaffer-corrected Wilcoxon p-values for each pair; the
+    same numbers are each pair's <code>p_value</code> in <code>result.to_dict()</code>.
     Only the gaps to <code>gemma-3-4b-it</code> are conclusive.
   </p>
 

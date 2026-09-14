@@ -88,10 +88,11 @@ result = es.compare(
     evaldata, factors="model", score_range=(0, 1),
     # correction left at its default ("auto" -- resolves to "shaffer" or
     # "romano_wolf" depending on N and data shape; matches `evalstats
-    # analyze`'s own default too).
+    # analyze`'s own default too). Wilcoxon p-values are then Shaffer-corrected.
+    pairwise_test="wilcoxon",
     rng=np.random.default_rng(SEED + 1),
 )
 print_analysis_summary(
-    result.full_analysis, top_pairwise=5, p_value_method="wsr",
+    result.full_analysis, top_pairwise=5,
     line_width=LINE_WIDTH, item_singular="model", item_plural="models",
 )

@@ -12,8 +12,10 @@ rather than being silently discarded.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import warnings
+from evalstats._notes import warn as _note_warn
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
 
@@ -96,14 +98,14 @@ def _warn_bayes_binary_large_n(n_inputs: int, *, stacklevel: int = 4) -> None:
     if n_inputs < BAYES_BINARY_LARGE_N_THRESHOLD:
         return
 
-    warnings.warn(
+    _note_warn(
         "method='bayes_binary' was requested for pairwise binary comparison "
         f"with N={n_inputs} inputs. Simulations indicate this importance-"
         "sampling-based CI becomes dangerously overconfident at larger N "
         "(roughly ~10% at N=500 and ~20% at N=1000). "
         "Use method='newcombe' (or method='auto') for calibrated pairwise "
         "intervals at this sample size.",
-        UserWarning,
+        code="bayes_binary_large_n",
         stacklevel=stacklevel,
     )
 
@@ -167,6 +169,59 @@ def _compute_agreement_mcc(
     return mcc, (n11, n10, n01, n00)
 
 
+#: Display name for each ``PairedDiffResult.p_test`` code.
+P_TEST_NAMES: dict[str, str] = {
+    "wilcoxon_signed_rank": "Wilcoxon signed-rank",
+    "mcnemar_midp": "McNemar mid-p",
+    "ci_inversion": "inverted from the CI",
+    "bayes_posterior": "Bayesian posterior tail",
+    "sign_test": "paired sign test",
+    "sign_flip_permutation": "paired sign-flip permutation",
+    "paired_t": "paired t-test",
+    "bootstrap": "bootstrap",
+    "bootstrap_t": "bootstrap-t",
+    "romano_wolf": "Romano-Wolf step-down",
+    "max_t": "max-T bootstrap",
+    "nemenyi": "Nemenyi post-hoc",
+    "mann_whitney": "Mann-Whitney U",
+    "lmm_wald": "LMM Wald test",
+}
+
+
+def own_p_test(test_method: str, statistic: str = "mean") -> Optional[str]:
+    """``p_test`` code of the p-value a pairwise method computes itself."""
+    m = test_method.lower()
+    if "lmm wald" in m:
+        return "lmm_wald"
+    if "bayes binary" in m:
+        return "bayes_posterior"
+    if "cluster" in m or "shrunk" in m:
+        return "ci_inversion"
+    if any(k in m for k in ("newcombe", "tango", "mj_floor", "bonett_price")):
+        return "mcnemar_midp"
+    if "sign test" in m:
+        return "sign_test"
+    if "permutation" in m:
+        return "sign_flip_permutation"
+    if any(k in m for k in ("t-interval", "logit-t", "nig")):
+        return "paired_t"
+    if "bootstrap-t" in m:
+        return "bootstrap_t" if statistic == "mean" else "bootstrap"
+    if "bootstrap" in m:
+        return "bootstrap"
+    return None
+
+
+def _wilcoxon_p(diffs: np.ndarray) -> float:
+    """Two-sided Wilcoxon signed-rank p on paired differences; 1.0 when all are zero."""
+    diffs = np.asarray(diffs, dtype=float)
+    if not np.any(diffs != 0):
+        return 1.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return float(_es_wilcoxon(diffs, np.zeros_like(diffs), print_result=False).p_value)
+
+
 @dataclass
 class PairedDiffResult:
     """Result of a paired comparison between two templates."""
@@ -183,7 +238,7 @@ class PairedDiffResult:
     per_input_diffs: np.ndarray  # shape (M,) — per-input cell-mean differences
     n_runs: int = 1              # R used; 1 means no seed dimension
     statistic: str = "mean"      # 'mean' or 'median'
-    wilcoxon_p: Optional[float] = None  # Wilcoxon signed-rank p-value (two-sided, on per_input_diffs)
+    p_test: Optional[str] = None  # code of the test behind p_value (P_TEST_NAMES); derived from test_method when omitted
     agreement_mcc: Optional[float] = None  # pass/fail pattern correlation (binary data only)
     binary_confusion: Optional[tuple[int, int, int, int]] = None  # (n11, n10, n01, n00)
     multi_ci: Optional[dict[float, tuple[float, float]]] = None  # {alpha: (lo, hi)} gradient bands
@@ -192,6 +247,10 @@ class PairedDiffResult:
     interval_at: Optional[Callable[[float], tuple[float, float]]] = field(
         default=None, repr=False, compare=False,
     )
+
+    def __post_init__(self) -> None:
+        if self.p_test is None:
+            self.p_test = own_p_test(self.test_method, self.statistic)
 
     @property
     def rank_biserial(self) -> float:
@@ -350,6 +409,12 @@ class PairwiseMatrix:
     simultaneous_ci: bool = True
     simultaneous_ci_method: Optional[str] = None  # 'max_t' or 'bonferroni'; None if not applied
 
+    @property
+    def p_value_test(self) -> Optional[str]:
+        """The ``p_test`` every pair's ``p_value`` shares, or ``None`` when they differ."""
+        codes = {r.p_test for r in self.results.values()}
+        return codes.pop() if len(codes) == 1 else None
+
     def get(self, a: str, b: str) -> PairedDiffResult:
         """Get the comparison result for templates a vs b."""
         if (a, b) in self.results:
@@ -384,7 +449,7 @@ class PairwiseMatrix:
                 per_input_diffs=-r.per_input_diffs,
                 n_runs=r.n_runs,
                 statistic=r.statistic,
-                wilcoxon_p=r.wilcoxon_p,  # two-sided, so p is the same when flipping direction
+                p_test=r.p_test,
                 agreement_mcc=r.agreement_mcc,
                 binary_confusion=flipped_conf,
                 multi_ci=flipped_multi_ci,
@@ -486,7 +551,6 @@ def pairwise_differences(
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     multi_ci: bool = False,
-    compute_wilcoxon: bool = True,
     score_range: Optional[tuple[float, float]] = None,
 ) -> PairedDiffResult:
     """Compute paired differences between two templates.
@@ -530,12 +594,6 @@ def pairwise_differences(
     statistic : str
         Point-estimate and bootstrap statistic: ``'mean'`` (default) or
         ``'median'``.
-    compute_wilcoxon : bool
-        Whether to compute the supplementary Wilcoxon signed-rank p-value
-        (default ``True``, matching prior behavior). Set ``False`` to skip
-        it -- e.g. for callers that never read ``PairedDiffResult.wilcoxon_p``
-        and are calling this at high volume (Monte Carlo simulations), where
-        the scipy call is pure overhead.
 
     Returns
     -------
@@ -549,7 +607,6 @@ def pairwise_differences(
             scores, idx_a, idx_b, label_a, label_b,
             method=seed_method, ci=ci, n_bootstrap=n_bootstrap,
             rng=rng, statistic=statistic, multi_ci=multi_ci,
-            compute_wilcoxon=compute_wilcoxon,
         )
 
     def _paired_stats(values_a: np.ndarray, values_b: np.ndarray) -> tuple[np.ndarray, int, float, float]:
@@ -642,24 +699,6 @@ def pairwise_differences(
         ):
             agr_mcc, bin_conf = _compute_agreement_mcc(agree_a, agree_b)
 
-        # Two-sided Wilcoxon signed-rank p-value, reported alongside whatever
-        # primary method was chosen. Calls evalstats.tests.wilcoxon directly
-        # (uncorrected path) rather than a local reimplementation, so the
-        # scipy call has a single home. That function raises when all paired
-        # differences are zero (matching plain scipy); caught here since a
-        # supplementary stat should degrade to None rather than crash the
-        # whole comparison.
-        wa = values_a if values_a is not None else diffs
-        wb = values_b if values_b is not None else np.zeros_like(diffs)
-        wilcoxon_p: Optional[float] = None
-        if compute_wilcoxon and int(np.sum((wa - wb) != 0)) >= 1:
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    wilcoxon_p = float(_es_wilcoxon(wa, wb, print_result=False).p_value)
-            except ValueError:
-                wilcoxon_p = None
-
         return PairedDiffResult(
             template_a=label_a,
             template_b=label_b,
@@ -673,7 +712,6 @@ def pairwise_differences(
             per_input_diffs=diffs,
             n_runs=n_runs,
             statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
             agreement_mcc=agr_mcc,
             binary_confusion=bin_conf,
             multi_ci=multi_ci_dict,
@@ -1174,7 +1212,6 @@ def _pairwise_diffs_seeded(
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
     multi_ci: bool = False,
-    compute_wilcoxon: bool = True,
 ) -> PairedDiffResult:
     """Seeded paired comparison using a two-level nested bootstrap.
 
@@ -1325,11 +1362,11 @@ def _pairwise_diffs_seeded(
             if resolved_method == "bootstrap_t":
                 # statistic == "median": studentization isn't implemented for
                 # median, so fall back to plain percentile bootstrap.
-                warnings.warn(
+                _note_warn(
                     "nested bootstrap-t studentization is implemented for "
                     "'mean'; falling back to percentile bootstrap for "
                     "'median'.",
-                    UserWarning,
+                    code="bootstrap_t_median_fallback",
                     stacklevel=3,
                 )
                 ci_low, ci_high = _percentile_ci(boot_stats)
@@ -1364,18 +1401,6 @@ def _pairwise_diffs_seeded(
     if method == "auto":
         test_name = f"auto→{test_name}"
 
-    # Two-sided Wilcoxon signed-rank p-value on cell means, reported alongside
-    # whatever primary (nested) method was chosen. See the non-seeded path in
-    # pairwise_differences for why the ValueError guard is needed here.
-    wilcoxon_p: Optional[float] = None
-    if compute_wilcoxon and int(np.sum(cell_diffs != 0)) >= 1:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                wilcoxon_p = float(_es_wilcoxon(cell_means_a, cell_means_b, print_result=False).p_value)
-        except ValueError:
-            wilcoxon_p = None
-
     # Agreement MCC for seeded binary data: use per-input majority vote.
     agr_mcc: Optional[float] = None
     bin_conf: Optional[tuple[int, int, int, int]] = None
@@ -1397,7 +1422,6 @@ def _pairwise_diffs_seeded(
         per_input_diffs=cell_diffs,
         n_runs=R,
         statistic=statistic,
-        wilcoxon_p=wilcoxon_p,
         agreement_mcc=agr_mcc,
         binary_confusion=bin_conf,
         multi_ci=mci_seeded,
@@ -1865,14 +1889,14 @@ def _degenerate_pair_ci(
     an ``inf`` bound appearing in a report deserves an explanation.
     """
     if diff_bounds is None:
-        warnings.warn(
+        _note_warn(
             "Simultaneous CI: a pair's per-input differences have zero "
             "variance (all identical) and the data has no known bounds "
             "(non-binary scores, no score_range given), so its mean cannot "
             "be bounded at any confidence level and the interval is "
             "reported as (-inf, +inf). Pass score_range=(min, max) to get "
             "the finite conservative interval instead.",
-            UserWarning,
+            code="unbounded_pair_interval",
             stacklevel=3,
         )
         return (float("-inf"), float("inf"))
@@ -2748,10 +2772,11 @@ def all_pairwise(
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     multi_ci: bool = False,
-    compute_wilcoxon: bool = True,
     score_range: Optional[tuple[float, float]] = None,
     prefer: str = "auto",
     eval_type: Optional[Literal["likert", "continuous"]] = None,
+    p_test: Literal["auto", "ci", "wilcoxon", "nemenyi"] = "auto",
+    data_kind: Optional[str] = None,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -2780,12 +2805,9 @@ def all_pairwise(
         the false discovery rate rather than the family-wise error rate is
         the actual target), ``'hochberg'``, or ``'none'``.
 
-        ``'romano_wolf'`` needs genuine per-pair resampling (see
-        :func:`romano_wolf_stepdown_pvalues`) and so only corrects the
-        primary bootstrap-derived p-value; the companion Wilcoxon p-value
-        (``PairedDiffResult.wilcoxon_p``) falls back to Shaffer's for that
-        one field, since there's no validated Romano-Wolf-on-Wilcoxon
-        construction.
+        Romano-Wolf resamples the mean difference, so Wilcoxon p-values get
+        Shaffer's correction instead; Nemenyi p-values are already
+        family-wise.
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
     statistic : str
@@ -2826,11 +2848,18 @@ def all_pairwise(
         ``False`` — the Friedman test is a NHST procedure that may not be
         desirable in estimation-focused workflows.  The result is stored in
         :attr:`PairwiseMatrix.friedman`.
-    compute_wilcoxon : bool
-        Forwarded to each :func:`pairwise_differences` call (default
-        ``True``). Set ``False`` to skip the supplementary Wilcoxon
-        signed-rank p-value for every pair -- e.g. for high-volume Monte
-        Carlo callers that never read ``PairedDiffResult.wilcoxon_p``.
+    p_test : {"auto", "ci", "wilcoxon", "nemenyi"}
+        The test behind each pair's ``p_value``. ``"auto"`` uses
+        Romano-Wolf step-down when that correction
+        resolves (k >= 3), else the method's own test for binary data
+        (McNemar mid-p, or CI inversion for multi-run), else Wilcoxon
+        signed-rank. ``"ci"`` is the CI method's own test, and
+        ``"nemenyi"`` needs k >= 3. The test used is recorded in
+        ``PairedDiffResult.p_test`` and the correction in
+        ``PairwiseMatrix.correction_method``.
+    data_kind : str, optional
+        The router's resolved data kind; binary is detected from the scores
+        when omitted.
 
     Returns
     -------
@@ -2848,13 +2877,12 @@ def all_pairwise(
             result = pairwise_differences(
                 scores, i, j, labels[i], labels[j],
                 method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
-                statistic=statistic, multi_ci=multi_ci, compute_wilcoxon=compute_wilcoxon,
+                statistic=statistic, multi_ci=multi_ci,
                 score_range=score_range,
             )
             results[(labels[i], labels[j])] = result
             pairs.append((labels[i], labels[j]))
 
-    # Apply multiple comparisons correction to bootstrap p-values (and Wilcoxon if available).
     resolved_correction = correction
     if correction == "auto":
         _is_binary = is_binary_scores(scores)
@@ -2863,68 +2891,54 @@ def all_pairwise(
             scores.shape[1], lopsided_binary=_lopsided,
         )
 
-    if resolved_correction != "none" and len(pairs) > 1:
-        p_values = np.array([results[p].p_value for p in pairs])
-        wsr_pairs = [p for p in pairs if results[p].wilcoxon_p is not None]
-        wsr_pvals = (
-            np.array([results[p].wilcoxon_p for p in wsr_pairs], dtype=float)
-            if len(wsr_pairs) > 1 else None
-        )
-        # Shaffer's needs the *complete* n_groups*(n_groups-1)/2 all-pairs
-        # set -- the companion Wilcoxon field can be a strict subset of that
-        # (e.g. undefined for a pair with zero-variance identical diffs),
-        # in which case Shaffer's own count check would raise. Holm has no
-        # such requirement and is still FWER-valid for any subset, so it's
-        # the safe fallback specifically for that partial set.
-        _wsr_is_complete = len(wsr_pairs) == n * (n - 1) // 2
-        _wsr_method = lambda m: m if (m != "shaffer" or _wsr_is_complete) else "holm"
+    friedman: Optional[FriedmanResult] = None
+    if (omnibus or p_test == "nemenyi") and n >= 3:
+        try:
+            friedman = friedman_nemenyi(scores, labels)
+        except Exception:
+            pass
 
+    # One p-value per pair: the chosen test, corrected across the family.
+    # Romano-Wolf runs whenever it resolves, so the rng stream (and so every
+    # interval below) does not depend on which test is reported.
+    many = len(pairs) > 1
+    if data_kind is None and is_binary_scores(scores):
+        data_kind = "binary"
+    rw_pvalues = (
+        romano_wolf_stepdown_pvalues(results, pairs, n_bootstrap, rng, statistic=statistic)
+        if many and resolved_correction == "romano_wolf" else None
+    )
+    chosen = p_test
+    if chosen == "nemenyi" and friedman is None:
+        chosen = "auto"
+    if chosen == "auto":
+        chosen = "ci" if (rw_pvalues is not None or data_kind == "binary") else "wilcoxon"
+
+    def _corrected(raw: dict, method: str) -> dict:
+        if not many or method == "none":
+            return raw
+        adjusted = correct_pvalues(np.array([raw[p] for p in pairs], dtype=float), method, n_groups=n)
+        return {p: float(v) for p, v in zip(pairs, adjusted)}
+
+    applied_correction = resolved_correction
+    pair_test: Optional[str] = None
+    if chosen == "nemenyi":
+        final_p = {p: float(friedman.get_nemenyi_p(*p)) for p in pairs}
+        pair_test, applied_correction = "nemenyi", "none"
+    elif chosen == "wilcoxon":
         if resolved_correction == "romano_wolf":
-            # Needs genuine per-pair resampling (see
-            # romano_wolf_stepdown_pvalues), so only the primary bootstrap-
-            # derived p-value gets the validated step-down correction. The
-            # companion Wilcoxon p-value falls back to Shaffer's for that
-            # one field -- there's no validated Romano-Wolf-on-Wilcoxon
-            # construction (see all_pairwise's correction= docstring).
-            _rw_adj = romano_wolf_stepdown_pvalues(
-                results, pairs, n_bootstrap, rng, statistic=statistic,
-            )
-            adjusted = np.array([_rw_adj[p] for p in pairs])
-            wsr_adj_map = (
-                dict(zip(wsr_pairs, correct_pvalues(wsr_pvals, _wsr_method("shaffer"), n_groups=n)))
-                if wsr_pvals is not None
-                else {p: results[p].wilcoxon_p for p in wsr_pairs}
-            )
-        else:
-            adjusted = correct_pvalues(p_values, resolved_correction, n_groups=n)
-            wsr_adj_map = (
-                dict(zip(wsr_pairs, correct_pvalues(wsr_pvals, _wsr_method(resolved_correction), n_groups=n)))
-                if wsr_pvals is not None
-                else {p: results[p].wilcoxon_p for p in wsr_pairs}
-            )
+            applied_correction = "shaffer"
+        final_p = _corrected({p: _wilcoxon_p(results[p].per_input_diffs) for p in pairs}, applied_correction)
+        pair_test = "wilcoxon_signed_rank"
+    elif rw_pvalues is not None:
+        final_p = {p: float(rw_pvalues[p]) for p in pairs}
+        pair_test = "romano_wolf"
+    else:
+        final_p = _corrected({p: float(results[p].p_value) for p in pairs}, resolved_correction)
 
-        for pair, adj_p in zip(pairs, adjusted):
-            r = results[pair]
-            adj_wsr = wsr_adj_map.get(pair, r.wilcoxon_p)
-            results[pair] = PairedDiffResult(
-                template_a=r.template_a,
-                template_b=r.template_b,
-                point_diff=r.point_diff,
-                std_diff=r.std_diff,
-                ci_low=r.ci_low,
-                ci_high=r.ci_high,
-                p_value=float(adj_p),
-                test_method=r.test_method,
-                n_inputs=r.n_inputs,
-                per_input_diffs=r.per_input_diffs,
-                n_runs=r.n_runs,
-                statistic=r.statistic,
-                wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
-                agreement_mcc=r.agreement_mcc,
-                binary_confusion=r.binary_confusion,
-                multi_ci=r.multi_ci,
-                interval_at=r.interval_at,
-            )
+    for pair in pairs:
+        r = results[pair]
+        results[pair] = dataclasses.replace(r, p_value=final_p[pair], p_test=pair_test or r.p_test)
 
     # Simultaneous CIs: Sidak/joint-bootstrap by default, per
     # fig:fwer-decision-tree (see _simultaneous_cis_router's docstring).
@@ -2973,47 +2987,26 @@ def all_pairwise(
                         band_cis.setdefault(pair, {})[band_alpha] = bounds
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
-                results[pair] = PairedDiffResult(
-                    template_a=r.template_a,
-                    template_b=r.template_b,
-                    point_diff=r.point_diff,
-                    std_diff=r.std_diff,
+                use_max_t_p = (
+                    sim_method == "max_t" and chosen == "ci" and pair in sim_pvalues
+                    and method in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto"}
+                )
+                if use_max_t_p:
+                    applied_correction = "max_t"
+                results[pair] = dataclasses.replace(
+                    r,
                     ci_low=ci_low,
                     ci_high=ci_high,
-                    p_value=(
-                        sim_pvalues.get(pair, r.p_value)
-                        if sim_method == "max_t" and method in {
-                            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto",
-                        }
-                        else r.p_value
-                    ),
-                    test_method=r.test_method,
-                    n_inputs=r.n_inputs,
-                    per_input_diffs=r.per_input_diffs,
-                    n_runs=r.n_runs,
-                    statistic=r.statistic,
-                    wilcoxon_p=r.wilcoxon_p,
-                    agreement_mcc=r.agreement_mcc,
-                    binary_confusion=r.binary_confusion,
-                    multi_ci=(
-                        band_cis.get(pair, r.multi_ci) if r.multi_ci is not None else None
-                    ),
-                    interval_at=r.interval_at,
+                    p_value=sim_pvalues[pair] if use_max_t_p else r.p_value,
+                    p_test="max_t" if use_max_t_p else r.p_test,
+                    multi_ci=band_cis.get(pair, r.multi_ci) if r.multi_ci is not None else None,
                 )
-
-    # Friedman omnibus + Nemenyi post-hoc (only when explicitly requested).
-    friedman: Optional[FriedmanResult] = None
-    if omnibus and len(labels) >= 3:
-        try:
-            friedman = friedman_nemenyi(scores, labels)
-        except Exception:
-            pass
 
     return PairwiseMatrix(
         labels=labels,
         results=results,
-        correction_method=resolved_correction,
-        friedman=friedman,
+        correction_method=applied_correction,
+        friedman=friedman if omnibus else None,
         simultaneous_ci=applied_simultaneous_ci,
         simultaneous_ci_method=applied_simultaneous_ci_method,
     )
@@ -3068,45 +3061,10 @@ def vs_baseline(
         )
         results.append(result)
 
-    # Apply correction to bootstrap p-values (and Wilcoxon if available).
     if correction != "none" and len(results) > 1:
-        p_values = np.array([r.p_value for r in results])
-        adjusted = correct_pvalues(p_values, correction)
-
-        # Correct Wilcoxon p-values independently.
-        wsr_results = [r for r in results if r.wilcoxon_p is not None]
-        if len(wsr_results) > 1:
-            wsr_pvals = np.array([r.wilcoxon_p for r in wsr_results], dtype=float)
-            wsr_adj_vals = correct_pvalues(wsr_pvals, correction)
-            wsr_adj_map = {
-                (r.template_a, r.template_b): float(v)
-                for r, v in zip(wsr_results, wsr_adj_vals)
-            }
-        else:
-            wsr_adj_map = {
-                (r.template_a, r.template_b): r.wilcoxon_p for r in wsr_results
-            }
-
+        adjusted = correct_pvalues(np.array([r.p_value for r in results]), correction)
         results = [
-            PairedDiffResult(
-                template_a=r.template_a,
-                template_b=r.template_b,
-                point_diff=r.point_diff,
-                std_diff=r.std_diff,
-                ci_low=r.ci_low,
-                ci_high=r.ci_high,
-                p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected)",
-                n_inputs=r.n_inputs,
-                per_input_diffs=r.per_input_diffs,
-                n_runs=r.n_runs,
-                statistic=r.statistic,
-                wilcoxon_p=wsr_adj_map.get((r.template_a, r.template_b), r.wilcoxon_p),
-                agreement_mcc=r.agreement_mcc,
-                binary_confusion=r.binary_confusion,
-                multi_ci=r.multi_ci,
-                interval_at=r.interval_at,
-            )
+            dataclasses.replace(r, p_value=float(adj_p), test_method=f"{r.test_method} ({correction}-corrected)")
             for r, adj_p in zip(results, adjusted)
         ]
 

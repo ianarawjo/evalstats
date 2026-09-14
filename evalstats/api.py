@@ -9,7 +9,9 @@ Provides the new spec API on top of the existing statistical engine:
 
 from __future__ import annotations
 
+import functools
 import warnings
+from evalstats._notes import warn as _note_warn
 from typing import Any, Literal, Optional, Union
 
 import numpy as np
@@ -25,11 +27,28 @@ from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisRes
 from evalstats.core.design import detect_paired
 from evalstats.core.unpaired import compare_unpaired, GroupComparisonResult
 from evalstats.core.stats_utils import correct_pvalues
+from evalstats.errors import InsufficientItemsError, MissingCellsError
+from evalstats._notes import collect_notes
+from evalstats.core.report import (
+    CELL_LABEL_SEP,
+    band_criterion,
+    cell_levels,
+    json_safe,
+    leaderboard_order,
+    pair_significant,
+    significance_bands,
+    verdict,
+    verdict_text,
+)
+from evalstats.core.types import MultiModelBenchmark
+from evalstats.core.paired import P_TEST_NAMES
 from evalstats.core.summary import (
     print_analysis_summary,
     print_brief_summary,
-    _assign_significance_groups,
     _UNSET as _SUMMARY_UNSET,
+    _pretty_correction,
+    _pretty_marginal_ci_method,
+    _pretty_simultaneous_ci,
 )
 
 
@@ -45,7 +64,10 @@ class ComparisonResult:
 
     Call :meth:`summary` to print the full terminal output (with gradient CI
     plots), :meth:`to_frame` to get DataFrames for downstream work, or
-    :meth:`to_dict` for a JSON-friendly representation.
+    :meth:`to_dict` for a JSON-safe representation.
+
+    ``notes`` lists the :class:`~evalstats.Note` records raised while the
+    comparison ran (the same messages ``compare()`` emits as warnings).
     """
 
     def __init__(
@@ -61,6 +83,7 @@ class ComparisonResult:
         min_meaningful_diff: Optional[float] = None,
         show_rank_probabilities: bool = False,
         rng_seed: Optional[int] = None,
+        axis_names: Optional[tuple[str, str]] = None,
     ):
         self._analysis = analysis
         self._factors = factors
@@ -69,6 +92,8 @@ class ComparisonResult:
         self._alpha = alpha
         self._df = filtered_df
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
+        self._axis_names = axis_names  # (row, column) factor names of a two-factor result
+        self.notes: list = []
         self._min_meaningful_diff = min_meaningful_diff
         # The integer seed every resampling step ran under, when knowable. None
         # when the caller passed a Generator (whose seed cannot be recovered)
@@ -354,7 +379,7 @@ class ComparisonResult:
 
     @property
     def unbeaten(self) -> Optional[list]:
-        """Entities not significantly beaten at the stored alpha level.
+        """Entities not significantly beaten, by the same criterion as the rank bands.
 
         Returns ``None`` when no pairwise differences are significant (the
         concept of "unbeaten" does not apply when there is no winner).
@@ -363,10 +388,11 @@ class ComparisonResult:
         if bundle is None:
             return None
         labels = list(bundle.benchmark.template_labels)
+        criterion = band_criterion(bundle.pairwise)
         beaten: set = set()
         any_sig = False
         for (a, b), pair in bundle.pairwise.results.items():
-            if pair.p_value is not None and pair.p_value < self._alpha:
+            if pair_significant(pair, criterion=criterion, alpha=self._alpha):
                 any_sig = True
                 if pair.point_diff > 0:
                     beaten.add(str(b))
@@ -456,19 +482,13 @@ class ComparisonResult:
         if not isinstance(self._analysis, MultiModelBundle):
             return None
         cross = self._analysis.cross_model
-        labels = list(cross.labels)
+        labels = [str(l) for l in cross.labels]
         if len(labels) < 2:
             return None
-        means = cross.robustness.mean
-        sort_idx = list(np.argsort(-means))
-        labels_sorted = [labels[i] for i in sort_idx]
-        label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted, alpha=self._alpha)
-        top_pairs: list = []
-        for label in labels_sorted:
-            if label_to_group.get(label) == "#1":
-                parts = label.split(" / ", 1)
-                if len(parts) == 2:
-                    top_pairs.append((parts[0], parts[1]))
+        labels_sorted = [labels[i] for i in leaderboard_order(cross.robustness.mean)]
+        bands = significance_bands(cross.pairwise, labels_sorted, alpha=self._alpha)
+        levels = cell_levels(self._analysis.benchmark)
+        top_pairs = [levels[l] for l in labels_sorted if bands.get(l) == 1 and l in levels]
         return top_pairs or None
 
     @property
@@ -514,7 +534,7 @@ class ComparisonResult:
             view_map = {f[0]: "model_level", f[1]: "template_level"}
         if factor not in view_map:
             raise ValueError(f"factor={factor!r} must be one of {list(view_map)}.")
-        return ComparisonResult(
+        view = ComparisonResult(
             self._analysis,
             factors=self._factors,
             metric=self._metric,
@@ -525,7 +545,10 @@ class ComparisonResult:
             min_meaningful_diff=self._min_meaningful_diff,
             show_rank_probabilities=self._show_rank_probabilities,
             rng_seed=self.rng_seed,
+            axis_names=self._axis_names,
         )
+        view.notes = list(self.notes)
+        return view
 
     @property
     def pareto_status(self) -> Optional[dict]:
@@ -565,32 +588,169 @@ class ComparisonResult:
         result = self._pareto["result"]
         return dict(zip(result.labels, result.p_frontier.tolist()))
 
+    def rank_bands(self) -> list[dict]:
+        """Entities in leaderboard order with their rank band and verdict.
+
+        The rows, order and wording of the executive summary. Each row has
+        ``label``, ``levels`` (factor name -> level), ``rank`` (1 = highest
+        mean; ties keep data order), ``band`` (1 = top), ``verdict``
+        (``"likely_best"``, ``"tied_for_best"`` or ``"significant_drop_off"``),
+        ``verdict_text``, ``tied_with``, ``mean``, ``ci_low`` and ``ci_high``.
+        """
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return []
+        labels = [str(l) for l in bundle.labels]
+        rob = bundle.robustness
+        order = leaderboard_order(rob.mean)
+        labels_sorted = [labels[i] for i in order]
+        bands = significance_bands(bundle.pairwise, labels_sorted, alpha=self._alpha)
+        levels = self._levels_by_label()
+        rows = []
+        for rank, i in enumerate(order, start=1):
+            label = labels[i]
+            code, tied_with = verdict(label, bands, labels_sorted)
+            rows.append({
+                "label": label,
+                "levels": levels.get(label),
+                "rank": rank,
+                "band": bands[label],
+                "verdict": code,
+                "verdict_text": verdict_text(code, tied_with),
+                "tied_with": tied_with,
+                "mean": rob.mean[i],
+                "ci_low": None if rob.ci_low is None else rob.ci_low[i],
+                "ci_high": None if rob.ci_high is None else rob.ci_high[i],
+            })
+        return json_safe(rows)
+
+    def methods(self) -> dict:
+        """What ran, as codes and display names, for a methods section.
+
+        JSON-safe. Keys: ``evalstats_version``, ``design``, ``data_kind``,
+        ``alpha``, ``mean_ci``, ``pairwise_ci`` (with ``simultaneous``),
+        ``p_values`` (``test`` and ``correction``), ``omnibus``,
+        ``rank_bands`` (``criterion``), ``ppi`` and ``resampling``.
+        """
+        from evalstats import __version__
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return json_safe({"evalstats_version": __version__, "alpha": self._alpha})
+        pw = bundle.pairwise
+        bench = bundle.benchmark
+        n_pairs = len(pw.results)
+        p_test = pw.p_value_test
+        correction = (pw.correction_method or "none") if n_pairs > 1 else "none"
+        pair_code = bundle.resolved_method
+        pair_name_code = (
+            f"ppi_{pair_code}" if bundle.ppi_applied and pair_code and not pair_code.startswith("ppi_")
+            else pair_code
+        )
+        friedman = pw.friedman
+        kind = bundle.resolved_data_kind
+        return json_safe({
+            "evalstats_version": __version__,
+            "design": {
+                "code": "paired",
+                "n_items": bench.n_inputs,
+                "n_runs": bench.n_runs,
+                "runs_averaged": bench.n_runs == 2,
+            },
+            "data_kind": {
+                "code": kind,
+                "name": _DATA_KIND_NAMES.get(kind, kind),
+                "score_range": bundle.resolved_score_range,
+            },
+            "alpha": self._alpha,
+            "mean_ci": {
+                "code": bundle.resolved_ci_method,
+                "name": _pretty_marginal_ci_method(bundle.resolved_ci_method),
+            },
+            "pairwise_ci": {
+                "code": pair_code,
+                "name": _pretty_marginal_ci_method(pair_name_code),
+                "simultaneous": {
+                    "code": pw.simultaneous_ci_method,
+                    "name": _pretty_simultaneous_ci(pw.simultaneous_ci_method),
+                },
+            },
+            "p_values": {
+                "shown": bundle.p_value_method is not None,
+                "test": {"code": p_test, "name": P_TEST_NAMES.get(p_test, p_test)},
+                "correction": {
+                    "code": correction,
+                    "name": "none needed (one comparison)" if n_pairs == 1 else _pretty_correction(correction),
+                },
+            },
+            "omnibus": None if friedman is None else {
+                "test": "friedman",
+                "statistic": friedman.statistic,
+                "df": friedman.df,
+                "p_value": friedman.p_value,
+                "corrected_p_value": friedman.corrected_p_value,
+            },
+            "rank_bands": {"criterion": band_criterion(pw)},
+            "ppi": {"applied": bool(bundle.ppi_applied)},
+            "resampling": {
+                "n_bootstrap": getattr(bundle.rank_dist, "n_bootstrap", None),
+                "rng_seed": self.rng_seed,
+            },
+        })
+
+    def _levels_by_label(self) -> dict[str, dict[str, str]]:
+        """Factor name -> level for each entity of the primary view."""
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return {}
+        labels = [str(l) for l in bundle.labels]
+        if isinstance(self._analysis, MultiModelBundle) and self._axis_names is not None:
+            row, col = self._axis_names
+            if self._mmb_view == "cross_model":
+                return {
+                    label: {row: m, col: t}
+                    for label, (m, t) in cell_levels(self._analysis.benchmark).items()
+                }
+            name = row if self._mmb_view == "model_level" else col
+            return {label: {name: label} for label in labels}
+        f = self._factors
+        if isinstance(f, (list, tuple)):
+            if len(f) != 1:
+                return {}
+            f = f[0]
+        return {label: {str(f): label} for label in labels}
+
     # ── data access ──────────────────────────────────────────────────────────
 
     def to_dict(self, *, show_rank_probabilities: Optional[bool] = None) -> dict:
-        """Return a JSON-friendly dict with CIs, p-values, and pairwise diffs.
+        """Return a JSON-safe dict with CIs, rank bands, p-values and pairwise diffs.
 
-        Returns a dict with structure::
+        Every value is a JSON type; non-finite numbers are ``None``. Structure::
 
             {
                 "factors": ...,
                 "metric": ...,
                 "alpha": ...,
+                "order": [name, ...],       # leaderboard order, as summary()
                 "entities": {
                     name: {
-                        "mean": float,
-                        "ci_low": float,
-                        "ci_high": float,
-                        "p_best": float,  # P(rank 1) from bootstrap -- only
-                                          # present when show_rank_probabilities
-                                          # resolves to True; see compare()
+                        "mean": float, "ci_low": float, "ci_high": float,
+                        "levels": {factor: level},
+                        "rank": int, "band": int, "verdict": str,
+                        "verdict_text": str, "tied_with": [name, ...],
+                        "p_best": float,    # only with show_rank_probabilities
                     }
                 },
                 "pairwise": [
-                    {"a": str, "b": str, "diff": float, "ci_low": float,
-                     "ci_high": float, "p_value": float | None}
+                    {"a": str, "b": str, "a_levels": {...}, "b_levels": {...},
+                     "diff": float, "ci_low": float, "ci_high": float,
+                     "significant": bool,   # the rank-band criterion
+                     "p_value": float}
                 ],
+                "notes": [{"code", "message", "severity", "entities"}],
+                "methods": {...},           # see methods()
             }
+
+        See :meth:`rank_bands` for the entity fields.
 
         Parameters
         ----------
@@ -601,38 +761,49 @@ class ComparisonResult:
         """
         bundle = self._primary_bundle()
         if bundle is None:
-            return {
+            return json_safe({
                 "factors": self._factors,
                 "metric": self._metric,
                 "alpha": self._alpha,
                 "note": "Multi-bundle result; use to_frame() for structured access.",
-            }
+                "notes": [n.to_dict() for n in self.notes],
+                "methods": self.methods(),
+            })
         show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
 
         rob = bundle.robustness
         rank = bundle.rank_dist
         pairwise = bundle.pairwise
+        band_rows = self.rank_bands()
+        band_by_label = {row["label"]: row for row in band_rows}
+        levels = self._levels_by_label()
 
         entities: dict[str, dict] = {}
         labels = bundle.benchmark.template_labels
         for i, name in enumerate(labels):
+            band_row = band_by_label[str(name)]
             entry: dict[str, Any] = {
                 "mean": float(rob.mean[i]),
                 "ci_low": float(rob.ci_low[i]) if rob.ci_low is not None else None,
                 "ci_high": float(rob.ci_high[i]) if rob.ci_high is not None else None,
+                **{k: band_row[k] for k in ("levels", "rank", "band", "verdict", "verdict_text", "tied_with")},
             }
             if rank is not None and show_rank:
                 entry["p_best"] = float(rank.p_best[i])
             entities[str(name)] = entry
 
+        criterion = band_criterion(pairwise)
         pw_list: list[dict] = []
         for (a, b), pair_result in pairwise.results.items():
             pw_entry: dict[str, Any] = {
                 "a": str(a),
                 "b": str(b),
+                "a_levels": levels.get(str(a)),
+                "b_levels": levels.get(str(b)),
                 "diff": float(pair_result.point_diff),
                 "ci_low": float(pair_result.ci_low),
                 "ci_high": float(pair_result.ci_high),
+                "significant": pair_significant(pair_result, criterion=criterion, alpha=self._alpha),
             }
             if pair_result.p_value is not None:
                 pw_entry["p_value"] = float(pair_result.p_value)
@@ -642,8 +813,11 @@ class ComparisonResult:
             "factors": self._factors,
             "metric": self._metric,
             "alpha": self._alpha,
+            "order": [row["label"] for row in band_rows],
             "entities": entities,
             "pairwise": pw_list,
+            "notes": [n.to_dict() for n in self.notes],
+            "methods": self.methods(),
         }
         if self._variance_components is not None:
             result["variance_components"] = self._variance_components
@@ -663,7 +837,7 @@ class ComparisonResult:
                 "direction": self._pareto["direction"],
                 "entities": pareto_entities,
             }
-        return result
+        return json_safe(result)
 
     def to_frame(self, *, show_rank_probabilities: Optional[bool] = None) -> dict[str, pd.DataFrame]:
         """Return analysis results as a dict of DataFrames.
@@ -693,20 +867,26 @@ class ComparisonResult:
         rank = bundle.rank_dist
         pairwise = bundle.pairwise
         labels = bundle.benchmark.template_labels
+        band_by_label = {r["label"]: r for r in self.rank_bands()}
 
         entity_rows: list[dict] = []
         for i, name in enumerate(labels):
+            band_row = band_by_label[str(name)]
             row: dict[str, Any] = {
                 "entity": str(name),
                 "mean": float(rob.mean[i]),
                 "ci_low": float(rob.ci_low[i]) if rob.ci_low is not None else None,
                 "ci_high": float(rob.ci_high[i]) if rob.ci_high is not None else None,
+                "rank": band_row["rank"],
+                "band": band_row["band"],
+                "verdict": band_row["verdict"],
             }
             if rank is not None and show_rank:
                 row["p_best"] = float(rank.p_best[i])
             entity_rows.append(row)
         frames["entities"] = pd.DataFrame(entity_rows)
 
+        criterion = band_criterion(pairwise)
         pw_rows: list[dict] = []
         for (a, b), pair_result in pairwise.results.items():
             row_pw: dict[str, Any] = {
@@ -715,6 +895,7 @@ class ComparisonResult:
                 "diff": float(pair_result.point_diff),
                 "ci_low": float(pair_result.ci_low),
                 "ci_high": float(pair_result.ci_high),
+                "significant": pair_significant(pair_result, criterion=criterion, alpha=self._alpha),
             }
             if pair_result.p_value is not None:
                 row_pw["p_value"] = float(pair_result.p_value)
@@ -845,6 +1026,12 @@ class ComparisonResult:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _STANDARD_FACTOR_NAMES = {"model", "prompt", "template"}
+_DATA_KIND_NAMES = {
+    "binary": "Binary (0/1)",
+    "bounded_01": "Bounded numeric",
+    "likert": "Likert (ordinal)",
+    "unbounded": "Numeric (no known bounds)",
+}
 _FACTOR_STD_SLOTS = ["model", "prompt"]  # canonical names for the first two custom factors
 
 
@@ -898,12 +1085,12 @@ def _apply_kwarg_filters(
         elif k in df.columns:
             col_filters[k] = v
         else:
-            warnings.warn(
+            _note_warn(
                 f"compare(): unknown keyword argument '{k}'. "
                 "If this is a column filter, the column was not found in the data. "
                 "If it's an analysis parameter, check the spelling.",
-                UserWarning,
-                stacklevel=3,
+                code="unknown_kwarg",
+                stacklevel=4,
             )
 
     for col, val in col_filters.items():
@@ -992,6 +1179,54 @@ def _bridge_to_io(
 # compare()
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _collects_notes(func):
+    """Run ``func`` collecting notes, and attach them to its result as ``.notes``."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with collect_notes() as notes:
+            result = func(*args, **kwargs)
+        result.notes = list(notes)
+        return result
+    return wrapper
+
+
+def _check_cell_labels_unique(bench) -> None:
+    """Raise when two (model, prompt) cells join to the same flat label."""
+    if not isinstance(bench, MultiModelBenchmark):
+        return
+    labels = [f"{m}{CELL_LABEL_SEP}{t}" for m in bench.model_labels for t in bench.template_labels]
+    dupes = sorted({l for l in labels if labels.count(l) > 1})
+    if dupes:
+        raise ValueError(
+            f"Two-factor cells {dupes[:3]} are ambiguous: different (model, prompt) "
+            f"pairs join to the same label with {CELL_LABEL_SEP!r}. Rename levels so "
+            f"no name contains {CELL_LABEL_SEP!r}."
+        )
+
+
+def _check_no_missing_cells(bench, method: Optional[str]) -> None:
+    """Raise MissingCellsError naming each empty (model / prompt, item) cell."""
+    if not isinstance(bench, MultiModelBenchmark) or method in {"lmm", "factorial_lmm"}:
+        return
+    empty = np.isnan(bench.scores).reshape(bench.n_models, bench.n_templates, bench.n_inputs, -1).any(axis=3)
+    m_idx, t_idx, i_idx = np.nonzero(empty)
+    if len(m_idx) == 0:
+        return
+    n_missing = int(empty.sum())
+    raise MissingCellsError(
+        f"scores contain {n_missing} NaN (missing) cell(s), which are not supported "
+        "by the bootstrap analysis path. Either fill in missing cells, drop incomplete "
+        "items with evalstats.complete_items(), or use method='lmm' to analyse "
+        "benchmarks with incomplete designs.",
+        missing=[
+            (f"{bench.model_labels[m]}{CELL_LABEL_SEP}{bench.template_labels[t]}", str(bench.input_labels[i]))
+            for m, t, i in zip(m_idx[:1000], t_idx[:1000], i_idx[:1000])
+        ],
+        n_missing=n_missing,
+    )
+
+
+@_collects_notes
 def compare(
     evaldata: EvalResults,
     *,
@@ -1104,9 +1339,10 @@ def compare(
         items; from 30 items with three or more entities, Romano-Wolf
         step-down p-values replace them. Multi-run binary p-values are
         inverted from the CI. ``"bootstrap"`` shows the CI method's own
-        p-value instead. ``"nemenyi"`` requires ``omnibus=True``
+        p-value instead. ``"nemenyi"`` needs three or more entities
         and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
+        The chosen p-value is each pair's ``p_value``.
     show_rank_probabilities : bool
         When ``True``, include the bootstrap "Rank Probabilities" block
         (P(Best)/E[Rank] per entity) in ``.summary()`` output and the
@@ -1206,7 +1442,7 @@ def compare(
     >>> result.to_frame()["entities"]
     """
     if slices is not None:
-        warnings.warn("slices= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
+        _note_warn("slices= is not yet implemented and will be ignored.", code="slices_ignored", stacklevel=3)
     # ── resolve alpha (explicit > global default) ─────────────────────────────
     if alpha is None:
         alpha = get_alpha_ci()
@@ -1282,12 +1518,12 @@ def compare(
         item_col = block
     else:
         if len(block) > 1:
-            warnings.warn(
+            _note_warn(
                 f"block={block!r} has more than one column; only a single "
                 "blocking column is supported, so only the first "
                 f"({block[0]!r}) is used.",
-                UserWarning,
-                stacklevel=2,
+                code="block_multiple_columns",
+                stacklevel=3,
             )
         item_col = block[0] if block else col.get("item")
 
@@ -1369,11 +1605,11 @@ def compare(
         _kept = [f for f in factors_list if _varies(_factor_column(f))]
         if len(_kept) == 1:
             _dropped = next(f for f in factors_list if f not in _kept)
-            warnings.warn(
+            _note_warn(
                 f"factor {_dropped!r} has a single value in the data, so this "
                 f"is a comparison over {_kept[0]!r} alone.",
-                UserWarning,
-                stacklevel=2,
+                code="factor_single_value",
+                stacklevel=3,
             )
             factors_list = _kept
             _user_factors = _kept[0]
@@ -1435,11 +1671,13 @@ def compare(
     else:
         _min_n = int(df[item_col].nunique())
     if _min_n < MIN_SAMPLE_FLOOR:
-        raise ValueError(
+        raise InsufficientItemsError(
             f"Only {_min_n} item(s) per compared entity -- evalstats requires at "
             f"least {MIN_SAMPLE_FLOOR} to report statistics (results below this "
             "floor are too noisy to be meaningful). Expand your eval set before "
-            "calling compare()."
+            "calling compare().",
+            n_items=_min_n,
+            min_items=MIN_SAMPLE_FLOOR,
         )
 
     # ── design detection / routing (paired vs. unpaired) ─────────────────────
@@ -1552,6 +1790,8 @@ def compare(
                 rename_multi[run_col] = "run"
             df_multi = df_multi.rename(columns={k: v for k, v in rename_multi.items() if k != v})
             bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
+            _check_cell_labels_unique(bench)
+            _check_no_missing_cells(bench, _design_backend)
         else:
             # No prompt col — single-model BenchmarkResult with model as template axis
             df_io_keep = df[[factor_col_name, item_col, metric_col]
@@ -1576,6 +1816,7 @@ def compare(
             alpha=alpha,
             filtered_df=df,
             _mmb_view="model_level",
+            axis_names=("model", "prompt"),
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
             rng_seed=_rng_seed_used,
@@ -1611,6 +1852,8 @@ def compare(
                 rename_multi[run_col] = "run"
             df_multi = df_multi.rename(columns={k: v for k, v in rename_multi.items() if k != v})
             bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
+            _check_cell_labels_unique(bench)
+            _check_no_missing_cells(bench, _design_backend)
         else:
             df_io_keep = df[[factor_col_name, item_col, metric_col]
                             + ([run_col] if run_col and run_col in df.columns else [])].copy()
@@ -1631,6 +1874,7 @@ def compare(
             alpha=alpha,
             filtered_df=df,
             _mmb_view="template_level",
+            axis_names=("model", factors_list[0]),
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
             rng_seed=_rng_seed_used,
@@ -1728,6 +1972,8 @@ def compare(
             rename_multi[run_col] = "run"
         df_multi = df_multi.rename(columns={k: v for k, v in rename_multi.items() if k != v})
         bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
+        _check_cell_labels_unique(bench)
+        _check_no_missing_cells(bench, _design_backend)
         reference = baseline if baseline else "grand_mean"
         analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
         # Both factors were asked for, so the entities are the (model, prompt)
@@ -1740,6 +1986,7 @@ def compare(
             alpha=alpha,
             filtered_df=df,
             _mmb_view="cross_model",
+            axis_names=(_row_f, _col_f),
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
             rng_seed=_rng_seed_used,
@@ -1831,6 +2078,16 @@ def compare_prompts(evaldata: EvalResults, **kwargs) -> ComparisonResult:
 
 _PPI_PAIRWISE_SUPPORTED = ("bonett_price", "mj_floor", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
 _PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
+
+
+# p_test code of the p-value each PPI pairwise method computes itself.
+_PPI_OWN_P_TEST = {
+    "bonett_price": "paired_t", "mj_floor": "paired_t",
+    "ppi_t_interval": "paired_t", "ppi_logit_t": "paired_t",
+    "bootstrap_t": "bootstrap_t", "bayes_bootstrap": "bootstrap",
+    "t_interval": "bootstrap", "bootstrap": "bootstrap", "wilcoxon": "bootstrap",
+    "mannwhitney": "mann_whitney",
+}
 
 
 def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng,
@@ -2475,11 +2732,11 @@ def _run_alignment_ppi(
     """
     bundle = cr._primary_bundle()
     if bundle is None:
-        warnings.warn(
+        _note_warn(
             "PPI alignment correction is not yet supported for multi-bundle "
             "(multi-model) results. alignment= will be ignored.",
-            UserWarning,
-            stacklevel=4,
+            code="ppi_multibundle_unsupported",
+            stacklevel=5,
         )
         return
 
@@ -2539,18 +2796,18 @@ def _run_alignment_ppi(
             f"got N={n_all}. PPI is only beneficial at scale."
         )
     if n_lab < 30:
-        warnings.warn(
+        _note_warn(
             f"PPI alignment: only {n_lab} human-labeled items (recommend ≥ 30). "
             "Confidence intervals may under-cover at this sample size.",
-            UserWarning,
-            stacklevel=4,
+            code="ppi_few_labels",
+            stacklevel=5,
         )
     if n_all < 100:
-        warnings.warn(
+        _note_warn(
             f"PPI alignment: only {n_all} total items (recommend ≥ 100). "
             "Confidence intervals may under-cover at this sample size.",
-            UserWarning,
-            stacklevel=4,
+            code="ppi_few_items",
+            stacklevel=5,
         )
 
     # ── Item-aligned human-label matrix (n_entities x n_items) ───────────────
@@ -2841,15 +3098,15 @@ def _run_alignment_ppi(
         scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
     ) if _attempt_joint else None
     if _attempt_joint and joint is None:
-        warnings.warn(
+        _note_warn(
             "PPI alignment: could not build a joint bootstrap distribution "
             "(pairs don't share a common set of labeled items, or fewer "
             "than 15 shared labeled items). Falling back to Bonferroni for "
             "simultaneous CIs and/or Shaffer's for p-value correction, as "
             "applicable. Labeling the same items across every entity "
             "enables the more powerful joint-bootstrap constructions.",
-            UserWarning,
-            stacklevel=4,
+            code="ppi_joint_bootstrap_fallback",
+            stacklevel=5,
         )
 
     used_max_t = joint is not None and _need_joint_for_ci and resolved_prefer == "max_t"
@@ -2896,11 +3153,9 @@ def _run_alignment_ppi(
         a_arr, b_arr, a_lab_arr, b_lab_arr = pair_arrays[(ea, eb)]
 
         pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
-        # Companion PPI-corrected Wilcoxon signed-rank p-value (shown when
-        # pairwise_test="wilcoxon"), computed the same way es.tests.wilcoxon()
-        # does with x_lab/y_lab — independent of whichever method drove the
-        # headline point_diff/p_value above, so always computed regardless
-        # of the max-T shortcut below.
+        # PPI Wilcoxon signed-rank p, as es.tests.wilcoxon() computes it with
+        # x_lab/y_lab. Computed for every pair whichever test is reported, so
+        # the rng stream (and every other number) is the same either way.
         pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
             a_arr, b_arr, a_lab_arr, b_lab_arr, _wilcoxon_statistic, pair_alpha, n_boot, rng,
             rectifier_func=_wilcoxon_statistic,
@@ -2943,33 +3198,6 @@ def _run_alignment_ppi(
         elif not used_max_t:
             pair_pvals = correct_pvalues(pair_pvals, effective_correction, n_groups=len(labels))
 
-        # Companion Wilcoxon p-values always get their own correction as
-        # their own family, regardless of max-T/Romano-Wolf — matching
-        # all_pairwise()'s convention, which never applies either to
-        # wilcoxon_p (see its docstring). Romano-Wolf's joint construction
-        # is specific to the paired-mean/PPI estimand (point_ests/obs_se
-        # above) and has no Wilcoxon-signed-rank-compatible form, so
-        # Shaffer's (with Holm as the same subset-safe fallback the non-PPI
-        # path uses) substitutes whenever the primary correction is
-        # Romano-Wolf -- mirroring the non-PPI docstring's own statement
-        # that Wilcoxon "everywhere...except when Romano-Wolf is what
-        # resolved" note.
-        wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
-        if len(wsr_keys) > 1:
-            wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
-            _wsr_base = "shaffer" if effective_correction == "romano_wolf" else effective_correction
-            # Shaffer's needs the complete n_groups*(n_groups-1)/2 all-pairs
-            # set; wsr_keys can be a strict subset (e.g. no validated PPI
-            # Wilcoxon for an unpaired-fallback pair -- see above). Holm has
-            # no such requirement and is still FWER-valid for any subset.
-            _wsr_correction = (
-                "holm" if _wsr_base == "shaffer" and len(wsr_keys) != len(labels) * (len(labels) - 1) // 2
-                else _wsr_base
-            )
-            wsr_adj = correct_pvalues(wsr_vals, _wsr_correction, n_groups=len(labels))
-            for key, adj_p in zip(wsr_keys, wsr_adj):
-                pair_wilcoxon_p[key] = float(adj_p)
-
     if used_max_t:
         point_ests_j, obs_se_j, valid_pairs_j, T_j, t_obs_j = joint
         M_b = _M_b_from_T(T_j, valid_pairs_j)
@@ -3005,16 +3233,37 @@ def _run_alignment_ppi(
     bundle.robustness.ci_high  = final_ci_high
     bundle.robustness.multi_ci = final_multi_ci
 
+    # One p-value per pair, chosen as all_pairwise() chooses it: Romano-Wolf
+    # when it ran, the method's own test on binary data, else Wilcoxon.
+    corrected = effective_correction != "none" and n_pairs > 1
+    rw_reported = used_romano_wolf and corrected
+    own_test = "max_t" if used_max_t else "romano_wolf" if rw_reported else _PPI_OWN_P_TEST.get(pairwise_method)
+    use_wilcoxon = bundle.p_value_method == "wsr" or (
+        bundle.p_value_method != "boot" and not rw_reported and data_kind != "binary"
+    )
+    wsr_correction = None
+    if use_wilcoxon:
+        wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
+        wsr_correction = "shaffer" if effective_correction == "romano_wolf" else effective_correction
+        if wsr_correction == "shaffer" and len(wsr_keys) != n_pairs:
+            wsr_correction = "holm"  # Shaffer's needs the complete all-pairs set
+        if corrected and len(wsr_keys) > 1:
+            wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
+            for key, adj_p in zip(wsr_keys, correct_pvalues(wsr_vals, wsr_correction, n_groups=len(labels))):
+                pair_wilcoxon_p[key] = float(adj_p)
+
     for k, key in enumerate(pair_keys):
         pr = bundle.pairwise.results[key]
         pr.point_diff = float(final_diffs[k])
-        pr.p_value    = float(pair_pvals[k])
         pr.ci_low     = float(pair_ci_lo[k])
         pr.ci_high    = float(pair_ci_hi[k])
         pr.multi_ci   = {a: pair_multi_ci[a][key] for a in GRADIENT_CI_ALPHAS}
         pr.test_method = pair_test_method[key]
-        wp = pair_wilcoxon_p[key]
-        pr.wilcoxon_p = float(wp) if wp is not None else None
+        wp = pair_wilcoxon_p[key] if use_wilcoxon else None
+        if wp is not None:
+            pr.p_value, pr.p_test = float(wp), "wilcoxon_signed_rank"
+        else:
+            pr.p_value, pr.p_test = float(pair_pvals[k]), own_test
 
     # ── Recompute the Friedman omnibus test (if requested via omnibus=True) ───
     # bundle.pairwise.friedman is built from the raw, uncorrected LLM scores;
@@ -3053,7 +3302,7 @@ def _run_alignment_ppi(
     # correction fell back to "shaffer"), which PairwiseMatrix.summary()
     # displays via each pair's own .summary(correction=...).
     bundle.pairwise.correction_method = (
-        effective_correction if (effective_correction != "none" and n_pairs > 1) else None
+        (wsr_correction if use_wilcoxon else effective_correction) if corrected else None
     )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -3101,28 +3350,28 @@ def _run_judge_alignment_if_needed(
     if alignment is None:
         return
     if not isinstance(alignment, dict):
-        warnings.warn(
+        _note_warn(
             "alignment= must be a dict mapping metric column names to AlignmentResult objects. "
             "Example: alignment={'score': my_alignment_result}. alignment= will be ignored.",
-            UserWarning,
-            stacklevel=4,
+            code="alignment_not_dict",
+            stacklevel=5,
         )
         return
     ar = alignment.get(metric_col)
     if ar is None:
-        warnings.warn(
+        _note_warn(
             f"alignment= dict has no entry for metric column '{metric_col}'. "
             f"Keys present: {list(alignment.keys())}. alignment= will be ignored.",
-            UserWarning,
-            stacklevel=4,
+            code="alignment_metric_missing",
+            stacklevel=5,
         )
         return
     if not isinstance(cr._analysis, AnalysisBundle):
-        warnings.warn(
+        _note_warn(
             "PPI alignment correction is not yet supported for multi-model or factorial "
             "analyses. alignment= will be ignored for this comparison.",
-            UserWarning,
-            stacklevel=4,
+            code="ppi_multimodel_unsupported",
+            stacklevel=5,
         )
         return
     _run_alignment_ppi(
@@ -3175,12 +3424,12 @@ def _run_pareto_if_needed(
     if secondary_metric is None:
         return
     if not isinstance(secondary_metric, dict):
-        warnings.warn(
+        _note_warn(
             "secondary_metric= must be a dict mapping a metric column name to "
             "'min' or 'max', e.g. secondary_metric={'latency_ms': 'min'}. "
             "secondary_metric= will be ignored.",
-            UserWarning,
-            stacklevel=4,
+            code="secondary_metric_not_dict",
+            stacklevel=5,
         )
         return
     if len(secondary_metric) != 1:
@@ -3207,12 +3456,12 @@ def _run_pareto_if_needed(
         # single AnalysisBundle view (e.g. .model_level) -- checking that
         # would never actually catch the multi-model case. Must check
         # cr._analysis itself, same as _run_judge_alignment_if_needed does.
-        warnings.warn(
+        _note_warn(
             "Pareto-front analysis (secondary_metric=) is not yet supported for "
             "multi-model or factorial analyses. secondary_metric= will be ignored "
             "for this comparison.",
-            UserWarning,
-            stacklevel=4,
+            code="pareto_multimodel_unsupported",
+            stacklevel=5,
         )
         return
     bundle = cr._primary_bundle()

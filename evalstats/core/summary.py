@@ -12,8 +12,18 @@ from typing import Literal, Mapping, Optional, Union
 import numpy as np
 
 from .bundles import AnalysisBundle, MultiModelBundle
-from .paired import PairedDiffResult, PairwiseMatrix
+from .paired import P_TEST_NAMES, PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
+from .report import (
+    band_criterion,
+    cell_levels,
+    clear_winner,
+    critical_difference_groups,
+    leaderboard_order,
+    significance_bands,
+    verdict,
+    verdict_text,
+)
 from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci, supports_ansi_color
 
 
@@ -89,41 +99,43 @@ def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
     return method in {"wilson", "ppi_wilson", "newcombe", "bayes_binary"}
 
 
-def _pairwise_p_value_label(test_method: str) -> str:
-    """Return a human-readable p-value method label for pairwise summaries."""
-    method = test_method.lower()
-    # All three binary paired CI methods report the same p-value, McNemar's
-    # mid-p (see core.paired). Fagerland et al. (2014) sec. 9.1 recommend it
-    # over the exact conditional test, which is markedly conservative.
-    if "mj_floor" in method or "tango" in method or "newcombe" in method:
-        return "McNemar mid-p"
-    if "sign test" in method:
-        return "paired sign test"
-    if "wilcoxon" in method:
-        return "Wilcoxon signed-rank"
-    if "bootstrap" in method:
-        return "bootstrap"
-    return test_method
+def _p_test_label(p_test: Optional[str]) -> str:
+    """Display name of the test behind a pairwise p-value."""
+    return P_TEST_NAMES.get(p_test or "", p_test or "p-value")
 
 
-def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
-    """Choose the p-value shown in single-pair summaries.
+def _p_column_header(p_test: Optional[str], *, ppi_tag: str, binary: bool) -> str:
+    """Pairwise-table column header for the stored p-value."""
+    if p_test == "romano_wolf":
+        return f"p ({ppi_tag}RW)"
+    if p_test == "wilcoxon_signed_rank":
+        return f"p ({ppi_tag}wsr)"
+    if p_test == "nemenyi":
+        return "p (nem)"
+    if p_test == "mcnemar_midp":
+        return "p (mcnemar)"
+    if p_test == "ci_inversion":
+        return "p (CI)"
+    if ppi_tag and binary:
+        return "p (PPI-paired-t)"
+    return f"p ({ppi_tag}boot)"
 
-    Default behavior is to display the Wilcoxon signed-rank p-value when
-    available, while preserving exact-test paths (McNemar/sign test)
-    where ``pair.p_value`` is the canonical inferential p-value.
-    """
-    method = pair.test_method.lower()
-    is_exact_path = (
-        "mj_floor" in method
-        or "tango" in method
-        or "newcombe" in method
-        or "mcnemar" in method
-        or "sign test" in method
-    )
-    if not is_exact_path and pair.wilcoxon_p is not None:
-        return float(pair.wilcoxon_p), "Wilcoxon signed-rank"
-    return float(pair.p_value), _pairwise_p_value_label(pair.test_method)
+
+def _check_p_value_method(p_value_method: Optional[str], p_test: Optional[str]) -> None:
+    """Refuse a print-time p_value_method naming a test the stored p-values did not use."""
+    if p_value_method == "wsr":
+        mismatch = p_test != "wilcoxon_signed_rank"
+    elif p_value_method == "nem":
+        mismatch = p_test != "nemenyi"
+    elif p_value_method == "boot":
+        mismatch = p_test in {"wilcoxon_signed_rank", "nemenyi"}
+    else:
+        mismatch = False
+    if mismatch:
+        raise ValueError(
+            f"p_value_method={p_value_method!r} does not match the stored p-values "
+            f"({_p_test_label(p_test)}). Choose the test with compare(..., pairwise_test=...)."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +457,7 @@ def print_pairwise_summary(
     a, b = pair.template_a, pair.template_b
     stat_label = pair.statistic.capitalize()
     ci_pct = int(round((1.0 - alpha) * 100))
-    display_p_value, p_method_label = _pairwise_display_pvalue(pair)
+    display_p_value, p_method_label = float(pair.p_value), _p_test_label(pair.p_test)
 
     _print_loud_section(f"Pairwise: {a} vs. {b}")
 
@@ -635,20 +647,14 @@ def _consistency_color(icc: float) -> str:
 # ---------------------------------------------------------------------------
 
 def _display_order(bundle) -> "np.ndarray":
-    """Indices giving a stable, readable display order: descending mean,
-    label as tiebreak.
+    """Indices giving the leaderboard order: descending mean, ties in data order.
 
     These orderings used to read ``rank_dist.expected_ranks``/``p_best``,
     which forced the (opt-in) rank bootstrap purely to decide row order --
     see ``core.ranking.LazyRankDistribution``. Mean order is free, already
     what the leaderboard sorts by elsewhere, and deterministic.
     """
-    means = np.asarray(bundle.robustness.mean, dtype=float)
-    labels = list(bundle.labels)
-    return np.array(
-        sorted(range(len(labels)), key=lambda i: (-means[i], labels[i])),
-        dtype=int,
-    )
+    return np.array(leaderboard_order(bundle.robustness.mean), dtype=int)
 
 
 def _print_multi_model_summary(
@@ -781,7 +787,8 @@ def _print_multi_model_summary(
     # only inside the show_rank_probabilities block below, which keeps the
     # rank bootstrap genuinely opt-in.
     rank_labels = bundle.cross_model.labels
-    rank_pairs = [_split_model_template_label(label) for label in rank_labels]
+    rank_levels = cell_levels(bundle.benchmark)
+    rank_pairs = [rank_levels.get(label, (label, "")) for label in rank_labels]
     rank_bar_width = 14
     n_ranked_items = len(rank_labels)
     model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
@@ -866,7 +873,7 @@ def _print_multi_model_summary(
 
     for idx in top_indices[:n_show]:
         pair_label = rank_labels[idx]
-        model_label, template_label = _split_model_template_label(pair_label)
+        model_label, template_label = rank_levels.get(pair_label, (pair_label, ""))
         model_label = _truncate_label(model_label, model_col_width)
         template_label = _truncate_label(template_label, template_col_width)
         try:
@@ -913,14 +920,14 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     # Build (model, template) -> mean from the flat cross_model bundle.
     # Labels are formatted as "model / template" by get_flat_result().
+    levels = cell_levels(bundle.benchmark)
     cell_mean: dict[tuple[str, str], float] = {}
     for label, m in zip(
         cross.labels,
         cross.robustness.mean,
     ):
-        parts = label.split(" / ", 1)
-        if len(parts) == 2:
-            cell_mean[(parts[0], parts[1])] = float(m)
+        if label in levels:
+            cell_mean[levels[label]] = float(m)
 
     all_means = list(cell_mean.values())
     mn, mx = min(all_means), max(all_means)
@@ -934,15 +941,13 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     # the point of reporting calibrated intervals in the first place.
     cross_labels_all = list(cross.labels)
     cross_means_all = cross.robustness.mean
-    sort_idx = list(np.argsort(-cross_means_all))
+    sort_idx = leaderboard_order(cross_means_all)
     labels_sorted = [cross_labels_all[i] for i in sort_idx]
     label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
     best_cells: set[tuple[str, str]] = set()
     for label, group in label_to_group.items():
-        if group == "#1":
-            parts = label.split(" / ", 1)
-            if len(parts) == 2:
-                best_cells.add((parts[0], parts[1]))
+        if group == "#1" and label in levels:
+            best_cells.add(levels[label])
     if not best_cells:
         # Fallback so a winner is still shown if group detection finds
         # nothing (e.g. degenerate pairwise matrix).
@@ -1004,11 +1009,12 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
         return
 
     means = cross.robustness.mean
-    sort_idx = list(np.argsort(-means))
+    sort_idx = leaderboard_order(means)
     labels_sorted = [labels[i] for i in sort_idx]
     label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
 
-    split_pairs = [_split_model_template_label(label) for label in labels]
+    levels = cell_levels(bundle.benchmark)
+    split_pairs = [levels.get(label, (label, "")) for label in labels]
     model_w = min(28, max(10, max(len(m) for m, _ in split_pairs) + 2))
     template_w = min(28, max(12, max(len(t) for _, t in split_pairs) + 2))
     grp_w = 4
@@ -1046,7 +1052,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     for label in labels_sorted:
         orig_idx = labels.index(label)
         mean_val = float(means[orig_idx])
-        model_label, template_label = _split_model_template_label(label)
+        model_label, template_label = levels.get(label, (label, ""))
 
         ci_lo = float(cross.robustness.ci_low[orig_idx])
         ci_hi = float(cross.robustness.ci_high[orig_idx])
@@ -1142,7 +1148,7 @@ def _p_side_efficiency_applies(eff_p_source: Optional[str], data_kind=None) -> b
     is not something this project validates: _COMPARISON_METHODS_BINARY drops
     mwu/wilcoxon for exactly that reason ("rank-based and break down under that
     many ties"), and the paper's binary PPI claims cover the t-test path only.
-    A reader can still force p_value_method="wsr" on binary data and get a
+    A reader can still pass pairwise_test="wilcoxon" on binary data and get a
     Wilcoxon p; what they must not get is an efficiency figure implying that
     number rests on validated ground.
     """
@@ -1191,54 +1197,15 @@ def _prepare_paired_pairwise_rows(
         return None, {}
     pair_stat_label = first_result.statistic.capitalize() if first_result else "Mean"
 
-    is_newcombe_pairwise = "newcombe" in first_result.test_method.lower()
-    is_sign_pairwise = "sign test" in first_result.test_method.lower()
-    is_bootstrap_path = "bootstrap" in first_result.test_method.lower()
-    using_max_t = bundle.pairwise.simultaneous_ci_method == "max_t"
-    is_romano_wolf_active = (
-        bundle.pairwise.correction_method == "romano_wolf"
-        and len(bundle.pairwise.results) > 1
-    )
-
-    # Column-header PPI tag: only for p-value paths that are actually
-    # PPI-corrected when alignment= is passed (McNemar/sign-test binary
-    # paths and Nemenyi don't run through PPI, so they never get tagged).
+    p_test = bundle.pairwise.p_value_test
     _ppi_tag = "PPI-" if getattr(bundle, "ppi_applied", False) else ""
-
-    # Binary paired data must not fall through to Wilcoxon signed-rank. A rank
-    # test on 0/1 scores is the thing _COMPARISON_METHODS_BINARY drops as
-    # unsound under that many ties, and evalstats already computes the right
-    # test for this cell -- it just was not being displayed. result.p_value
-    # carries McNemar's mid-p without PPI (see core/paired.py's bonett_price
-    # branch) and the PPI-corrected paired mean-difference test with it
-    # (_ppi_paired_bonett_price), which is the binary PPI path the paper
-    # validates. Both live on the "boot" source.
-    #
-    # Only when Romano-Wolf is NOT active: RW resamples its own p-values and
-    # legitimately replaces whatever base test would otherwise run, binary
-    # included.
     _is_binary_paired = str(getattr(bundle, "resolved_data_kind", None)) == "binary"
-
-    if p_value_method == "auto":
-        if is_romano_wolf_active:
-            eff_p_source, p_col_header = "boot", f"p ({_ppi_tag}RW)"
-        elif _is_binary_paired:
-            eff_p_source = "boot"
-            _multirun = any(r.n_runs > 1 for r in bundle.pairwise.results.values())
-            p_col_header = (
-                "p (PPI-paired-t)" if _ppi_tag else "p (CI)" if _multirun else "p (mcnemar)"
-            )
-        else:
-            eff_p_source, p_col_header = "wsr", f"p ({_ppi_tag}wsr)"
-    elif p_value_method == "boot":
-        eff_p_source = "max_t" if (using_max_t and is_bootstrap_path) else "boot"
-        p_col_header = f"p ({_ppi_tag}boot)"
-    elif p_value_method == "wsr":
-        eff_p_source, p_col_header = "wsr", f"p ({_ppi_tag}wsr)"
-    elif p_value_method == "nem":
-        eff_p_source, p_col_header = "nem", "p (nem)"
-    else:  # None
+    _check_p_value_method(p_value_method, p_test)
+    if p_value_method is None:
         eff_p_source, p_col_header = None, None
+    else:
+        eff_p_source = {"wilcoxon_signed_rank": "wsr", "nemenyi": "nem", "max_t": "max_t"}.get(p_test, "boot")
+        p_col_header = _p_column_header(p_test, ppi_tag=_ppi_tag, binary=_is_binary_paired)
 
     corr = bundle.pairwise.correction_method
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
@@ -1303,17 +1270,7 @@ def _prepare_paired_pairwise_rows(
         if _es_ppi is not None:
             rank_biserial = -float(_es_ppi) if left_item == b else float(_es_ppi)
 
-        if eff_p_source in {"max_t", "boot"}:
-            display_p = result.p_value
-        elif eff_p_source == "wsr":
-            display_p = result.wilcoxon_p
-        elif eff_p_source == "nem":
-            display_p = (
-                bundle.pairwise.friedman.get_nemenyi_p(str(left_item), str(right_item))
-                if bundle.pairwise.friedman is not None else None
-            )
-        else:
-            display_p = None
+        display_p = result.p_value if eff_p_source is not None else None
 
         # binary_confusion is symmetric in n11/n00; n10/n01 swap with direction
         # but for the bar we only need n_split = n10+n01, which is invariant.
@@ -1328,7 +1285,7 @@ def _prepare_paired_pairwise_rows(
                 "ci_high": ci_high,
                 "std_diff": float(result.std_diff),
                 "es_value": rank_biserial,
-                "p_value": result.p_value,  # sort key -- always the bootstrap p, regardless of eff_p_source
+                "p_value": result.p_value,
                 "display_p": display_p,
                 "agreement_mcc": result.agreement_mcc,
                 "binary_confusion": result.binary_confusion,
@@ -1377,28 +1334,13 @@ def _prepare_paired_pairwise_rows(
         ppi_prefix = "PPI-" if ppi_applied else ""
 
         p_value_method_label = None
-        if eff_p_source in {"max_t", "boot"}:
-            if is_romano_wolf_active and eff_p_source == "boot":
-                p_value_method_label = f"{ppi_prefix}Romano-Wolf step-down"
-            elif is_newcombe_pairwise:
-                p_value_method_label = "McNemar mid-p test"
-            elif is_sign_pairwise:
-                p_value_method_label = "Paired sign test"
-            elif _is_binary_paired:
-                if ppi_prefix:
-                    p_value_method_label = f"{ppi_prefix}paired t-test (difference of proportions)"
-                elif first_result.n_runs > 1:
-                    p_value_method_label = f"inverted from the {_pretty_ci_method} CI"
-                else:
-                    p_value_method_label = "McNemar mid-p test"
-            elif eff_p_source == "max_t":
-                p_value_method_label = f"{ppi_prefix}Max-T bootstrap"
+        if eff_p_source is not None:
+            if p_test == "ci_inversion":
+                p_value_method_label = f"inverted from the {_pretty_ci_method} CI"
+            elif ppi_prefix and _is_binary_paired and p_test == "paired_t":
+                p_value_method_label = f"{ppi_prefix}paired t-test (difference of proportions)"
             else:
-                p_value_method_label = f"{ppi_prefix}Bootstrap"
-        elif eff_p_source == "wsr":
-            p_value_method_label = f"{ppi_prefix}Wilcoxon signed-rank"
-        elif eff_p_source == "nem":
-            p_value_method_label = "Nemenyi post-hoc"
+                p_value_method_label = f"{ppi_prefix}{_p_test_label(p_test)}"
 
         # Explicit methods summary, directly above the p-value-method detail
         # line -- mirrors the matplotlib forest plot's subtitle, stated
@@ -1428,28 +1370,15 @@ def _prepare_paired_pairwise_rows(
             "one comparison, uncorrected" if len(pair_results) == 1
             else f"{_pretty_correction(corr)}-corrected"
         )
-        if eff_p_source in {"max_t", "boot"}:
-            if is_romano_wolf_active and eff_p_source == "boot":
-                print(f"{_DIM}  {p_col_header} = {ppi_prefix}Romano-Wolf step-down (FWER-controlled){_RESET}")
-            elif is_newcombe_pairwise:
-                print(f"{_DIM}  {p_col_header} = McNemar mid-p test (two-sided, uncorrected){_RESET}")
-            elif is_sign_pairwise:
-                print(f"{_DIM}  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected){_RESET}")
-            elif eff_p_source == "max_t":
-                print(f"{_DIM}  {p_col_header} = {ppi_prefix}max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
-            else:
-                print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_corr_note}){_RESET}")
-        elif eff_p_source == "wsr":
-            print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_corr_note}){_RESET}")
-        elif eff_p_source == "nem":
-            print(f"{_DIM}  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled){_RESET}")
+        if eff_p_source is not None:
+            _p_note = "FWER-controlled" if p_test in {"romano_wolf", "max_t", "nemenyi"} else _corr_note
+            print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_p_note}){_RESET}")
         print()
         _cd_labels = list(bundle.labels)
         labels_sorted = [_cd_labels[i] for i in _display_order(bundle)]
         _print_critical_difference_groups(
             bundle.pairwise,
             labels_sorted=labels_sorted,
-            p_source="bootstrap",
         )
 
     meta = {
@@ -1615,7 +1544,6 @@ def _prepare_unpaired_pairwise_rows(
             _GroupDiffResultsAsPairwiseMatrix(result.pairwise),
             labels_sorted=labels_sorted,
             alpha=result.alpha,
-            p_source="bootstrap",
         )
 
     label_width = min(24, max(8, max((len(g) for g in result.labels), default=8)))
@@ -2323,7 +2251,7 @@ def _print_bundle_summary(
 
     # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
-    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto, metric=metric)
+    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto, metric=metric, alpha=_eff_alpha)
     if pareto is not None:
         _print_pareto_callout(pareto, metric=metric)
 
@@ -2336,6 +2264,7 @@ def _print_bundle_summary(
         _print_next_steps_guidance(
             bundle,
             item_plural=item_plural,
+            alpha=_eff_alpha,
             min_meaningful_diff=min_meaningful_diff,
         )
 
@@ -3172,14 +3101,6 @@ def _truncate_label(text: str, width: int) -> str:
     return text[: width - 1] + "…"
 
 
-def _split_model_template_label(label: str) -> tuple[str, str]:
-    """Split labels of the form 'model / template' into separate columns."""
-    parts = label.split(" / ", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return label, ""
-
-
 def _ratio_bar(value: float, width: int = 12) -> str:
     """Render a fixed-width progress bar for values in [0, 1]."""
     width = max(1, int(width))
@@ -3268,109 +3189,14 @@ def _format_p_value(p_value: Optional[float]) -> str:
 # Critical-difference group detection
 # ---------------------------------------------------------------------------
 
-def _pairwise_rank_band_p(
-    pairwise: PairwiseMatrix,
-    label_a: str,
-    label_b: str,
-    *,
-    p_source: Literal["bootstrap", "wilcoxon"],
-) -> Optional[float]:
-    """Return the pairwise p-value used to decide rank-band indistinguishability."""
-    try:
-        result = pairwise.get(label_a, label_b)
-    except KeyError:
-        return None
-
-    if p_source == "bootstrap":
-        return float(result.p_value)
-    if p_source == "wilcoxon":
-        return None if result.wilcoxon_p is None else float(result.wilcoxon_p)
-
-    p_values = [float(result.p_value)]
-    if result.wilcoxon_p is not None:
-        p_values.append(float(result.wilcoxon_p))
-    return min(p_values) if p_values else None
-
-
 def _critical_difference_groups(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
     alpha: Optional[float] = None,
-    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> list[list[str]]:
-    """Return contiguous, maximal non-significant rank bands.
-
-    When simultaneous CIs have been computed, significance is determined by
-    whether the pairwise CI excludes zero (consistent with the displayed CIs).
-    Otherwise, correction-adjusted p-values compared to *alpha* are used.
-    """
-    if alpha is None:
-        alpha = get_alpha_ci()
-    if len(labels_sorted) < 2:
-        return []
-
-    n_labels = len(labels_sorted)
-    use_ci = pairwise.simultaneous_ci_method is not None
-
-    def _all_pairs_nonsignificant(group_labels: list[str]) -> bool:
-        for i in range(len(group_labels)):
-            for j in range(i + 1, len(group_labels)):
-                if use_ci:
-                    try:
-                        result = pairwise.get(group_labels[i], group_labels[j])
-                    except KeyError:
-                        return False
-                    if result.ci_low > 0 or result.ci_high < 0:
-                        return False
-                else:
-                    p_value = _pairwise_rank_band_p(
-                        pairwise, group_labels[i], group_labels[j], p_source=p_source,
-                    )
-                    if p_value is None or p_value < alpha:
-                        return False
-        return True
-
-    candidate_groups: list[list[str]] = []
-    for start_idx in range(n_labels - 1):
-        best_group: Optional[list[str]] = None
-        for end_idx in range(start_idx + 1, n_labels):
-            group = labels_sorted[start_idx : end_idx + 1]
-            if _all_pairs_nonsignificant(group):
-                best_group = group
-            else:
-                break
-        if best_group is not None:
-            candidate_groups.append(best_group)
-
-    def _is_contiguous_subsequence(smaller: list[str], larger: list[str]) -> bool:
-        if len(smaller) >= len(larger):
-            return False
-        max_start = len(larger) - len(smaller)
-        for start in range(max_start + 1):
-            if larger[start : start + len(smaller)] == smaller:
-                return True
-        return False
-
-    maximal_groups: list[list[str]] = []
-    for group in candidate_groups:
-        if any(
-            _is_contiguous_subsequence(group, other)
-            for other in candidate_groups
-            if other is not group
-        ):
-            continue
-        maximal_groups.append(group)
-
-    deduped: list[list[str]] = []
-    seen: set[tuple[str, ...]] = set()
-    for group in maximal_groups:
-        key = tuple(group)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(group)
-    return deduped
+    """Contiguous, maximal non-significant rank bands; see :func:`.report.critical_difference_groups`."""
+    return critical_difference_groups(pairwise, labels_sorted, alpha=alpha)
 
 
 def _single_clear_winner_label(
@@ -3378,48 +3204,9 @@ def _single_clear_winner_label(
     *,
     labels_sorted: list[str],
     alpha: Optional[float] = None,
-    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> Optional[str]:
     """Return the unique label that significantly beats every other label."""
-    if alpha is None:
-        alpha = get_alpha_ci()
-    if len(labels_sorted) < 2:
-        return None
-
-    use_ci = pairwise.simultaneous_ci_method is not None
-    winners: list[str] = []
-    for candidate in labels_sorted:
-        candidate_beats_all = True
-        for other in labels_sorted:
-            if other == candidate:
-                continue
-
-            try:
-                result = pairwise.get(candidate, other)
-            except KeyError:
-                candidate_beats_all = False
-                break
-
-            if use_ci:
-                sig = result.ci_low > 0 or result.ci_high < 0
-                beats = float(result.point_diff) > 0
-            else:
-                p_value = _pairwise_rank_band_p(
-                    pairwise, candidate, other, p_source=p_source,
-                )
-                sig = p_value is not None and p_value < alpha
-                beats = float(result.point_diff) > 0
-
-            if not sig or not beats:
-                candidate_beats_all = False
-                break
-
-        if candidate_beats_all:
-            winners.append(candidate)
-            if len(winners) > 1:
-                return None
-
-    return winners[0] if len(winners) == 1 else None
+    return clear_winner(pairwise, labels_sorted, alpha=alpha)
 
 
 def _print_critical_difference_groups(
@@ -3427,7 +3214,6 @@ def _print_critical_difference_groups(
     *,
     labels_sorted: list[str],
     alpha: Optional[float] = None,
-    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> None:
     """Print a short CD-style summary of statistically indistinguishable groups."""
     if alpha is None:
@@ -3437,20 +3223,12 @@ def _print_critical_difference_groups(
 
     rank_pos = {label: idx + 1 for idx, label in enumerate(labels_sorted)}
 
-    if pairwise.simultaneous_ci_method is not None:
+    if band_criterion(pairwise) == "simultaneous_ci_excludes_zero":
         source_label = f"{(1-alpha)*100:.0f}% CI"
     else:
-        source_label = {
-            "bootstrap": "p (boot)",
-            "wilcoxon": "p (wsr)",
-        }[p_source]
+        source_label = "corrected p"
 
-    groups = _critical_difference_groups(
-        pairwise,
-        labels_sorted=labels_sorted,
-        alpha=alpha,
-        p_source=p_source,
-    )
+    groups = _critical_difference_groups(pairwise, labels_sorted=labels_sorted, alpha=alpha)
     if not groups:
         print(
             f"  Statistically indistinguishable rank bands "
@@ -3468,17 +3246,12 @@ def _print_critical_difference_groups(
         rank_span = f"#{start_rank}" if start_rank == end_rank else f"#{start_rank}–#{end_rank}"
         print(f"    {rank_span}: [{' ─ '.join(group)}]")
 
-    clear_winner = _single_clear_winner_label(
-        pairwise,
-        labels_sorted=labels_sorted,
-        alpha=alpha,
-        p_source=p_source,
-    )
-    if clear_winner is not None:
+    winner = _single_clear_winner_label(pairwise, labels_sorted=labels_sorted, alpha=alpha)
+    if winner is not None:
         print()
         print(
             f"  {_BRIGHT_GREEN}-> Evidence suggests a clear best option:{_RESET} "
-            f"'{_BOLD}{_BRIGHT_GREEN}{clear_winner}{_RESET}'"
+            f"'{_BOLD}{_BRIGHT_GREEN}{winner}{_RESET}'"
         )
 
 
@@ -3490,68 +3263,12 @@ def _assign_significance_groups(
     pairwise: PairwiseMatrix,
     labels_sorted: list[str],
     alpha: Optional[float] = None,
-    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> dict[str, str]:
-    """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.
-
-    Templates in the same maximal non-significant rank band share an ID, and
-    IDs are non-decreasing down the rank-sorted list (group #1 always holds
-    the rank-1 template). For #2 onward, when maximal bands overlap -- e.g.
-    A~B and B~C are each individually non-significant but A~C is
-    significant, the transitivity caveat inherent to critical-difference
-    diagrams (Demsar 2006) -- the whole chain is merged into one group,
-    since each entity can only carry a single ID in this table (unlike a CD
-    diagram, which can draw overlapping bands as separate lines).
-
-    #1 is deliberately NOT extended this way: it's the one tier
-    ``_exec_verdict`` turns into an explicit "tied with X as best" claim, so
-    membership there must mean "provably indistinguishable from the actual
-    top performer" (the single maximal band containing rank 0), not merely
-    "reachable from it via a chain of individually-nonsignificant
-    neighbors". Chaining #1 the same way #2+ do would let a template many
-    links down the chain -- one the rank-1 template IS significantly better
-    than, directly -- inherit a "tied as best" verdict it doesn't deserve.
-    Anything past #1's direct band still gets its own (possibly
-    chain-merged) tier via the normal algorithm, so it correctly reads
-    "Significant drop-off" instead.
-    """
-    if alpha is None:
-        alpha = get_alpha_ci()
-    groups = _critical_difference_groups(
-        pairwise, labels_sorted=labels_sorted, alpha=alpha, p_source=p_source,
-    )
-    rank_of = {label: i for i, label in enumerate(labels_sorted)}
-
-    # For each label, the rightmost rank index reached by any maximal CD band
-    # it belongs to (its own rank if it belongs to none) -- used for #2+.
-    reach = {label: rank_of[label] for label in labels_sorted}
-    for group in groups:
-        end_idx = max(rank_of[l] for l in group)
-        for label in group:
-            reach[label] = max(reach[label], end_idx)
-
-    # #1's own (non-transitive) extent: just the single maximal band
-    # containing labels_sorted[0], if any.
-    top_reach = rank_of[labels_sorted[0]]
-    for group in groups:
-        if labels_sorted[0] in group:
-            top_reach = max(top_reach, max(rank_of[l] for l in group))
-
-    label_to_group: dict[str, str] = {}
-    group_idx = 0
-    current_end_idx = -1
-    for idx, label in enumerate(labels_sorted):
-        if idx > current_end_idx:
-            group_idx += 1
-            current_end_idx = top_reach if group_idx == 1 else reach[label]
-        elif group_idx > 1:
-            current_end_idx = max(current_end_idx, reach[label])
-        # group_idx == 1 and idx <= current_end_idx: stay pinned at
-        # top_reach regardless of this label's own (possibly further-
-        # reaching) chain -- see the direct-vs-transitive note above.
-        label_to_group[label] = f"#{group_idx}"
-
-    return label_to_group
+    """Group IDs ("#1", "#2", ...) by label; see :func:`.report.significance_bands`."""
+    return {
+        label: f"#{band}"
+        for label, band in significance_bands(pairwise, labels_sorted, alpha=alpha).items()
+    }
 
 
 def _exec_verdict(
@@ -3560,16 +3277,9 @@ def _exec_verdict(
     labels_sorted: list[str],
 ) -> str:
     """Human-readable verdict for a template in the executive summary."""
-    my_group = label_to_group.get(label, "?")
-    if my_group != "#1":
-        return "Significant drop-off"
-    group_1 = [l for l in labels_sorted if label_to_group.get(l) == "#1"]
-    others = [l for l in group_1 if l != label]
-    if not others:
-        return "Likely best"
-    if len(others) == 1:
-        return f"Tied with {_truncate_label(others[0], 20)} as best"
-    return f"Tied with {len(others)} others as best"
+    bands = {l: int(g[1:]) for l, g in label_to_group.items() if g[1:].isdigit()}
+    code, tied_with = verdict(label, bands, labels_sorted)
+    return verdict_text(code, tied_with, max_name_len=20)
 
 
 # Sort priority for Pareto status groups: frontier first (the calibrated
@@ -3906,6 +3616,7 @@ def _print_executive_summary(
     item_singular: str = "template",
     pareto: Optional[dict] = None,
     metric: Optional[str] = None,
+    alpha: Optional[float] = None,
 ) -> None:
     """Print a concise executive leaderboard after the stats-heavy blocks.
 
@@ -3928,11 +3639,11 @@ def _print_executive_summary(
 
     # Sort by mean score descending (best first).
     means = bundle.robustness.mean
-    sort_idx = list(np.argsort(-means))
+    sort_idx = leaderboard_order(means)
     labels_sorted = [labels[i] for i in sort_idx]
 
     # Significance group letters via CD groups.
-    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted, alpha=alpha)
     verdict_by_label = {
         label: _exec_verdict(label, label_to_group, labels_sorted) for label in labels_sorted
     }
@@ -4346,9 +4057,9 @@ def _print_next_steps_guidance(
     # Entity-level grouping — mirrors the executive summary leaderboard
     labels = list(bundle.labels)
     means = bundle.robustness.mean
-    sort_idx = list(np.argsort(-means))
+    sort_idx = leaderboard_order(means)
     labels_sorted = [labels[i] for i in sort_idx]
-    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted, alpha=alpha)
 
     groups: dict[str, list[str]] = {}
     for lbl in labels_sorted:

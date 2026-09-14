@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from evalstats._notes import warn as _note_warn
 from pathlib import Path
 from typing import Literal, Optional, Union
 
@@ -648,10 +649,10 @@ def load_from(
     if col_map:
         unknown = [k for k in col_map if k not in df.columns]
         if unknown:
-            warnings.warn(
+            _note_warn(
                 f"col_map references columns not found in data: {unknown}. "
                 "They will be ignored.",
-                UserWarning,
+                code="col_map_unknown_columns",
                 stacklevel=2,
             )
         df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
@@ -703,9 +704,9 @@ def load_from(
         df[mc] = pd.to_numeric(df[mc], errors="coerce")
         n_coerced = int((original.notna() & df[mc].isna()).sum())
         if n_coerced > 0:
-            warnings.warn(
+            _note_warn(
                 f"Coerced {n_coerced} non-numeric value(s) to NaN in column '{mc}'.",
-                UserWarning,
+                code="coerced_non_numeric",
                 stacklevel=2,
             )
 

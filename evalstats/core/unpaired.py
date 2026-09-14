@@ -26,9 +26,7 @@ test differ:
 
 Because Mann-Whitney tests θ=P(a>b) against 1/2 rather than the mean
 difference the interval covers, the two can disagree; each pair therefore
-also carries ``mean_test_p``, the interval's own p-value. This mirrors the
-paired path, which has always reported mean differences and carried its
-rank test (``PairedDiffResult.wilcoxon_p``) alongside.
+also carries ``mean_test_p``, the interval's own p-value.
 
 At k=2 there is only one possible comparison, so there is no separate
 omnibus test and no multiple-comparison correction to apply (Bonferroni/

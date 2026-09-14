@@ -15,6 +15,7 @@ separately captured by ``seed_variance_decomposition`` and
 from __future__ import annotations
 
 import warnings
+from evalstats._notes import warn as _note_warn
 from dataclasses import dataclass
 from typing import Optional
 
@@ -319,20 +320,20 @@ def robustness_metrics(
     # `statistic` instead of silently returning a mismatched CI.
     _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval", "logit_t"}
     if statistic == "median":
-        warnings.warn(
+        _note_warn(
             "statistic='median' has not been validated by the same "
             "simulation-based calibration testing as statistic='mean' "
             "(the default) -- treat median CIs here more cautiously.",
-            UserWarning,
+            code="median_unvalidated",
             stacklevel=2,
         )
         if marginal_method in _analytical:
-            warnings.warn(
+            _note_warn(
                 f"marginal_method='{marginal_method}' has no median variant "
                 "(it's a closed-form CI for a proportion/mean); falling "
                 "back to 'smooth_bootstrap' so the CI actually corresponds "
                 "to the reported median instead of silently mismatching it.",
-                UserWarning,
+                code="median_marginal_fallback",
                 stacklevel=2,
             )
             marginal_method = "smooth_bootstrap"

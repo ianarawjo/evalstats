@@ -4909,7 +4909,7 @@ def wilcoxon(
         # rigorously tie-corrected exact p-value rather than an
         # approximation. That's legitimately expensive at small n, but it's
         # the correct p-value, and this function's result is user-facing
-        # (es.tests.wilcoxon / PairedDiffResult.wilcoxon_p), so correctness
+        # (es.tests.wilcoxon, and PairedDiffResult.p_value on the paired path), so correctness
         # takes priority over speed here (see
         # simulations/harness/cases/pvalues.py's _safe_wilcoxon_p docstring
         # for the full performance characterization).

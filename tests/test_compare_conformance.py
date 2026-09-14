@@ -110,7 +110,8 @@ def test_paired_intervals_are_the_named_methods(kind, runs, k, n):
             if kind == "binary":
                 assert pw.p_value == pytest.approx(_mcnemar_midp_p(mats[a][:, 0], mats[b][:, 0]))
             else:
-                assert pw.wilcoxon_p == pytest.approx(stats.wilcoxon(mats[a][:, 0], mats[b][:, 0]).pvalue)
+                assert pw.p_value == pytest.approx(stats.wilcoxon(mats[a][:, 0], mats[b][:, 0]).pvalue)
+                assert pw.p_test == "wilcoxon_signed_rank"
 
 
 @pytest.mark.parametrize("kind,k,n", list(itertools.product(KINDS, [2, 3, 5], [15, 60])))
