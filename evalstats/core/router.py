@@ -62,11 +62,9 @@ def _resolve_p_value_method(
       column logic), since it depends on which FWER correction actually
       fired for this bundle (Shaffer's vs. Romano-Wolf), which in turn
       depends on N/data-kind and isn't known until :func:`~evalstats.core.paired.all_pairwise`
-      has run. The default is Wilcoxon signed-ranks for *any* k >= 2 (per
-      fig:fwer-decision-tree's standard workflow: Friedman omnibus first
-      when requested, then Wilcoxon pairwise, then FWER-corrected as
-      post-hoc), except when Romano-Wolf step-down is what actually
-      resolved -- it has no Wilcoxon-compatible joint construction (see
+      has run. The default is McNemar mid-p for binary data and Wilcoxon
+      signed-rank for numeric data (per fig:fwer-decision-tree), except
+      when Romano-Wolf step-down is what actually resolved -- it has no Wilcoxon-compatible joint construction (see
       :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`'s
       docstring), so its own mean-based bootstrap-t p-value is shown
       instead in that one case.

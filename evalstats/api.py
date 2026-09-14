@@ -1081,24 +1081,20 @@ def compare(
         :func:`~evalstats.config.set_alpha_ci` (default 0.05).
     p_values : bool
         When ``True``, print a p-value column in the pairwise comparisons
-        table (default: bootstrap p-values). Combine with ``omnibus=True``
-        to switch this to Wilcoxon signed-rank (the standard Friedman
-        post-hoc), or set ``pairwise_test=`` explicitly to pick one
-        directly. When ``alignment=`` is also passed, bootstrap and
-        Wilcoxon p-values are both PPI-corrected.
+        table; see ``pairwise_test=`` for which test. When ``alignment=`` is
+        also passed, the p-values are PPI-corrected.
     omnibus : bool
         When ``True``, run and print the Friedman omnibus test ("are ANY
         of the compared entities different?") above the pairwise table.
         Also PPI-corrected when ``alignment=`` is passed.
     pairwise_test : {"auto", "bootstrap", "wilcoxon", "nemenyi"}
         Which p-value to show in the pairwise table. ``"auto"`` (default)
-        always picks Wilcoxon signed-ranks, for any number of entities --
-        the standard workflow fig:fwer-decision-tree assumes throughout:
-        Friedman omnibus first when requested (``omnibus=True``), then
-        Wilcoxon for every pairwise comparison, then FWER-corrected as
-        post-hoc (see ``correction=`` on the underlying analysis engine).
-        Pass ``pairwise_test="bootstrap"`` explicitly for the CI-construction
-        method's own p-value instead. ``"nemenyi"`` requires ``omnibus=True``
+        follows fig:fwer-decision-tree: McNemar mid-p for binary data and
+        Wilcoxon signed-rank for numeric data, Shaffer-corrected below 30
+        items; from 30 items with three or more entities, Romano-Wolf
+        step-down p-values replace them. Multi-run binary p-values are
+        inverted from the CI. ``"bootstrap"`` shows the CI method's own
+        p-value instead. ``"nemenyi"`` requires ``omnibus=True``
         and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
     show_rank_probabilities : bool

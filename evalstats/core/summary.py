@@ -1382,10 +1382,12 @@ def _prepare_paired_pairwise_rows(
             elif is_sign_pairwise:
                 p_value_method_label = "Paired sign test"
             elif _is_binary_paired:
-                p_value_method_label = (
-                    f"{ppi_prefix}paired t-test (difference of proportions)"
-                    if ppi_prefix else "McNemar mid-p test"
-                )
+                if ppi_prefix:
+                    p_value_method_label = f"{ppi_prefix}paired t-test (difference of proportions)"
+                elif first_result.n_runs > 1:
+                    p_value_method_label = f"inverted from the {_pretty_ci_method} CI"
+                else:
+                    p_value_method_label = "McNemar mid-p test"
             elif eff_p_source == "max_t":
                 p_value_method_label = f"{ppi_prefix}Max-T bootstrap"
             else:
@@ -1412,7 +1414,11 @@ def _prepare_paired_pairwise_rows(
 
         _line2 = [f"Simultaneous CI method: {_pretty_simultaneous_ci(sim_ci_method)}"]
         if p_value_method_label:
-            _line2.append(f"FWER correction for p-values: {_pretty_correction(corr)}")
+            _corr_label = (
+                "none needed (one comparison)" if len(pair_results) == 1
+                else _pretty_correction(corr)
+            )
+            _line2.append(f"FWER correction for p-values: {_corr_label}")
         print(f"{_DIM}  {'  |  '.join(_line2)}{_RESET}")
 
         if eff_p_source in {"max_t", "boot"}:
