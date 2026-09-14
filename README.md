@@ -106,7 +106,7 @@ And LLMs are stochastic at temperature > 0: the "noise plot" visualizes (in)stab
 
 ## Recommended Methods
 
-`evalstats.compare()` defaults to `method="auto"`, which picks a well-calibrated statistical method based on your data's estimand, data type, and sample size. These defaults come from an extensive Monte Carlo simulation study across eval data types, sample sizes, and comparison setups, cross-checked against real LLM eval data, summarized in the two decision trees below. **Boxed methods are the default; gray notes give the multi-run variant and conservative alternatives.**
+`evalstats.compare()` defaults to `method="auto"`, which picks a well-calibrated statistical method based on your data's estimand, data type, and sample size. These defaults come from an extensive Monte Carlo simulation study across eval data types, sample sizes, and comparison setups, cross-checked against real LLM eval data, summarized in the two decision trees below. **Boxed methods are the default; gray notes give conservative alternatives.**
 
 ![Decision tree for selecting a 95% confidence interval method](docs/decision-tree-ci.png)
 

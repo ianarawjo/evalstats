@@ -6,8 +6,8 @@
       These are <code>evalstats</code>' current default recommendations, chosen automatically under
       <code>method="auto"</code> based on your data's estimand, data type, and sample size. They summarize
       the results of an extensive Monte Carlo simulation study, validated against real LLM eval data.
-      Boxed methods are the default; gray notes give the multi-run variant and conservative alternatives.
-      Paired data is assumed throughout the p-value / FWER tree below.
+      Boxed methods are the default; gray notes give conservative alternatives. Both trees cover
+      single-run, paired data at N=15&ndash;100.
     </p>
 
     <h3>95% Confidence Interval</h3>
@@ -21,14 +21,13 @@
               <div class="dtree-condition">Binary (0 / 1)</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">Wilson score interval</span>
-                <span class="dtree-leaf-note">Multi-run: Wilson flat</span>
               </div>
             </li>
             <li class="dtree-node">
-              <div class="dtree-condition">Numeric (continuous or Likert)</div>
+              <div class="dtree-condition">Numeric</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">Logit-t interval</span>
-                <span class="dtree-leaf-note">Multi-run: on run means. Conservative: NIG (continuous), smooth bootstrap (Likert)</span>
+                <span class="dtree-leaf-note">Conservative: NIG, smooth bootstrap</span>
               </div>
             </li>
           </ul>
@@ -40,21 +39,20 @@
               <div class="dtree-condition">Binary (0 / 1)</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">Bonett&ndash;Price adjusted Wald</span>
-                <span class="dtree-leaf-note">Multi-run: B&ndash;P shrunk</span>
+                <span class="dtree-leaf-note">Bonett &amp; Price, 2012</span>
               </div>
             </li>
             <li class="dtree-node">
               <div class="dtree-condition">Continuous</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">Logit-t interval</span>
-                <span class="dtree-leaf-note">Multi-run: on run mean differences. Conservative: smooth bootstrap (Gaussian KDE)</span>
+                <span class="dtree-leaf-note">Conservative: smooth bootstrap</span>
               </div>
             </li>
             <li class="dtree-node">
               <div class="dtree-condition">Likert / discrete</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">Bayesian NIG</span>
-                <span class="dtree-leaf-note">Multi-run: on run mean differences</span>
               </div>
             </li>
           </ul>
@@ -62,42 +60,53 @@
       </ul>
     </div>
 
-    <h3>p-value / FWER Correction (paired data)</h3>
+    <h3>p-value / FWER Correction</h3>
     <div class="dtree">
       <div class="dtree-root">How many comparisons are you running?</div>
       <ul class="dtree-branches">
         <li class="dtree-node">
           <div class="dtree-condition">Single pairwise comparison</div>
-          <div class="dtree-leaf">
-            <span class="dtree-leaf-method">Wilcoxon signed-rank test</span>
-            <span class="dtree-leaf-note">Conservative: smooth bootstrap (n&ge;30, Gaussian KDE); sign test (ultra-conservative)</span>
-          </div>
+          <ul class="dtree-branches">
+            <li class="dtree-node">
+              <div class="dtree-condition">Binary (0 / 1)</div>
+              <div class="dtree-leaf">
+                <span class="dtree-leaf-method">McNemar mid-p test</span>
+                <span class="dtree-leaf-note">Agrees with the CI beside it</span>
+              </div>
+            </li>
+            <li class="dtree-node">
+              <div class="dtree-condition">Numeric</div>
+              <div class="dtree-leaf">
+                <span class="dtree-leaf-method">Wilcoxon signed-rank test</span>
+                <span class="dtree-leaf-note">Conservative: sign test</span>
+              </div>
+            </li>
+          </ul>
         </li>
         <li class="dtree-node">
           <div class="dtree-condition">Family of comparisons (k&ge;3)</div>
           <ul class="dtree-branches">
             <li class="dtree-node">
-              <div class="dtree-condition">Need simultaneous CIs</div>
+              <div class="dtree-condition">Simultaneous CIs</div>
               <div class="dtree-leaf">
                 <span class="dtree-leaf-method">&Scaron;id&aacute;k procedure</span>
-                <span class="dtree-leaf-note">Every n and eval type</span>
+                <span class="dtree-leaf-note">Every n, every eval type</span>
               </div>
             </li>
             <li class="dtree-node">
-              <div class="dtree-condition">Need p-value correction</div>
+              <div class="dtree-condition">p-value correction</div>
               <ul class="dtree-branches">
                 <li class="dtree-node">
                   <div class="dtree-condition">n &lt; 30</div>
                   <div class="dtree-leaf">
                     <span class="dtree-leaf-method">Shaffer's procedure</span>
-                    <span class="dtree-leaf-note">Corrects the Wilcoxon p-value directly. Alternative: Benjamini&ndash;Hochberg if FDR suffices</span>
                   </div>
                 </li>
                 <li class="dtree-node">
                   <div class="dtree-condition">n &ge; 30</div>
                   <div class="dtree-leaf">
                     <span class="dtree-leaf-method">Romano&ndash;Wolf step-down</span>
-                    <span class="dtree-leaf-note">Replaces Wilcoxon p-values with its own joint statistic</span>
+                    <span class="dtree-leaf-note">Romano &amp; Wolf, 2005</span>
                   </div>
                 </li>
               </ul>
