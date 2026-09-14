@@ -59,13 +59,14 @@ def _detect_score_type(series: pd.Series) -> ScoreType:
         return "binary"
 
     # Likert means discrete here: whole numbers on a scale that starts at or
-    # above zero. The width is not capped, since a 0-25 rubric is as ordinal as
-    # a 1-5 one. Negative values are excluded because a rating scale running
-    # below zero is not a rating scale; that data reads as continuous instead.
-    # A metric that is only incidentally whole-numbered is declared with
-    # score_type="continuous".
+    # above zero and spans at most MAX_DISCRETE_LEVELS points, so a 0-25
+    # rubric is discrete and a 0-100 grade is continuous. Negative values are
+    # excluded because a rating scale running below zero is not a rating
+    # scale. Either reading can be overridden by declaring score_type.
+    from evalstats.config import MAX_DISCRETE_LEVELS
     all_int = bool(np.all(vals == np.floor(vals)))
-    if all_int and float(vals.min()) >= 0.0:
+    n_levels = float(vals.max()) - float(vals.min()) + 1
+    if all_int and float(vals.min()) >= 0.0 and n_levels <= MAX_DISCRETE_LEVELS:
         return "likert"
 
     # Continuous: floats bounded in [0, 1]

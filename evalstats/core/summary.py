@@ -86,7 +86,7 @@ def _rank_method_label(bundle: "AnalysisBundle") -> str:
 def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
     """Return True when single-sample CIs were computed with Wilson intervals."""
     method = (bundle.resolved_ci_method or "").lower()
-    return method in {"wilson", "newcombe", "bayes_binary"}
+    return method in {"wilson", "ppi_wilson", "newcombe", "bayes_binary"}
 
 
 def _pairwise_p_value_label(test_method: str) -> str:
@@ -1224,7 +1224,10 @@ def _prepare_paired_pairwise_rows(
             eff_p_source, p_col_header = "boot", f"p ({_ppi_tag}RW)"
         elif _is_binary_paired:
             eff_p_source = "boot"
-            p_col_header = "p (PPI-paired-t)" if _ppi_tag else "p (mcnemar)"
+            _multirun = any(r.n_runs > 1 for r in bundle.pairwise.results.values())
+            p_col_header = (
+                "p (PPI-paired-t)" if _ppi_tag else "p (CI)" if _multirun else "p (mcnemar)"
+            )
         else:
             eff_p_source, p_col_header = "wsr", f"p ({_ppi_tag}wsr)"
     elif p_value_method == "boot":
@@ -1421,6 +1424,10 @@ def _prepare_paired_pairwise_rows(
             _line2.append(f"FWER correction for p-values: {_corr_label}")
         print(f"{_DIM}  {'  |  '.join(_line2)}{_RESET}")
 
+        _corr_note = (
+            "one comparison, uncorrected" if len(pair_results) == 1
+            else f"{_pretty_correction(corr)}-corrected"
+        )
         if eff_p_source in {"max_t", "boot"}:
             if is_romano_wolf_active and eff_p_source == "boot":
                 print(f"{_DIM}  {p_col_header} = {ppi_prefix}Romano-Wolf step-down (FWER-controlled){_RESET}")
@@ -1431,9 +1438,9 @@ def _prepare_paired_pairwise_rows(
             elif eff_p_source == "max_t":
                 print(f"{_DIM}  {p_col_header} = {ppi_prefix}max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
             else:
-                print(f"{_DIM}  {p_col_header} = {ppi_prefix}bootstrap p-value ({bundle.pairwise.correction_method}-corrected){_RESET}")
+                print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_corr_note}){_RESET}")
         elif eff_p_source == "wsr":
-            print(f"{_DIM}  {p_col_header} = {ppi_prefix}Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected){_RESET}")
+            print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_corr_note}){_RESET}")
         elif eff_p_source == "nem":
             print(f"{_DIM}  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled){_RESET}")
         print()

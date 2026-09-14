@@ -528,8 +528,8 @@ def _likert_df(n=40, seed=0):
     ([0.0, 1.0, 1.0, 0.0], "binary"),
     ([1.0, 2.0, 3.0, 5.0], "likert"),
     ([0.0, 4.0, 10.0], "likert"),          # a scale starting at zero
-    ([0.0, 7.0, 18.0, 25.0], "likert"),    # wider than 1-10, still discrete
-    ([0.0, 45.0, 99.0], "likert"),
+    ([0.0, 7.0, 18.0, 25.0], "likert"),    # a 0-25 rubric is still discrete
+    ([0.0, 45.0, 99.0], "continuous"),     # a 0-100 grade is continuous
     ([-3.0, 0.0, 4.0], "continuous"),      # a rating scale does not go negative
     ([0.12, 0.55, 0.9], "continuous"),
     ([1.0, 1.5, 2.5], "continuous"),       # half points are not whole numbers
@@ -756,3 +756,76 @@ def test_multirun_binary_simultaneous_ci_widens_the_multirun_interval():
         expected = bonett_price_paired_ci_multirun_shrunk(
             _run_matrix(df, x), _run_matrix(df, y), alpha_adj)
         assert (pw.ci_low, pw.ci_high) == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# defaults and refusals that keep compare() on the recommended methods
+# ---------------------------------------------------------------------------
+
+def _ppi_evaldata(k=2, n_items=150, n_labels=40, shared=True, seed=5):
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame([
+        {"prompt": f"P{j}", "item": f"q{i}", "llm_score": float(rng.random() < 0.45 + 0.1 * j)}
+        for j in range(k) for i in range(n_items)
+    ])
+    human = np.full(len(df), np.nan)
+    shared_items = rng.choice(n_items, size=n_labels, replace=False)
+    for j in range(k):
+        items = shared_items if shared else rng.choice(n_items, size=n_labels, replace=False)
+        rows = np.where((df.prompt == f"P{j}") & df.item.isin([f"q{i}" for i in items]))[0]
+        for t in rows:
+            v = df.loc[t, "llm_score"]
+            human[t] = v if rng.random() < 0.85 else 1 - v
+    df["human_score"] = human
+    return es.load_from(df, metric_cols=["llm_score", "human_score"])
+
+
+def _ppi_compare(ev, **kwargs):
+    import warnings
+    from evalstats.alignment import judge_alignment
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ar = judge_alignment(ev, llm_metric="llm_score", human_groundtruth="human_score",
+                             selection="random")
+        return es.compare(ev, factors="prompt", metric="llm_score",
+                          alignment={"llm_score": ar}, n_mc=200, **kwargs)
+
+
+def test_ppi_on_paired_data_refuses_labels_not_shared_across_conditions():
+    with pytest.raises(ValueError, match="same items in every condition"):
+        _ppi_compare(_ppi_evaldata(shared=False))
+
+
+def test_ppi_auto_correction_is_shaffer():
+    res = _ppi_compare(_ppi_evaldata(k=3, n_items=60))
+    assert res.pairwise.correction_method == "shaffer"
+
+
+@pytest.mark.parametrize("hi,expected", [(25, "nig"), (100, "logit-t")])
+def test_integer_scales_above_50_points_are_continuous(hi, expected):
+    import warnings
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame([{"prompt": p, "item": f"q{i}", "score": float(rng.integers(0, hi + 1))}
+                       for p in ("A", "B") for i in range(40)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = es.compare(es.load_from(df), factors="prompt", score_range=(0, hi))
+    assert expected in res.pairwise.get("A", "B").test_method.lower()
+
+
+def test_p_values_and_omnibus_are_on_by_default():
+    df = _model_prompt_df(["gpt"], ["A", "B", "C"])
+    res = es.compare(es.load_from(df), factors="prompt")
+    assert res.p_value_method is not None
+    assert res.pairwise.friedman is not None
+
+
+def test_two_runs_are_flagged_at_the_top_of_the_summary(capsys):
+    import warnings
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame([{"prompt": p, "item": f"q{i}", "run": r, "score": float(rng.beta(4, 4))}
+                       for p in ("A", "B") for r in range(2) for i in range(30)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        es.compare(es.load_from(df), factors="prompt").summary()
+    assert "only 2 runs" in capsys.readouterr().out.splitlines()[0]

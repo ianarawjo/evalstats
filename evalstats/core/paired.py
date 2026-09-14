@@ -628,15 +628,19 @@ def pairwise_differences(
         multi_ci_dict: Optional[dict[float, tuple[float, float]]] = None,
         n_runs: int = 1,
         interval_at: Optional[Callable[[float], tuple[float, float]]] = None,
+        agreement_values: Optional[tuple[np.ndarray, np.ndarray]] = None,
     ) -> PairedDiffResult:
         agr_mcc: Optional[float] = None
         bin_conf: Optional[tuple[int, int, int, int]] = None
+        # Multi-run callers pass every (item, run) cell here, since their
+        # values_a/values_b are run means and no longer 0/1.
+        agree_a, agree_b = agreement_values if agreement_values is not None else (values_a, values_b)
         if (
-            values_a is not None
-            and values_b is not None
-            and is_binary_scores(np.stack([values_a, values_b]))
+            agree_a is not None
+            and agree_b is not None
+            and is_binary_scores(np.stack([agree_a, agree_b]))
         ):
-            agr_mcc, bin_conf = _compute_agreement_mcc(values_a, values_b)
+            agr_mcc, bin_conf = _compute_agreement_mcc(agree_a, agree_b)
 
         # Two-sided Wilcoxon signed-rank p-value, reported alongside whatever
         # primary method was chosen. Calls evalstats.tests.wilcoxon directly
@@ -792,6 +796,7 @@ def pairwise_differences(
             multi_ci_dict=mci,
             n_runs=scores.shape[2] if multirun else 1,
             interval_at=interval_at if multirun else None,
+            agreement_values=(values_a_full.ravel(), values_b_full.ravel()) if multirun else None,
         )
 
     # ------------------------------------------------------------------ #
@@ -846,6 +851,7 @@ def pairwise_differences(
             multi_ci_dict=mci,
             n_runs=scores.shape[2] if multirun else 1,
             interval_at=interval_at if multirun else None,
+            agreement_values=(values_a_full.ravel(), values_b_full.ravel()) if multirun else None,
         )
 
     if method == "tango":

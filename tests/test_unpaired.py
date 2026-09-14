@@ -790,18 +790,17 @@ class TestPValuesOmnibusToggles:
                              "score": float(np.clip(rng.normal(mean, 0.15), 0, 1))})
         return pd.DataFrame(rows)
 
-    def test_default_hides_both(self):
+    def test_default_shows_both(self):
         evaldata = es.load_from(self._df())
         r = es.compare(evaldata, factors="model", metric="score", design="unpaired", rng=1)
-        assert r.show_p_values is False
-        assert r.omnibus_test_name is None
-        assert r.omnibus_statistic is None
-        assert r.omnibus_p_value is None
+        assert r.show_p_values is True
+        assert r.omnibus_test_name is not None
+        assert r.omnibus_p_value is not None
         buf = io.StringIO()
         with redirect_stdout(buf):
             r.summary()
         out = buf.getvalue()
-        assert "Omnibus Test" not in out
+        assert "Omnibus Test" in out
         # pairwise table is untouched
         assert len(r.pairwise) == 3
 
@@ -859,15 +858,13 @@ class TestPValuesOmnibusToggles:
         assert r_default.to_dict() == r_explicit_false.to_dict()
 
     def test_unpaired_path_p_values_omnibus_default_matches_paired(self):
-        # Both paths now share the same default (False) -- unset on the
-        # unpaired path is a real no-op relative to explicit False, exactly
-        # like the paired path's own p_values=/omnibus= defaults.
+        # Both paths share the same default (True).
         evaldata = es.load_from(self._df())
         r_default = es.compare(evaldata, factors="model", metric="score",
                                 design="unpaired", rng=1)
-        r_explicit_false = es.compare(evaldata, factors="model", metric="score",
-                                       design="unpaired", p_values=False, omnibus=False, rng=1)
-        assert r_default.to_dict() == r_explicit_false.to_dict()
+        r_explicit_true = es.compare(evaldata, factors="model", metric="score",
+                                      design="unpaired", p_values=True, omnibus=True, rng=1)
+        assert r_default.to_dict() == r_explicit_true.to_dict()
 
 
 class TestCompareDesignRouting:

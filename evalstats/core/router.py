@@ -31,7 +31,7 @@ from .bundles import (
 from .paired import all_pairwise
 from .ranking import LazyRankDistribution, bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
-from ..config import get_alpha_ci, resolve_auto_analyze_methods
+from ..config import MAX_DISCRETE_LEVELS, get_alpha_ci, resolve_auto_analyze_methods
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -854,7 +854,11 @@ def resolve_auto_robustness_method(
                 # docstring and config.AUTO_ANALYZE_METHOD_TABLE's
                 # "likert" row for why this matters (NIG vs logit-t).
                 step = detect_quantization_step(run_scores)
-                if step is not None:
+                n_levels = (
+                    round((resolved_score_range[1] - resolved_score_range[0]) / step) + 1
+                    if step is not None else None
+                )
+                if n_levels is not None and n_levels <= MAX_DISCRETE_LEVELS:
                     data_kind = "likert"
                     warnings.warn(
                         f"Bounded numeric evaluation data was auto-detected "

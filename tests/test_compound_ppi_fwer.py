@@ -44,8 +44,8 @@ def _make_multiarm_binary(
     seed: int = 0,
 ):
     """k-arm binary data with human labels on the SAME item positions for
-    every entity, so every pair has full labeled-item overlap (the PPI
-    "dispatch" branch -- see _run_alignment_ppi's pair_branch classification).
+    every entity, so every pair has full labeled-item overlap, as paired PPI
+    requires.
 
     ``effect_size=0.0`` gives a true null (every arm has the same success
     probability); a positive value spreads arm probabilities evenly around
@@ -107,20 +107,9 @@ def _make_multiarm_continuous(
 
 def _make_mixed_branch_binary(n_items: int = 150, seed: int = 0,
                               m3_labels: int = 20):
-    """4-arm binary data where M0/M1/M2 share full labeled-item overlap
-    ("dispatch") but M3's labels come from a disjoint set of items -- so every
-    pair touching M3 has zero shared labels, while still carrying enough labels
-    in each condition on its own. Those pairs land in the "fallback" branch: an
-    independent-groups correction, with a warning, and no joint bootstrap.
-
-    Exercises the corrections that are all-or-nothing across pairs (max-T,
-    Romano-Wolf), which degrade for the WHOLE comparison as soon as any pair
-    cannot take the joint construction.
-
-    M3 previously got 8 labels, which put those pairs under the 15-label floor
-    and into the "skip" branch. Skipping stopped being a degraded result and
-    became an error, so that no longer reaches the assertions here.
-    """
+    """4-arm binary data where M0/M1/M2 share their labeled items but M3's
+    labels come from a disjoint set of items, so every pair touching M3 has no
+    shared labels. Paired PPI refuses such data."""
     rng = _rng(seed)
     entities = ["M0", "M1", "M2", "M3"]
     rows = []
@@ -374,40 +363,20 @@ class TestCompoundStructuralPlumbing:
             assert pr.ci_low <= pr.ci_high
             assert 0.0 <= pr.p_value <= 1.0
 
-    def test_max_t_silently_falls_back_to_bonferroni_when_overlap_insufficient(self):
-        """When some pairs lack the shared-labeled-item structure max-T needs
-        (fallback/skip branches present for pairs touching M3), the compound
-        path falls back to Bonferroni for the WHOLE comparison (max-T is all-
-        or-nothing across pairs) -- but, unlike the "labeled positions don't
-        match across pairs" case internal to _ppi_bootstrap_t_joint_stats,
-        this specific pre-emptive fallback (via the `not fallback_pairs and
-        not skipped_pairs` guard) does NOT emit its own explanatory warning.
-        The only warnings raised are the generic fallback/skip notices already
-        covered by test_skipped_pair_stays_uncorrected_while_others_are_ppi_corrected.
-        This is worth knowing operationally: a user won't be told *why* they
-        didn't get max-T in this case, only that some pairs used a weaker
-        correction."""
+    def test_labels_not_shared_with_one_arm_are_refused(self):
+        """Pairs touching M3 share no labeled items, so there is no paired
+        correction to run and no uncorrected result to fall back on."""
         evaldata, _labels = _make_mixed_branch_binary(seed=15)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = es.compare(
-                evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=50, method="bootstrap_t",
-                simultaneous_ci=True, correction="shaffer",
-                rng=_rng(15),
-            )
-        bundle = result._primary_bundle()
-        # Since the auto tree resolves to Sidak, which needs none of the
-        # shared-labeled-item structure max-T does, insufficient overlap no
-        # longer costs the whole comparison a Bonferroni downgrade -- it just
-        # uses Sidak. (Under the old boot default this asserted "bonferroni".)
-        assert bundle.pairwise.simultaneous_ci_method == "sidak"
-        messages = [str(w.message) for w in caught]
-        assert not any("Falling back to Bonferroni" in m for m in messages), messages
+            with pytest.raises(ValueError, match="same items in every condition"):
+                es.compare(
+                    evaldata, factors="model", metric="llm_score",
+                    alignment={"llm_score": ar}, n_mc=50,
+                    simultaneous_ci=True, correction="shaffer",
+                    rng=_rng(15),
+                )
 
     def test_pair_below_the_label_floor_is_refused_not_left_uncorrected(self):
         """A pair with too few labels to correct stops the comparison.
@@ -423,7 +392,7 @@ class TestCompoundStructuralPlumbing:
             warnings.simplefilter("ignore")
             ar = judge_alignment(evaldata, llm_metric="llm_score",
                                  human_groundtruth="human_score")
-            with pytest.raises(ValueError, match="fewer than 15 items labeled"):
+            with pytest.raises(ValueError, match="at least 15 items with a human label"):
                 es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -510,10 +479,9 @@ class TestRomanoWolfPvalues:
         for pr in bundle.pairwise.results.values():
             assert 0.0 <= pr.p_value <= 1.0
 
-    def test_auto_resolves_to_romano_wolf_at_n_ge_30(self):
-        """Mirrors the non-PPI decision tree: correction="auto" resolves to
-        Romano-Wolf at N >= 30 (numeric) when the shared-structure
-        requirement is met, not just Shaffer's regardless of N."""
+    def test_auto_resolves_to_shaffer_at_n_ge_30(self):
+        """Shaffer is the correction validated on PPI p-values, so "auto"
+        stays on it even where the non-PPI tree would pick Romano-Wolf."""
         evaldata = _make_multiarm_binary(n_entities=4, n_items=100, n_labeled=40, seed=201)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -525,7 +493,7 @@ class TestRomanoWolfPvalues:
                 rng=_rng(201),
             )
         bundle = result._primary_bundle()
-        assert bundle.pairwise.correction_method == "romano_wolf"
+        assert bundle.pairwise.correction_method == "shaffer"
 
     def test_auto_resolves_to_shaffer_below_n_30(self):
         evaldata = _make_multiarm_binary(n_entities=4, n_items=25, n_labeled=15, seed=202)
@@ -540,26 +508,6 @@ class TestRomanoWolfPvalues:
             )
         bundle = result._primary_bundle()
         assert bundle.pairwise.correction_method == "shaffer"
-
-    def test_romano_wolf_falls_back_to_shaffer_when_overlap_insufficient(self):
-        """When some pairs lack the shared-labeled-item structure Romano-Wolf
-        needs (fallback/skip branches present for pairs touching M3), the
-        whole comparison's p-value correction falls back to Shaffer's --
-        Romano-Wolf is all-or-nothing across pairs, same as "boot"."""
-        evaldata, _labels = _make_mixed_branch_binary(seed=203)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
-            result = es.compare(
-                evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30,
-                simultaneous_ci=False, correction="romano_wolf",
-                rng=_rng(203),
-            )
-        bundle = result._primary_bundle()
-        assert bundle.pairwise.correction_method == "shaffer"
-        for pr in bundle.pairwise.results.values():
-            assert 0.0 <= pr.p_value <= 1.0
 
     def test_wilcoxon_companion_pvalues_use_shaffer_not_romano_wolf(self):
         """Romano-Wolf's joint construction is specific to the paired-mean/
