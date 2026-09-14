@@ -528,8 +528,8 @@ def _likert_df(n=40, seed=0):
     ([0.0, 1.0, 1.0, 0.0], "binary"),
     ([1.0, 2.0, 3.0, 5.0], "likert"),
     ([0.0, 4.0, 10.0], "likert"),          # a scale starting at zero
-    ([0.0, 7.0, 18.0, 25.0], "likert"),    # wider than 1-10, still discrete
-    ([0.0, 45.0, 99.0], "likert"),
+    ([0.0, 7.0, 18.0, 25.0], "likert"),    # a 0-25 rubric is still discrete
+    ([0.0, 45.0, 99.0], "continuous"),     # a 0-100 grade is continuous
     ([-3.0, 0.0, 4.0], "continuous"),      # a rating scale does not go negative
     ([0.12, 0.55, 0.9], "continuous"),
     ([1.0, 1.5, 2.5], "continuous"),       # half points are not whole numbers
@@ -602,3 +602,230 @@ def test_explicit_score_type_beats_the_loader_declaration():
     ev = es.load_from(df, metric_cols={"score": "continuous"}, factors="condition")
     assert "logit-t" in _paired_ci_method(ev)
     assert "NIG" in _paired_ci_method(ev, score_type="likert")
+
+
+# ---------------------------------------------------------------------------
+# model / prompt axes
+# ---------------------------------------------------------------------------
+
+def _model_prompt_df(models, prompts, n=30, seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame([
+        {"model": m, "prompt": p, "item": f"q{i}",
+         "score": float(np.clip(rng.normal(0.5 + 0.05 * j, 0.15), 0, 1))}
+        for m in models for j, p in enumerate(prompts) for i in range(n)
+    ])
+
+
+def test_prompts_on_a_single_model():
+    ev = es.load_from(_model_prompt_df(["gpt"], ["A", "B"]))
+    res = es.compare(ev, factors="prompt")
+    assert sorted(res.labels) == ["A", "B"]
+
+
+def test_models_on_a_single_prompt():
+    ev = es.load_from(_model_prompt_df(["gpt", "claude"], ["A"]))
+    res = es.compare(ev, factors="model")
+    assert sorted(res.labels) == ["claude", "gpt"]
+
+
+def test_model_by_prompt_entities_are_the_cells():
+    import warnings
+    ev = es.load_from(_model_prompt_df(["gpt", "claude"], ["A", "B"]))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = es.compare(ev, factors=["model", "prompt"])
+    assert not any("only 2 runs" in str(w.message) for w in caught)
+    assert len(res.to_frame()["entities"]) == 4
+    assert sorted(res.as_view("model").labels) == ["claude", "gpt"]
+    assert sorted(res.as_view("prompt").labels) == ["A", "B"]
+
+
+def test_prompts_across_models_average_over_models():
+    df = _model_prompt_df(["m0", "m1", "m2"], ["A", "B"])
+    pw = es.compare(es.load_from(df), factors="prompt").pairwise.get("A", "B")
+    pooled = df[df.prompt == "A"].score.mean() - df[df.prompt == "B"].score.mean()
+    assert pw.point_diff == pytest.approx(pooled)
+    assert pw.n_runs == 1
+
+
+def test_two_custom_factors_do_not_use_the_lmm():
+    from evalstats.core.bundles import MultiModelBundle
+    df = _model_prompt_df(["m0", "m1"], ["A", "B"]).rename(
+        columns={"model": "chunker", "prompt": "retriever"})
+    ev = es.load_from(df, metric_cols=["score"], factors=["chunker", "retriever"])
+    res = es.compare(ev, factors=["chunker", "retriever"], metric="score")
+    assert isinstance(res._analysis, MultiModelBundle)
+    assert sorted(res.as_view("retriever").labels) == ["A", "B"]
+
+
+def test_more_than_two_factors_is_refused():
+    df = _model_prompt_df(["m0", "m1"], ["A", "B"])
+    df["temp"] = np.where(df["item"].str[1:].astype(int) % 2 == 0, "hot", "cold")
+    ev = es.load_from(df, metric_cols=["score"], factors=["model", "prompt", "temp"])
+    with pytest.raises(ValueError, match="at most two factors"):
+        es.compare(ev, factors=["model", "prompt", "temp"], metric="score")
+
+
+@pytest.mark.parametrize("kw", [{"method": "lmm"}, {"backend": "lmm"}])
+def test_factorial_lmm_is_opt_in(kw):
+    ev = es.load_from(_model_prompt_df(["m0", "m1"], ["A", "B"]))
+    res = es.compare(ev, factors=["model", "prompt"], **kw)
+    assert res._analysis.factorial_lmm_info is not None
+
+
+def test_model_by_prompt_on_a_single_model_compares_prompts():
+    ev = es.load_from(_model_prompt_df(["gpt"], ["A", "B"]))
+    with pytest.warns(UserWarning, match="single value"):
+        res = es.compare(ev, factors=["model", "prompt"])
+    assert sorted(res.labels) == ["A", "B"]
+
+
+def test_method_and_correction_are_named_parameters():
+    import inspect
+    params = inspect.signature(es.compare).parameters
+    assert "method" in params and "correction" in params
+    ev = es.load_from(_model_prompt_df(["gpt"], ["A", "B", "C"]))
+    res = es.compare(ev, factors="prompt", method="bootstrap", correction="bonferroni",
+                     n_bootstrap=200)
+    assert res.pairwise.correction_method == "bonferroni"
+
+
+# ---------------------------------------------------------------------------
+# multi-run binary pairs use every run
+# ---------------------------------------------------------------------------
+
+def _binary_runs_df(prompts, n=40, runs=3, seed=101):
+    """Run 0's difference is far from the pooled one at this seed."""
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame([
+        {"prompt": p, "item": f"q{i}", "run": r,
+         "score": float(rng.random() < 0.3 + 0.2 * r + 0.1 * j)}
+        for j, p in enumerate(prompts) for r in range(runs) for i in range(n)
+    ])
+
+
+def _run_matrix(df, prompt):
+    return df[df.prompt == prompt].pivot(index="item", columns="run", values="score").to_numpy()
+
+
+def test_multirun_binary_pair_uses_every_run():
+    from evalstats.core.resampling import bonett_price_paired_ci_multirun_shrunk
+    df = _binary_runs_df(["A", "B"])
+    a, b = _run_matrix(df, "A"), _run_matrix(df, "B")
+    pw = es.compare(es.load_from(df), factors="prompt").pairwise.get("A", "B")
+    assert pw.n_runs == 3
+    assert pw.point_diff == pytest.approx(a.mean() - b.mean())
+    assert (pw.ci_low, pw.ci_high) == pytest.approx(bonett_price_paired_ci_multirun_shrunk(a, b, 0.05))
+
+    def excludes_zero(alpha):
+        lo, hi = bonett_price_paired_ci_multirun_shrunk(a, b, alpha)
+        return lo > 0 or hi < 0
+    # The p-value is the interval's dual: significant exactly when it excludes 0.
+    assert 0 < pw.p_value < 1
+    assert excludes_zero(pw.p_value * 1.01) and not excludes_zero(pw.p_value * 0.99)
+
+
+@pytest.mark.parametrize("kind", ["binary", "constant_offset", "likert"])
+def test_two_arms_keep_the_recommended_pairwise_ci(kind):
+    """With one comparison there is nothing to adjust for."""
+    rng = np.random.default_rng(0)
+    n, kw = 30, {}
+    if kind == "binary":
+        a, b = (rng.random(n) < 0.6).astype(float), (rng.random(n) < 0.4).astype(float)
+    elif kind == "constant_offset":
+        a, b = np.full(n, 0.9), np.full(n, 0.8)
+    else:
+        a, b = rng.integers(1, 6, n).astype(float), rng.integers(1, 6, n).astype(float)
+        kw = {"score_range": (1, 5)}
+    df = pd.DataFrame([{"prompt": p, "item": f"q{i}", "score": v[i]}
+                       for p, v in (("A", a), ("B", b)) for i in range(n)])
+    on = es.compare(es.load_from(df), factors="prompt", **kw).pairwise
+    off = es.compare(es.load_from(df), factors="prompt", simultaneous_ci=False, **kw).pairwise
+    assert on.simultaneous_ci_method == "single"
+    r_on, r_off = on.get("A", "B"), off.get("A", "B")
+    assert (r_on.ci_low, r_on.ci_high) == pytest.approx((r_off.ci_low, r_off.ci_high))
+
+
+def test_multirun_binary_simultaneous_ci_widens_the_multirun_interval():
+    from evalstats.core.resampling import bonett_price_paired_ci_multirun_shrunk
+    df = _binary_runs_df(["A", "B", "C"])
+    res = es.compare(es.load_from(df), factors="prompt")
+    alpha_adj = 1 - 0.95 ** (1 / 3)
+    for (x, y), pw in res.pairwise.results.items():
+        expected = bonett_price_paired_ci_multirun_shrunk(
+            _run_matrix(df, x), _run_matrix(df, y), alpha_adj)
+        assert (pw.ci_low, pw.ci_high) == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# defaults and refusals that keep compare() on the recommended methods
+# ---------------------------------------------------------------------------
+
+def _ppi_evaldata(k=2, n_items=150, n_labels=40, shared=True, seed=5):
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame([
+        {"prompt": f"P{j}", "item": f"q{i}", "llm_score": float(rng.random() < 0.45 + 0.1 * j)}
+        for j in range(k) for i in range(n_items)
+    ])
+    human = np.full(len(df), np.nan)
+    shared_items = rng.choice(n_items, size=n_labels, replace=False)
+    for j in range(k):
+        items = shared_items if shared else rng.choice(n_items, size=n_labels, replace=False)
+        rows = np.where((df.prompt == f"P{j}") & df.item.isin([f"q{i}" for i in items]))[0]
+        for t in rows:
+            v = df.loc[t, "llm_score"]
+            human[t] = v if rng.random() < 0.85 else 1 - v
+    df["human_score"] = human
+    return es.load_from(df, metric_cols=["llm_score", "human_score"])
+
+
+def _ppi_compare(ev, **kwargs):
+    import warnings
+    from evalstats.alignment import judge_alignment
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ar = judge_alignment(ev, llm_metric="llm_score", human_groundtruth="human_score",
+                             selection="random")
+        return es.compare(ev, factors="prompt", metric="llm_score",
+                          alignment={"llm_score": ar}, n_mc=200, **kwargs)
+
+
+def test_ppi_on_paired_data_refuses_labels_not_shared_across_conditions():
+    with pytest.raises(ValueError, match="same items in every condition"):
+        _ppi_compare(_ppi_evaldata(shared=False))
+
+
+def test_ppi_auto_correction_is_shaffer():
+    res = _ppi_compare(_ppi_evaldata(k=3, n_items=60))
+    assert res.pairwise.correction_method == "shaffer"
+
+
+@pytest.mark.parametrize("hi,expected", [(25, "nig"), (100, "logit-t")])
+def test_integer_scales_above_50_points_are_continuous(hi, expected):
+    import warnings
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame([{"prompt": p, "item": f"q{i}", "score": float(rng.integers(0, hi + 1))}
+                       for p in ("A", "B") for i in range(40)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = es.compare(es.load_from(df), factors="prompt", score_range=(0, hi))
+    assert expected in res.pairwise.get("A", "B").test_method.lower()
+
+
+def test_p_values_and_omnibus_are_on_by_default():
+    df = _model_prompt_df(["gpt"], ["A", "B", "C"])
+    res = es.compare(es.load_from(df), factors="prompt")
+    assert res.p_value_method is not None
+    assert res.pairwise.friedman is not None
+
+
+def test_two_runs_are_flagged_at_the_top_of_the_summary(capsys):
+    import warnings
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame([{"prompt": p, "item": f"q{i}", "run": r, "score": float(rng.beta(4, 4))}
+                       for p in ("A", "B") for r in range(2) for i in range(30)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        es.compare(es.load_from(df), factors="prompt").summary()
+    assert "only 2 runs" in capsys.readouterr().out.splitlines()[0]

@@ -31,7 +31,7 @@ from .bundles import (
 from .paired import all_pairwise
 from .ranking import LazyRankDistribution, bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
-from ..config import get_alpha_ci, resolve_auto_analyze_methods
+from ..config import MAX_DISCRETE_LEVELS, get_alpha_ci, resolve_auto_analyze_methods
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -62,11 +62,9 @@ def _resolve_p_value_method(
       column logic), since it depends on which FWER correction actually
       fired for this bundle (Shaffer's vs. Romano-Wolf), which in turn
       depends on N/data-kind and isn't known until :func:`~evalstats.core.paired.all_pairwise`
-      has run. The default is Wilcoxon signed-ranks for *any* k >= 2 (per
-      fig:fwer-decision-tree's standard workflow: Friedman omnibus first
-      when requested, then Wilcoxon pairwise, then FWER-corrected as
-      post-hoc), except when Romano-Wolf step-down is what actually
-      resolved -- it has no Wilcoxon-compatible joint construction (see
+      has run. The default is McNemar mid-p for binary data and Wilcoxon
+      signed-rank for numeric data (per fig:fwer-decision-tree), except
+      when Romano-Wolf step-down is what actually resolved -- it has no Wilcoxon-compatible joint construction (see
       :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`'s
       docstring), so its own mean-based bootstrap-t p-value is shown
       instead in that one case.
@@ -98,7 +96,7 @@ def analyze(
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
-    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    template_model_collapse: Literal["mean", "as_runs"] = "mean",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_values: bool = False,
@@ -242,9 +240,8 @@ def analyze(
         Multi-model only. Controls how the per-template (model-agnostic)
         view collapses the model axis:
 
-        * ``'mean'`` averages over models.
-        * ``'as_runs'`` (default) treats models as additional runs to preserve
-            cross-model variation in uncertainty estimates.
+        * ``'mean'`` (default) averages over models within each input.
+        * ``'as_runs'`` treats models as additional runs.
 
     p_values : bool
         When ``True``, p-values are shown in pairwise comparison tables.
@@ -857,7 +854,11 @@ def resolve_auto_robustness_method(
                 # docstring and config.AUTO_ANALYZE_METHOD_TABLE's
                 # "likert" row for why this matters (NIG vs logit-t).
                 step = detect_quantization_step(run_scores)
-                if step is not None:
+                n_levels = (
+                    round((resolved_score_range[1] - resolved_score_range[0]) / step) + 1
+                    if step is not None else None
+                )
+                if n_levels is not None and n_levels <= MAX_DISCRETE_LEVELS:
                     data_kind = "likert"
                     warnings.warn(
                         f"Bounded numeric evaluation data was auto-detected "
@@ -1151,7 +1152,7 @@ def _analyze_multi_model(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
-    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    template_model_collapse: Literal["mean", "as_runs"] = "mean",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_value_method: Optional[str] = None,

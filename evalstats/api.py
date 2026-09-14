@@ -133,12 +133,30 @@ class ComparisonResult:
             show_rank_probabilities=)``) -- overrides that default for this
             call only when passed explicitly.
         """
+        bench = getattr(self._analysis, "benchmark", None)
+        if bench is not None and getattr(bench, "n_runs", 1) == 2:
+            from evalstats.core.summary import _BOLD, _BRIGHT_RED, _RESET
+            print(
+                f"{_BOLD}{_BRIGHT_RED}WARNING: only 2 runs per item. They are averaged "
+                "into one score per item, not analysed as repeated runs "
+                f"(that needs 3 or more).{_RESET}\n"
+            )
         # Map our sentinel to the summary module's _UNSET so it reads from bundle.
         pvm = _SUMMARY_UNSET if p_value_method is ComparisonResult._UNSET else p_value_method
         show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
         item_singular, item_plural = _factor_item_labels(self._factors)
+        f = self._factors
+        # The row axis of a two-factor result: models for the canonical pair,
+        # else the first factor named.
+        row_factor = (
+            f[0] if isinstance(f, (list, tuple)) and len(f) == 2
+            and not set(f) <= _STANDARD_FACTOR_NAMES else "model"
+        )
+        factor_singular, factor_plural = _factor_item_labels(row_factor)
         print_analysis_summary(
             self._analysis,
+            factor_singular=factor_singular,
+            factor_plural=factor_plural,
             rng_seed=self.rng_seed,
             top_pairwise=top_pairwise,
             style=style,
@@ -475,7 +493,7 @@ class ComparisonResult:
             return None
         return list(self._analysis.benchmark.template_labels)
 
-    def as_view(self, factor: Literal["model", "prompt"]) -> "ComparisonResult":
+    def as_view(self, factor: str) -> "ComparisonResult":
         """Return this two-factor comparison collapsed onto a single axis.
 
         E.g. ``result.as_view("model")`` averages over prompts to compare
@@ -490,8 +508,12 @@ class ComparisonResult:
                 "factors='model'/'prompt' when both columns are present)."
             )
         view_map = {"model": "model_level", "prompt": "template_level"}
+        f = self._factors
+        if isinstance(f, (list, tuple)) and len(f) == 2 and not set(f) <= _STANDARD_FACTOR_NAMES:
+            # Custom factors: the first is the row axis, the second the column axis.
+            view_map = {f[0]: "model_level", f[1]: "template_level"}
         if factor not in view_map:
-            raise ValueError(f"factor={factor!r} must be 'model' or 'prompt'.")
+            raise ValueError(f"factor={factor!r} must be one of {list(view_map)}.")
         return ComparisonResult(
             self._analysis,
             factors=self._factors,
@@ -983,11 +1005,13 @@ def compare(
     n_mc: int = 200,
     min_meaningful_diff: Optional[float] = None,
     alpha: Optional[float] = None,
-    p_values: Optional[bool] = None,
-    omnibus: Optional[bool] = None,
+    p_values: bool = True,
+    omnibus: bool = True,
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     show_rank_probabilities: bool = False,
     design: Literal["auto", "paired", "unpaired"] = "auto",
+    method: Optional[str] = None,
+    correction: Optional[str] = None,
     **kwargs: Any,
 ) -> Union[ComparisonResult, GroupComparisonResult]:
     """Compare entities along one or more factor axes.
@@ -1001,8 +1025,16 @@ def compare(
 
         * ``"model"`` — compare models
         * ``"prompt"`` — compare prompt templates
-        * ``["model", "prompt"]`` — factorial design (uses LMM backend)
+        * ``["model", "prompt"]`` — every (model, prompt) cell; use
+          :meth:`ComparisonResult.as_view` for either factor averaged over
+          the other
         * Any other column name — compares levels of that column
+        * Any other pair of columns — same as model × prompt
+
+        At most two factors. ``method="lmm"`` runs the experimental factorial
+        mixed model instead.
+
+        A model or prompt column holding a single value is ignored as an axis.
 
     metric : str, optional
         Metric column to analyze. Defaults to the first metric column
@@ -1056,25 +1088,23 @@ def compare(
         When ``None`` (default), uses the global value set by
         :func:`~evalstats.config.set_alpha_ci` (default 0.05).
     p_values : bool
-        When ``True``, print a p-value column in the pairwise comparisons
-        table (default: bootstrap p-values). Combine with ``omnibus=True``
-        to switch this to Wilcoxon signed-rank (the standard Friedman
-        post-hoc), or set ``pairwise_test=`` explicitly to pick one
-        directly. When ``alignment=`` is also passed, bootstrap and
-        Wilcoxon p-values are both PPI-corrected.
+        Print a p-value column in the pairwise comparisons table (default
+        ``True``); see ``pairwise_test=`` for which test. When ``alignment=``
+        is also passed, the p-values are PPI-corrected.
     omnibus : bool
-        When ``True``, run and print the Friedman omnibus test ("are ANY
-        of the compared entities different?") above the pairwise table.
-        Also PPI-corrected when ``alignment=`` is passed.
+        Run and print an omnibus test ("are ANY of the compared entities
+        different?") above the pairwise table when there are three or more
+        entities (default ``True``): Friedman on paired data, Kruskal-Wallis
+        or one-way ANOVA on unpaired data. Also PPI-corrected when
+        ``alignment=`` is passed.
     pairwise_test : {"auto", "bootstrap", "wilcoxon", "nemenyi"}
         Which p-value to show in the pairwise table. ``"auto"`` (default)
-        always picks Wilcoxon signed-ranks, for any number of entities --
-        the standard workflow fig:fwer-decision-tree assumes throughout:
-        Friedman omnibus first when requested (``omnibus=True``), then
-        Wilcoxon for every pairwise comparison, then FWER-corrected as
-        post-hoc (see ``correction=`` on the underlying analysis engine).
-        Pass ``pairwise_test="bootstrap"`` explicitly for the CI-construction
-        method's own p-value instead. ``"nemenyi"`` requires ``omnibus=True``
+        follows fig:fwer-decision-tree: McNemar mid-p for binary data and
+        Wilcoxon signed-rank for numeric data, Shaffer-corrected below 30
+        items; from 30 items with three or more entities, Romano-Wolf
+        step-down p-values replace them. Multi-run binary p-values are
+        inverted from the CI. ``"bootstrap"`` shows the CI method's own
+        p-value instead. ``"nemenyi"`` requires ``omnibus=True``
         and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
     show_rank_probabilities : bool
@@ -1132,13 +1162,19 @@ def compare(
         per-group marginal CI's auto-method resolution, same as the paired
         path). ``n_mc=`` has no effect — the equivalent knob is
         ``n_bootstrap=``. ``p_values=`` and ``omnibus=`` are honored, with
-        the same default (``False``) as the paired path — pass
-        ``p_values=True`` to show the pairwise table's p-value column, or
-        ``omnibus=True`` to run and print the omnibus test at 3+ groups.
+        the same default (``True``) as the paired path.
         ``baseline=``, ``pairwise_test=``, and
         ``show_rank_probabilities=`` still have no effect on this path —
         it always reports all-pairs comparisons (no baseline-relative
         view) and has no rank-probability view.
+    method : str, optional
+        CI method, e.g. ``"bca"`` or ``"lmm"``. ``None`` uses ``"auto"``,
+        which picks a validated method from the data type and design; see
+        :func:`~evalstats.core.router.analyze` for the full list.
+    correction : str, optional
+        Multiple-comparisons correction: ``"auto"``, ``"holm"``,
+        ``"bonferroni"``, ``"fdr_bh"``, ``"hochberg"``, ``"shaffer"``,
+        ``"romano_wolf"``, or ``"none"``. ``None`` uses the engine default.
     **kwargs
         Two uses:
 
@@ -1270,6 +1306,11 @@ def compare(
     kwargs["p_values"] = p_values
     kwargs["omnibus"] = omnibus
     kwargs["pairwise_test"] = pairwise_test
+    # Only when passed, so each engine keeps its own default.
+    if method is not None:
+        kwargs["method"] = method
+    if correction is not None:
+        kwargs["correction"] = correction
 
     # ── split kwargs into column filters vs. engine kwargs ────────────────────
     df, engine_kwargs = _apply_kwarg_filters(df, kwargs, _ANALYZE_PARAMS)
@@ -1311,6 +1352,35 @@ def compare(
     # Detect canonical mappings
     model_col  = col.get("model")
     prompt_col = col.get("prompt")
+
+    # A model or prompt column holding a single value is not a second axis:
+    # prompts compared on one model is a single-factor comparison.
+    def _varies(c):
+        return bool(c) and c in df.columns and df[c].nunique() >= 2
+
+    def _factor_column(f):
+        if f == "model":
+            return model_col
+        if f in {"prompt", "template"}:
+            return prompt_col
+        return f
+
+    if len(factors_list) == 2 and all(_factor_column(f) in df.columns for f in factors_list):
+        _kept = [f for f in factors_list if _varies(_factor_column(f))]
+        if len(_kept) == 1:
+            _dropped = next(f for f in factors_list if f not in _kept)
+            warnings.warn(
+                f"factor {_dropped!r} has a single value in the data, so this "
+                f"is a comparison over {_kept[0]!r} alone.",
+                UserWarning,
+                stacklevel=2,
+            )
+            factors_list = _kept
+            _user_factors = _kept[0]
+    if "model" not in factors_list and not _varies(model_col):
+        model_col = None
+    if not ({"prompt", "template"} & set(factors_list)) and not _varies(prompt_col):
+        prompt_col = None
 
     is_model_comparison  = (len(factors_list) == 1 and
                              factors_list[0] in {"model"} and model_col and model_col in df)
@@ -1431,8 +1501,8 @@ def compare(
                 # Same default as the paired path: unset (None, meaning the
                 # caller didn't pass either) resolves to False. An explicit
                 # True/False is honored as a real suppress/show toggle.
-                _up_p_values = False if engine_kwargs.get("p_values") is None else bool(engine_kwargs.get("p_values"))
-                _up_omnibus = False if engine_kwargs.get("omnibus") is None else bool(engine_kwargs.get("omnibus"))
+                _up_p_values = bool(engine_kwargs.get("p_values"))
+                _up_omnibus = bool(engine_kwargs.get("omnibus"))
                 return compare_unpaired(
                     df, factor_col=_design_factor_col, metric_col=metric_col,
                     item_col=item_col, alignment=alignment, alpha=alpha,
@@ -1615,28 +1685,42 @@ def compare(
         )
         return cr
 
-    # ── path D-pre: canonical 2-factor ["model","prompt"] → multi-model path ──
-    # When the user passes exactly the standard factor names (not custom names
-    # that were remapped), prefer the richer MultiModelBundle path over factorial
-    # LMM — it's simpler, faster, and shows the cross-model ranking output the
-    # user usually wants.  An explicit LMM backend opt-in bypasses this.
-    _user_factors_list = [_user_factors] if isinstance(_user_factors, str) else list(_user_factors)
-    _is_canonical_2factor = (
-        is_factorial
-        and len(_user_factors_list) == 2
-        and all(f in _STANDARD_FACTOR_NAMES for f in _user_factors_list)
-        and model_col and model_col in df.columns
-        and prompt_col and prompt_col in df.columns
-        and engine_kwargs.get("backend") not in {"lmm", "factorial_lmm"}
+    # ── path D-pre: two factors → multi-model path ────────────────────────────
+    # Paired analysis of every cell, plus each factor averaged over the other.
+    # The factorial LMM (path D) is experimental and runs only when asked for.
+    _lmm_requested = (
+        engine_kwargs.get("method") in {"lmm", "factorial_lmm"}
+        or engine_kwargs.get("backend") in {"lmm", "factorial_lmm"}
     )
-    if _is_canonical_2factor:
+    if is_factorial and not _lmm_requested:
+        if len(factors_list) > 2:
+            raise ValueError(
+                f"compare() takes at most two factors; got {factors_list!r}. "
+                "Combine columns into one factor first, e.g. "
+                "df['config'] = df['a'] + '|' + df['b'], or pass method='lmm' "
+                "for the experimental factorial mixed model."
+            )
+        _row_f, _col_f = factors_list
+        # The canonical pair always puts models on the row axis.
+        if _row_f in {"prompt", "template"} and _col_f == "model":
+            _row_f, _col_f = _col_f, _row_f
+        row_col, col_col = _factor_column(_row_f), _factor_column(_col_f)
+        missing_factors = [
+            f for f, c in ((_row_f, row_col), (_col_f, col_col))
+            if not c or c not in df.columns
+        ]
+        if missing_factors:
+            raise EvalLoadError(
+                f"Factor column(s) {missing_factors} not found in data. "
+                f"Available columns: {list(df.columns)}"
+            )
         df_multi = df[
-            [model_col, prompt_col, item_col, metric_col]
+            [row_col, col_col, item_col, metric_col]
             + ([run_col] if run_col and run_col in df.columns else [])
         ].copy()
         rename_multi = {
-            model_col: "model",
-            prompt_col: "template",
+            row_col: "model",
+            col_col: "template",
             item_col: "input",
             metric_col: "score",
         }
@@ -1646,6 +1730,8 @@ def compare(
         bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
         reference = baseline if baseline else "grand_mean"
         analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
+        # Both factors were asked for, so the entities are the (model, prompt)
+        # cells; as_view() gives either marginal.
         return ComparisonResult(
             analysis,
             factors=_user_factors,
@@ -1653,7 +1739,7 @@ def compare(
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
-            _mmb_view="model_level",
+            _mmb_view="cross_model",
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
             rng_seed=_rng_seed_used,
@@ -1684,6 +1770,9 @@ def compare(
             if k in {"backend", "ci", "correction", "reference",
                      "spread_percentiles", "failure_threshold", "n_sim", "rng"}
         }
+        # "lmm" only selects this path; the fitting backend keeps its default.
+        if factorial_kwargs.get("backend") in {"lmm", "factorial_lmm"}:
+            factorial_kwargs.pop("backend")
         if "ci" not in factorial_kwargs:
             factorial_kwargs["ci"] = ci_level
 
@@ -1817,21 +1906,6 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         "Pass method=\"auto\" to let PPI correction pick a supported method "
         "automatically, or choose one of the methods above explicitly."
     )
-
-
-def _ppi_pairwise_unpaired_fallback(a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
-    """Independent-groups PPI fallback for a paired-mean-diff estimand.
-
-    Used when two entities don't have enough commonly-labeled items (same
-    item labeled for both) for a proper paired PPI correction, but each
-    individually has enough of its own labels. Mathematically valid because
-    ``mean(a) - mean(b)`` decomposes into two independent rectifiers — this
-    is exactly ``evalstats.tests._ppi_two_sample``'s validated "TTEST" PPI
-    form (see ``simulations/harness/cases/pvalues.py``), just applied to
-    what would otherwise be a paired comparison.
-    """
-    from evalstats.tests import _ppi_two_sample
-    return _ppi_two_sample(a, b, a_lab, b_lab, lambda ya, yb: float(ya.mean() - yb.mean()), alpha, n_boot, rng)
 
 
 _JOINT_BOOT_SE_REL_FLOOR = 0.20
@@ -2360,10 +2434,9 @@ def _run_alignment_ppi(
     of which a PPI-corrected estimate still provides), but treat this as
     provisional until validated at harness scale.
 
-    ``correction`` similarly mirrors ``resolve_auto_pvalue_correction_method``'s
-    non-PPI tree: ``"auto"`` (the default) resolves to ``"romano_wolf"`` at
-    N>=30 (or a lopsided binary split forces ``"shaffer"`` regardless of N),
-    else ``"shaffer"``. PPI-generalized Romano-Wolf
+    ``correction="auto"`` (the default) resolves to ``"shaffer"``, the
+    correction validated on PPI-corrected p-values. Passing
+    ``correction="romano_wolf"`` selects PPI-generalized Romano-Wolf
     (``_ppi_romano_wolf_pvalues_from_joint_stats``) reuses the SAME joint
     resample "boot" needs above (computed once, shared between both when
     both apply) and runs Romano-Wolf's exact step-down algorithm on PPI's
@@ -2371,7 +2444,7 @@ def _run_alignment_ppi(
     per-item bootstrap -- so it shares "boot"'s requirements (every pair
     "dispatch" branch, >=15 shared labeled items) and falls back to
     Shaffer's when they aren't met, with a warning. UNLIKE the Sidak/boot
-    CI caveat above, this WAS validated before becoming the default: a
+    CI caveat above, it has had a smaller check, not in the paper: a
     9-condition grid (k=3-5 arms, N=50-200, label fractions 20-40%, binary
     data, paired Shaffer-vs-Romano-Wolf comparisons on identical data) found
     worst-case FWER 0.067 against nominal 0.05 (within normal Monte Carlo
@@ -2654,15 +2727,8 @@ def _run_alignment_ppi(
     # gets set for each construction.
     use_simultaneous = bool(bundle.pairwise.simultaneous_ci) and n_pairs > 1
 
-    # ── Classify pairs up front (cheap: no bootstrapping) ─────────────────────
-    # Determines paired-dispatch vs. unpaired-fallback vs. skip-uncorrected for
-    # every pair, so we know before running any bootstrap whether a joint
-    # max-T correction is even possible (it requires every pair to use the
-    # full paired dispatch — see below).
+    # ── Check every pair's shared labels up front (cheap: no bootstrapping) ───
     pair_arrays: dict = {}
-    pair_branch: dict = {}
-    skipped_pairs = []
-    fallback_pairs = []
     for (ea, eb) in pair_keys:
         ia, ib = entity_idx[ea], entity_idx[eb]
         valid = ~np.isnan(scores_2d[ia]) & ~np.isnan(scores_2d[ib])
@@ -2671,16 +2737,15 @@ def _run_alignment_ppi(
         pair_arrays[(ea, eb)] = (a_arr, b_arr, a_lab_arr, b_lab_arr)
 
         n_overlap = int(np.sum(~np.isnan(a_lab_arr) & ~np.isnan(b_lab_arr)))
-        n_a_only  = int(np.sum(~np.isnan(a_lab_arr)))
-        n_b_only  = int(np.sum(~np.isnan(b_lab_arr)))
-        if n_overlap >= 15:
-            pair_branch[(ea, eb)] = "dispatch"
-        elif n_a_only >= 15 and n_b_only >= 15:
-            pair_branch[(ea, eb)] = "fallback"
-            fallback_pairs.append((ea, eb))
-        else:
-            pair_branch[(ea, eb)] = "skip"
-            skipped_pairs.append((ea, eb))
+        if n_overlap < 15:
+            n_a = int(np.sum(~np.isnan(a_lab_arr)))
+            n_b = int(np.sum(~np.isnan(b_lab_arr)))
+            raise ValueError(
+                f"PPI correction on paired data needs at least 15 items with a human "
+                f"label under both {ea!r} and {eb!r}; found {n_overlap} ({n_a} labeled "
+                f"under {ea!r}, {n_b} under {eb!r}). Label the same items in every "
+                "condition (see `evalstats label`) before comparing."
+            )
 
     # ── Simultaneous CIs: mirrors _simultaneous_cis_router's non-PPI tree
     # (Sidak for small N, joint bootstrap with an effective alpha ["boot"]
@@ -2758,10 +2823,9 @@ def _run_alignment_ppi(
     # degrade-to-Bonferroni precedent.
     resolved_correction = correction
     if correction == "auto":
-        from evalstats.config import resolve_auto_pvalue_correction_method
-        resolved_correction = resolve_auto_pvalue_correction_method(
-            _n_items_per_entity, lopsided_binary=_lopsided,
-        )  # "shaffer" or "romano_wolf"
+        # Shaffer is the correction validated on PPI p-values; Romano-Wolf
+        # stays available by name.
+        resolved_correction = "shaffer"
 
     # Compute the shared joint resample ONCE if either the CI side ("boot"/
     # explicit max_t) or the p-value side (Romano-Wolf) needs it -- both
@@ -2772,11 +2836,7 @@ def _run_alignment_ppi(
         or (resolved_prefer == "max_t" and pairwise_method == "bootstrap_t")
     )
     _need_joint_for_correction = n_pairs > 1 and resolved_correction == "romano_wolf"
-    _attempt_joint = (
-        (_need_joint_for_ci or _need_joint_for_correction)
-        and not fallback_pairs
-        and not skipped_pairs
-    )
+    _attempt_joint = _need_joint_for_ci or _need_joint_for_correction
     joint = _ppi_bootstrap_t_joint_stats(
         scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
     ) if _attempt_joint else None
@@ -2833,55 +2893,30 @@ def _run_alignment_ppi(
 
     for k, (ea, eb) in enumerate(pair_keys):
         pr = bundle.pairwise.results[(ea, eb)]
-        branch = pair_branch[(ea, eb)]
         a_arr, b_arr, a_lab_arr, b_lab_arr = pair_arrays[(ea, eb)]
 
-        if branch == "dispatch":
-            pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
-            # Companion PPI-corrected Wilcoxon signed-rank p-value (shown when
-            # pairwise_test="wilcoxon"), computed the same way es.tests.wilcoxon()
-            # does with x_lab/y_lab — independent of whichever method drove the
-            # headline point_diff/p_value above, so always computed regardless
-            # of the max-T shortcut below.
-            pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
-                a_arr, b_arr, a_lab_arr, b_lab_arr, _wilcoxon_statistic, pair_alpha, n_boot, rng,
-                rectifier_func=_wilcoxon_statistic,
-            ).p_value
+        pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
+        # Companion PPI-corrected Wilcoxon signed-rank p-value (shown when
+        # pairwise_test="wilcoxon"), computed the same way es.tests.wilcoxon()
+        # does with x_lab/y_lab — independent of whichever method drove the
+        # headline point_diff/p_value above, so always computed regardless
+        # of the max-T shortcut below.
+        pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
+            a_arr, b_arr, a_lab_arr, b_lab_arr, _wilcoxon_statistic, pair_alpha, n_boot, rng,
+            rectifier_func=_wilcoxon_statistic,
+        ).p_value
 
-            if used_max_t:
-                # point estimate/CI/p-value are set below from the joint
-                # bootstrap (computed once, shared across every pair) —
-                # skip the redundant per-alpha dispatch calls that would
-                # just be overwritten.
-                continue
-
-            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
-                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_,
-                ppi_score_range,
-            )
-        elif branch == "fallback":
-            # Not enough items are labeled for *both* entities to run the
-            # paired PPI method, but each entity individually has enough of
-            # its own labels — fall back to independent-groups PPI (see
-            # _ppi_pairwise_unpaired_fallback), which only needs that.
-            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_unpaired_fallback(
-                a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
-            )
-            pair_test_method[(ea, eb)] = "PPI mean-diff (unpaired fallback, insufficient item overlap)"
-            # No validated PPI-corrected Wilcoxon signed-rank for the unpaired
-            # fallback case (it's an inherently paired test) — show as
-            # unavailable rather than a stale/uncorrected number.
-            pair_wilcoxon_p[(ea, eb)] = None
-        else:  # "skip"
-            final_diffs[k] = pr.point_diff
-            pair_ci_lo[k]  = pr.ci_low
-            pair_ci_hi[k]  = pr.ci_high
-            pair_pvals[k]  = pr.p_value
-            pair_test_method[(ea, eb)] = pr.test_method
-            pair_wilcoxon_p[(ea, eb)] = pr.wilcoxon_p
-            for a in GRADIENT_CI_ALPHAS:
-                pair_multi_ci[a][(ea, eb)] = pr.multi_ci.get(a, (pr.ci_low, pr.ci_high)) if pr.multi_ci else (pr.ci_low, pr.ci_high)
+        if used_max_t:
+            # point estimate/CI/p-value are set below from the joint
+            # bootstrap (computed once, shared across every pair) —
+            # skip the redundant per-alpha dispatch calls that would
+            # just be overwritten.
             continue
+
+        dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
+            pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_,
+            ppi_score_range,
+        )
 
         res = dispatch(pair_alpha, n_boot, rng)
         final_diffs[k] = res.estimate
@@ -2893,25 +2928,6 @@ def _run_alignment_ppi(
             g_alpha = _pair_alpha_for(a)
             g = dispatch(g_alpha, n_boot, rng)
             pair_multi_ci[a][(ea, eb)] = (g.ci_low, g.ci_high)
-
-    if fallback_pairs:
-        warnings.warn(
-            f"PPI alignment: the following pairs don't have enough commonly-labeled "
-            f"items for a paired PPI correction and used an independent-groups "
-            f"fallback instead: {fallback_pairs}. Consider labeling the same items "
-            "for every entity to enable the (more efficient) paired correction.",
-            UserWarning,
-            stacklevel=4,
-        )
-    if skipped_pairs:
-        # As above: these pairs have too few labels to correct, and printing
-        # them uncorrected beside corrected ones is worse than not printing.
-        raise ValueError(
-            f"PPI alignment: {skipped_pairs} have fewer than 15 items labeled in both "
-            "conditions, so their comparison cannot be corrected. PPI needs at least 15 "
-            "labeled items shared by the two conditions (or 15 in each condition "
-            "separately). Label more items (see `evalstats label`) before comparing."
-        )
 
     # Multiple-comparison correction on marginal p-values (unaffected by the
     # simultaneous-CI adjustment above, which only widens CIs). Skipped for
@@ -3018,7 +3034,9 @@ def _run_alignment_ppi(
 
     # Update bundle method metadata so summary() headers reflect the PPI method.
     bundle.resolved_method = pairwise_method
-    bundle.resolved_ci_method = robustness_method
+    bundle.resolved_ci_method = (
+        robustness_method if robustness_method.startswith("ppi_") else f"ppi_{robustness_method}"
+    )
     if used_max_t:
         _sim_ci_label = "max_t"
     elif used_boot:

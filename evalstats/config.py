@@ -24,6 +24,11 @@ GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 # CLI (cli.py), before any analysis runs.
 MIN_SAMPLE_FLOOR: int = 15
 
+# Most grid points a bounded scale can have and still count as discrete
+# (NIG pairwise CIs). A 0-25 rubric is discrete; a 0-100 grade is continuous
+# (logit-t).
+MAX_DISCRETE_LEVELS: int = 50
+
 # Default seed for every resampling step downstream of compare(): bootstrap
 # CIs, the PPI bootstrap, permutation nulls. Fixed so that the same input
 # gives the same output -- a user passing no rng= reasonably expects a
@@ -176,7 +181,7 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
             "resolve_score_bounds() in core/resampling.py. Supersedes the "
             "earlier t_interval (pairwise) / nig, nig_nested (marginal) "
             "defaults for data in this range -- except discrete/ordinal "
-            "data (Likert scales, integer percentage grades), which is now "
+            "data (Likert scales, grids of at most MAX_DISCRETE_LEVELS points), which is now "
             "routed to the separate 'likert' row below instead."
         ),
     ),
@@ -186,9 +191,9 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         robustness_method_single_run="logit_t",
         robustness_method_seeded="logit_t",
         reason=(
-            "Discrete/ordinal bounded data (a Likert scale, an integer "
-            "percentage grade, or anything else with a real quantization "
-            "grid within its known [lo, hi] range) -- detected either from "
+            "Discrete/ordinal bounded data (a Likert scale, or any "
+            "quantization grid of at most MAX_DISCRETE_LEVELS points across "
+            "its known [lo, hi] range) -- detected either from "
             "an explicit eval_type='likert', or auto-detected via "
             "detect_quantization_step() (core/resampling.py) when no "
             "eval_type is given, with a UserWarning explaining the switch. "

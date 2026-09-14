@@ -391,10 +391,10 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--template-model-collapse",
         choices=["mean", "as_runs"],
-        default="as_runs",
+        default="mean",
         metavar="MODE",
         help=(
-            "Multi-model template collapse mode: 'mean' or 'as_runs' (default: as_runs)."
+            "Multi-model template collapse mode: 'mean' or 'as_runs' (default: mean)."
         ),
     )
     analyze.add_argument(
@@ -841,7 +841,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         spread_percentiles=tuple(getattr(args, "spread_percentiles", (10, 90))),
         failure_threshold=getattr(args, "failure_threshold", None),
         statistic=getattr(args, "statistic", "mean"),
-        template_model_collapse=getattr(args, "template_model_collapse", "as_runs"),
+        template_model_collapse=getattr(args, "template_model_collapse", "mean"),
         simultaneous_ci=getattr(args, "simultaneous_ci", True),
         omnibus=getattr(args, "omnibus", False),
         p_values=getattr(args, "p_values", False),
@@ -1078,7 +1078,7 @@ def _cmd_analyze_judge(args: argparse.Namespace, df: pd.DataFrame, ci) -> None:
         spread_percentiles=tuple(getattr(args, "spread_percentiles", (10, 90))),
         failure_threshold=getattr(args, "failure_threshold", None),
         statistic=getattr(args, "statistic", "mean"),
-        template_model_collapse=getattr(args, "template_model_collapse", "as_runs"),
+        template_model_collapse=getattr(args, "template_model_collapse", "mean"),
         simultaneous_ci=getattr(args, "simultaneous_ci", True),
         omnibus=getattr(args, "omnibus", False),
         p_values=getattr(args, "p_values", False),

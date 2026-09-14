@@ -46,9 +46,11 @@ def _make_binary_evaldata(
         ]).astype(float),
     })
     human = np.full(len(df), np.nan)
-    for idx in rng.choice(len(df), size=n_labeled, replace=False):
-        llm = df.loc[idx, "llm_score"]
-        human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
+    # The same items are labeled under both models, as paired PPI requires.
+    for item in rng.choice(n_items, size=n_labeled // 2, replace=False):
+        for idx in (item, n_items + item):
+            llm = df.loc[idx, "llm_score"]
+            human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
     df["human_score"] = human
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     return evaldata, "llm_score"
@@ -70,9 +72,10 @@ def _make_likert_evaldata(
         "llm_score": np.concatenate([llm_a, llm_b]).astype(float),
     })
     human = np.full(len(df), np.nan)
-    for idx in rng.choice(len(df), size=n_labeled, replace=False):
-        noise = rng.choice([-1, 0, 0, 1])
-        human[idx] = float(np.clip(df.loc[idx, "llm_score"] + noise, 1, 5))
+    for item in rng.choice(n_items, size=n_labeled // 2, replace=False):
+        for idx in (item, n_items + item):
+            noise = rng.choice([-1, 0, 0, 1])
+            human[idx] = float(np.clip(df.loc[idx, "llm_score"] + noise, 1, 5))
     df["human_score"] = human
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     return evaldata, "llm_score"
@@ -94,8 +97,9 @@ def _make_continuous_evaldata(
         ]),
     })
     human = np.full(len(df), np.nan)
-    for idx in rng.choice(len(df), size=n_labeled, replace=False):
-        human[idx] = float(np.clip(df.loc[idx, "llm_score"] + rng.normal(0, 0.05), 0, 1))
+    for item in rng.choice(n_items, size=n_labeled // 2, replace=False):
+        for idx in (item, n_items + item):
+            human[idx] = float(np.clip(df.loc[idx, "llm_score"] + rng.normal(0, 0.05), 0, 1))
     df["human_score"] = human
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     return evaldata, "llm_score"
@@ -391,10 +395,10 @@ class TestCompareAlignmentPPI:
                 ]).astype(float),
             })
             human = np.full(len(df), np.nan)
-            labeled_idx = rng.choice(len(df), size=50, replace=False)
-            for idx in labeled_idx:
-                llm = df.loc[idx, "llm_score"]
-                human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
+            for item in rng.choice(n, size=25, replace=False):
+                for idx in (item, n + item):
+                    llm = df.loc[idx, "llm_score"]
+                    human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
             df["human_score"] = human
             evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
             with warnings.catch_warnings():
@@ -498,9 +502,10 @@ class TestCompareAlignmentPPI:
             ]).astype(float),
         })
         human = np.full(len(df), np.nan)
-        for idx in rng.choice(len(df), size=35, replace=False):
-            llm = df.loc[idx, "llm_score"]
-            human[idx] = llm if rng.random() < 0.75 else (1.0 - llm)
+        for item in rng.choice(n, size=18, replace=False):
+            for idx in (item, n + item):
+                llm = df.loc[idx, "llm_score"]
+                human[idx] = llm if rng.random() < 0.75 else (1.0 - llm)
         df["human_score"] = human
         evaldata = es.load_from(df, col_map={"system": "model", "item": "item"})
         with warnings.catch_warnings():
@@ -724,10 +729,10 @@ class TestPPIPooledPValues:
                 ]).astype(float),
             })
             human = np.full(len(df), np.nan)
-            labeled_idx = rng.choice(len(df), size=40, replace=False)
-            for idx in labeled_idx:
-                llm = df.loc[idx, "llm_score"]
-                human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
+            for item in rng.choice(n, size=20, replace=False):
+                for idx in (item, n + item):
+                    llm = df.loc[idx, "llm_score"]
+                    human[idx] = llm if rng.random() < agreement_rate else (1.0 - llm)
             df["human_score"] = human
             evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
             with warnings.catch_warnings():
@@ -999,7 +1004,7 @@ class TestPPICIMethodWarning:
             result = es.compare(evaldata, factors="model", metric=metric,
                                  alignment={metric: ar},
                                  method="bootstrap")
-        assert result._primary_bundle().resolved_ci_method == "bootstrap"
+        assert result._primary_bundle().resolved_ci_method == "ppi_bootstrap"
         override_warns = [
             w for w in caught
             if "percentile bootstrap" in str(w.message) and "overridden" in str(w.message)

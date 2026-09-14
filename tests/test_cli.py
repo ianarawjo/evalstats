@@ -219,7 +219,7 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     assert analysis_call["spread_percentiles"] == (10, 90)
     assert analysis_call["failure_threshold"] == 0.2
     assert analysis_call["statistic"] == "mean"
-    assert analysis_call["template_model_collapse"] == "as_runs"
+    assert analysis_call["template_model_collapse"] == "mean"
     assert analysis_call["simultaneous_ci"] is True
     assert analysis_call["omnibus"] is False
     assert analysis_call["ci_style"] == "line"

@@ -178,9 +178,9 @@ class TestAnalyzeStoresPValueMethod:
 # ---------------------------------------------------------------------------
 
 class TestComparePropagatesPValueMethod:
-    def test_default_report_p_value_method_is_none(self):
+    def test_default_report_p_value_method_is_auto(self):
         report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
-        assert report.p_value_method is None
+        assert report.p_value_method == "auto"
 
     def test_p_values_true_report_stores_auto(self):
         """Stores the 'auto' sentinel -- resolved to Wilcoxon (or
@@ -295,10 +295,10 @@ class TestCompareReportSummaryOutput:
             report.summary(**kw)
         return buf.getvalue()
 
-    def test_default_no_p_values(self):
+    def test_default_shows_p_values(self):
         report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         out = self._summary(report)
-        assert not _has_p_column(out)
+        assert _has_p_column(out)
 
     def test_p_values_true_shows_column(self):
         report = es.compare_prompts(
@@ -324,8 +324,8 @@ class TestCompareReportSummaryOutput:
         assert not _has_p_column(out)
 
     def test_explicit_override_enables(self):
-        # Even if the report has p_value_method=None (default), passing 'wsr' should show.
-        report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
+        # Even if the report has p_value_method=None, passing 'wsr' should show.
+        report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=False)
         assert report.p_value_method is None
         out = self._summary(report, p_value_method="wsr")
         assert "p (wsr)" in out

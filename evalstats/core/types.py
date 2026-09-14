@@ -591,10 +591,15 @@ class MultiModelBenchmark:
                 "Expected 'mean' or 'as_runs'."
             )
 
-        return BenchmarkResult(
-            scores=collapsed_scores,
-            template_labels=self.template_labels,
-            input_labels=self.input_labels,
-            evaluator_names=self.evaluator_names,
-            input_metadata=self.input_metadata,
-        )
+        with warnings.catch_warnings():
+            # With as_runs the run axis holds models, so a "2 runs" count here
+            # means 2 models, not 2 seeds.
+            if collapse_models == "as_runs":
+                warnings.filterwarnings("ignore", message=r".*only 2 runs detected")
+            return BenchmarkResult(
+                scores=collapsed_scores,
+                template_labels=self.template_labels,
+                input_labels=self.input_labels,
+                evaluator_names=self.evaluator_names,
+                input_metadata=self.input_metadata,
+            )
