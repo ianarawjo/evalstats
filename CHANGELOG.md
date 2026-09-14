@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 A public, JSON-safe result API for tools that show evalstats results outside the
 terminal (first user: ChainForge's Vis Node). ChainForge can require this version
