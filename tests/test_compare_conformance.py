@@ -47,8 +47,16 @@ def _gen(kind, rng, j, n):
     return np.clip(rng.normal(60 + 3 * j, 15, n), 0, 100)
 
 
-def _sidak(n_pairs):
-    return ALPHA if n_pairs <= 1 else 1 - (1 - ALPHA) ** (1 / n_pairs)
+def _sidak(n_pairs, alpha=ALPHA):
+    return alpha if n_pairs <= 1 else 1 - (1 - alpha) ** (1 / n_pairs)
+
+
+def _assert_bands_match(pw, n_pairs, reference):
+    """Every gradient band is the pair's interval at its own adjusted level,
+    and the headline band is the printed CI, so the plot agrees with the numbers."""
+    assert pw.multi_ci[ALPHA] == pytest.approx((pw.ci_low, pw.ci_high))
+    for band_alpha, band in pw.multi_ci.items():
+        assert band == pytest.approx(reference(_sidak(n_pairs, band_alpha)))
 
 
 def _ref_marginal(kind, x):
@@ -94,9 +102,10 @@ def test_paired_intervals_are_the_named_methods(kind, runs, k, n):
         s = res.entity_stats[label]
         assert (s.ci_low, s.ci_high) == pytest.approx(_ref_marginal(kind, m.mean(1)))
 
-    alpha_pair = _sidak(k * (k - 1) // 2)
+    n_pairs = k * (k - 1) // 2
     for (a, b), pw in res.pairwise.results.items():
-        assert (pw.ci_low, pw.ci_high) == pytest.approx(_ref_pair(kind, mats[a], mats[b], alpha_pair))
+        assert (pw.ci_low, pw.ci_high) == pytest.approx(_ref_pair(kind, mats[a], mats[b], _sidak(n_pairs)))
+        _assert_bands_match(pw, n_pairs, lambda al, a=a, b=b: _ref_pair(kind, mats[a], mats[b], al))
         if k == 2 and runs == 1:
             if kind == "binary":
                 assert pw.p_value == pytest.approx(_mcnemar_midp_p(mats[a][:, 0], mats[b][:, 0]))
@@ -136,10 +145,13 @@ def test_model_by_prompt_intervals_are_the_named_methods(kind, shape):
     res = _compare(df, factors=["model", "prompt"])
 
     n_cells = n_models * n_prompts
+    n_cell_pairs = n_cells * (n_cells - 1) // 2
     for (a, b), pw in res.pairwise.results.items():
         ca, cb = cells[tuple(a.split(" / "))], cells[tuple(b.split(" / "))]
-        expected = _ref_pair(kind, ca[:, None], cb[:, None], _sidak(n_cells * (n_cells - 1) // 2))
+        expected = _ref_pair(kind, ca[:, None], cb[:, None], _sidak(n_cell_pairs))
         assert (pw.ci_low, pw.ci_high) == pytest.approx(expected)
+        _assert_bands_match(pw, n_cell_pairs,
+                            lambda al, ca=ca, cb=cb: _ref_pair(kind, ca[:, None], cb[:, None], al))
 
     view_kind = "avg_binary" if kind == "binary" else kind
     models = [f"m{i}" for i in range(n_models)]
@@ -151,7 +163,9 @@ def test_model_by_prompt_intervals_are_the_named_methods(kind, shape):
         for lv in levels:
             s = view.entity_stats[lv]
             assert (s.ci_low, s.ci_high) == pytest.approx(_ref_marginal(view_kind, avg[lv]))
-        alpha_pair = _sidak(len(levels) * (len(levels) - 1) // 2)
+        n_level_pairs = len(levels) * (len(levels) - 1) // 2
         for (a, b), pw in view.pairwise.results.items():
-            expected = _ref_pair(view_kind, avg[a][:, None], avg[b][:, None], alpha_pair)
+            expected = _ref_pair(view_kind, avg[a][:, None], avg[b][:, None], _sidak(n_level_pairs))
             assert (pw.ci_low, pw.ci_high) == pytest.approx(expected)
+            _assert_bands_match(pw, n_level_pairs,
+                                lambda al, a=a, b=b: _ref_pair(view_kind, avg[a][:, None], avg[b][:, None], al))

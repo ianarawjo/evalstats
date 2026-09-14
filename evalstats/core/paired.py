@@ -2954,6 +2954,23 @@ def all_pairwise(
                 "boot": "simultaneous CIs computed with a joint bootstrap (effective alpha)",
                 "single": "one comparison, so the pairwise CI is unchanged",
             }.get(sim_method, "simultaneous CIs computed with Bonferroni")
+            # The gradient bands get the same construction at each of their
+            # levels, so the drawn bands agree with the widened CI. A single
+            # comparison needs no adjustment and keeps its own bands.
+            band_cis: dict = {}
+            if sim_method != "single":
+                for band_alpha in GRADIENT_CI_ALPHAS:
+                    if abs(band_alpha - (1.0 - ci)) < 1e-12:
+                        level_cis = sim_cis
+                    else:
+                        level_cis, _, _ = _simultaneous_cis_router(
+                            scores=scores, results=results, pairs=pairs, labels=labels,
+                            method=method, ci=1.0 - band_alpha, n_bootstrap=n_bootstrap,
+                            rng=rng, statistic=statistic, score_range=score_range,
+                            prefer=sim_method, eval_type=eval_type,
+                        )
+                    for pair, bounds in level_cis.items():
+                        band_cis.setdefault(pair, {})[band_alpha] = bounds
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
                 results[pair] = PairedDiffResult(
@@ -2978,7 +2995,9 @@ def all_pairwise(
                     wilcoxon_p=r.wilcoxon_p,
                     agreement_mcc=r.agreement_mcc,
                     binary_confusion=r.binary_confusion,
-                    multi_ci=r.multi_ci,
+                    multi_ci=(
+                        band_cis.get(pair, r.multi_ci) if r.multi_ci is not None else None
+                    ),
                     interval_at=r.interval_at,
                 )
 
