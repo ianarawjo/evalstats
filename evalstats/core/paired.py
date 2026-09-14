@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import functools
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional
 
 import numpy as np
@@ -187,6 +187,11 @@ class PairedDiffResult:
     agreement_mcc: Optional[float] = None  # pass/fail pattern correlation (binary data only)
     binary_confusion: Optional[tuple[int, int, int, int]] = None  # (n11, n10, n01, n00)
     multi_ci: Optional[dict[float, tuple[float, float]]] = None  # {alpha: (lo, hi)} gradient bands
+    # This pair's own interval at any alpha, for constructions that need more
+    # than per_input_diffs (multi-run binary). Simultaneous CIs widen it.
+    interval_at: Optional[Callable[[float], tuple[float, float]]] = field(
+        default=None, repr=False, compare=False,
+    )
 
     @property
     def rank_biserial(self) -> float:
@@ -360,6 +365,11 @@ class PairwiseMatrix:
             flipped_multi_ci: Optional[dict[float, tuple[float, float]]] = None
             if r.multi_ci is not None:
                 flipped_multi_ci = {a_: (-hi, -lo) for a_, (lo, hi) in r.multi_ci.items()}
+            flipped_interval_at = None
+            if r.interval_at is not None:
+                def flipped_interval_at(a_, _f=r.interval_at):
+                    lo, hi = _f(a_)
+                    return (-hi, -lo)
             # Flip the result
             return PairedDiffResult(
                 template_a=a,
@@ -378,6 +388,7 @@ class PairwiseMatrix:
                 agreement_mcc=r.agreement_mcc,
                 binary_confusion=flipped_conf,
                 multi_ci=flipped_multi_ci,
+                interval_at=flipped_interval_at,
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
 
@@ -615,6 +626,8 @@ def pairwise_differences(
         values_a: Optional[np.ndarray] = None,
         values_b: Optional[np.ndarray] = None,
         multi_ci_dict: Optional[dict[float, tuple[float, float]]] = None,
+        n_runs: int = 1,
+        interval_at: Optional[Callable[[float], tuple[float, float]]] = None,
     ) -> PairedDiffResult:
         agr_mcc: Optional[float] = None
         bin_conf: Optional[tuple[int, int, int, int]] = None
@@ -654,12 +667,13 @@ def pairwise_differences(
             test_method=test_name,
             n_inputs=len(diffs),
             per_input_diffs=diffs,
-            n_runs=1,
+            n_runs=n_runs,
             statistic=statistic,
             wilcoxon_p=wilcoxon_p,
             agreement_mcc=agr_mcc,
             binary_confusion=bin_conf,
             multi_ci=multi_ci_dict,
+            interval_at=interval_at,
         )
 
     # ------------------------------------------------------------------ #
@@ -739,14 +753,9 @@ def pairwise_differences(
     if method == "mj_floor":
         multirun = scores.ndim == 3 and scores.shape[2] > 1
         if multirun:
-            # Multi-run: use the effective-N variant (mj_floor_er,
-            # "ER-Tango" in the paper's decision tree / appendix), which estimates
-            # an effective number of runs to account for within-item correlation
-            # and reduces exactly to the standard Tango CI when n_runs == 1.
             values_a_full = scores[idx_a]   # (M, R)
             values_b_full = scores[idx_b]   # (M, R)
-            values_a = values_a_full[:, 0]  # for _paired_stats / mcnemar (single-run view)
-            values_b = values_b_full[:, 0]
+            values_a, values_b = values_a_full.mean(axis=1), values_b_full.mean(axis=1)
         else:
             flat = scores.mean(axis=2) if scores.ndim == 3 else scores
             values_a = flat[idx_a]
@@ -759,15 +768,17 @@ def pairwise_differences(
             # its Kish R_eff term cancels exactly when the max() does not clamp and
             # inflates variance up to 2.8x when it does, so it was inert in the
             # high-ICC regime real eval data occupies and conservative elsewhere.
-            ci_low, ci_high = mj_floor_paired_ci_multirun_cluster(values_a_full, values_b_full, alpha_val)
-            if multi_ci:
-                mci = {_a: mj_floor_paired_ci_multirun_cluster(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
-            else:
-                mci = None
+            def interval_at(a, _fa=values_a_full, _fb=values_b_full):
+                return mj_floor_paired_ci_multirun_cluster(_fa, _fb, a)
         else:
-            ci_low, ci_high = mj_floor_paired_ci(values_a, values_b, alpha_val)
-            mci = {_a: mj_floor_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
-        p_value = _mcnemar_midp_p(values_a, values_b)
+            def interval_at(a, _va=values_a, _vb=values_b):
+                return mj_floor_paired_ci(_va, _vb, a)
+        ci_low, ci_high = interval_at(alpha_val)
+        mci = {_a: interval_at(_a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
+        # No p-value is validated on multi-run data, so use the dual of the
+        # validated interval: it agrees with the CI by construction.
+        p_value = (_p_value_by_inversion(interval_at) if multirun
+                   else _mcnemar_midp_p(values_a, values_b))
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -779,6 +790,8 @@ def pairwise_differences(
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
+            n_runs=scores.shape[2] if multirun else 1,
+            interval_at=interval_at if multirun else None,
         )
 
     # ------------------------------------------------------------------ #
@@ -796,8 +809,7 @@ def pairwise_differences(
         if multirun:
             values_a_full = scores[idx_a]
             values_b_full = scores[idx_b]
-            values_a = values_a_full[:, 0]
-            values_b = values_b_full[:, 0]
+            values_a, values_b = values_a_full.mean(axis=1), values_b_full.mean(axis=1)
         else:
             flat = scores.mean(axis=2) if scores.ndim == 3 else scores
             values_a = flat[idx_a]
@@ -810,16 +822,17 @@ def pairwise_differences(
             # item-level discordance, which is right at R=1 but several times
             # heavier than a real discordant item once runs are averaged.
             # _shrunk reduces to bonett_price_paired_ci at R=1 bit-for-bit.
-            ci_low, ci_high = bonett_price_paired_ci_multirun_shrunk(
-                values_a_full, values_b_full, alpha_val
-            )
-            mci = ({_a: bonett_price_paired_ci_multirun_shrunk(values_a_full, values_b_full, _a)
-                    for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
+            def interval_at(a, _fa=values_a_full, _fb=values_b_full):
+                return bonett_price_paired_ci_multirun_shrunk(_fa, _fb, a)
         else:
-            ci_low, ci_high = bonett_price_paired_ci(values_a, values_b, alpha_val)
-            mci = ({_a: bonett_price_paired_ci(values_a, values_b, _a)
-                    for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
-        p_value = _mcnemar_midp_p(values_a, values_b)
+            def interval_at(a, _va=values_a, _vb=values_b):
+                return bonett_price_paired_ci(_va, _vb, a)
+        ci_low, ci_high = interval_at(alpha_val)
+        mci = {_a: interval_at(_a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
+        # No p-value is validated on multi-run data, so use the dual of the
+        # validated interval: it agrees with the CI by construction.
+        p_value = (_p_value_by_inversion(interval_at) if multirun
+                   else _mcnemar_midp_p(values_a, values_b))
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -831,6 +844,8 @@ def pairwise_differences(
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
+            n_runs=scores.shape[2] if multirun else 1,
+            interval_at=interval_at if multirun else None,
         )
 
     if method == "tango":
@@ -1860,6 +1875,42 @@ def _degenerate_pair_ci(
     return degenerate_sample_ci(value, M, alpha, lo, hi)
 
 
+def _p_value_by_inversion(
+    interval_at: "Callable[[float], tuple[float, float]]",
+    n_iter: int = 60,
+) -> float:
+    """Two-sided p-value dual to *interval_at*: the smallest alpha whose
+    interval excludes zero, found by bisection."""
+    def excludes_zero(a: float) -> bool:
+        lo, hi = interval_at(a)
+        return lo > 0.0 or hi < 0.0
+
+    lo_a, hi_a = 1e-12, 1.0 - 1e-12
+    if excludes_zero(lo_a):
+        return 0.0
+    if not excludes_zero(hi_a):
+        return 1.0
+    for _ in range(n_iter):
+        mid = 0.5 * (lo_a + hi_a)
+        if excludes_zero(mid):
+            hi_a = mid
+        else:
+            lo_a = mid
+    return float(hi_a)
+
+
+def _pair_ci_at(
+    r: "PairedDiffResult",
+    ci_func: "Callable[[np.ndarray, float], tuple[float, float]]",
+    alpha: float,
+) -> tuple[float, float]:
+    """The pair's own interval at *alpha* when it carries one, else *ci_func*
+    on its ``per_input_diffs``."""
+    if r.interval_at is not None:
+        return r.interval_at(alpha)
+    return ci_func(r.per_input_diffs, alpha)
+
+
 def _bonferroni_simultaneous_cis(
     results: dict[tuple[str, str], "PairedDiffResult"],
     pairs: list[tuple[str, str]],
@@ -1912,6 +1963,9 @@ def _bonferroni_simultaneous_cis(
     sim_cis: dict[tuple[str, str], tuple[float, float]] = {}
     for pair in pairs:
         r = results[pair]
+        if r.interval_at is not None:
+            sim_cis[pair] = r.interval_at(alpha_adj)
+            continue
         diffs = r.per_input_diffs
         M = len(diffs)
         if M < 2:
@@ -1972,7 +2026,7 @@ def _sidak_simultaneous_cis(
     alpha_fam = 1.0 - ci
     alpha_adj = 1.0 - (1.0 - alpha_fam) ** (1.0 / k)  # Sidak-adjusted per-comparison alpha
 
-    return {pair: ci_func(results[pair].per_input_diffs, alpha_adj) for pair in pairs}
+    return {pair: _pair_ci_at(results[pair], ci_func, alpha_adj) for pair in pairs}
 
 
 def _joint_bootstrap_critical_value(
@@ -2222,7 +2276,7 @@ def _calibrated_joint_simultaneous_cis(
         return {}
     alpha_eff = float(2.0 * (1.0 - _scipy_stats.norm.cdf(c)))
     alpha_eff = min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
-    return {pair: ci_func(results[pair].per_input_diffs, alpha_eff) for pair in pairs}
+    return {pair: _pair_ci_at(results[pair], ci_func, alpha_eff) for pair in pairs}
 
 
 def _joint_bootstrap_scaled_simultaneous_cis(
@@ -2280,7 +2334,7 @@ def _joint_bootstrap_scaled_simultaneous_cis(
     alpha_eff = float(2.0 * (1.0 - _scipy_stats.norm.cdf(c)))
     alpha_eff = min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
 
-    return {pair: ci_func(results[pair].per_input_diffs, alpha_eff) for pair in pairs}
+    return {pair: _pair_ci_at(results[pair], ci_func, alpha_eff) for pair in pairs}
 
 
 def romano_wolf_stepdown_pvalues(
@@ -2660,6 +2714,13 @@ def _simultaneous_cis_router(
             if cis:
                 return cis, "boot", {}
 
+    # One comparison: every adjustment is a no-op, so keep the pair's own
+    # interval, which is the recommended method's, unless it is degenerate.
+    if len(pairs) == 1:
+        r = results[pairs[0]]
+        if np.isfinite(r.ci_low) and np.isfinite(r.ci_high) and r.ci_high > r.ci_low:
+            return {pairs[0]: (float(r.ci_low), float(r.ci_high))}, "single", {}
+
     # Fallback (and prefer="bonferroni"): Bonferroni t-intervals work for any
     # method. diff_bounds only affects its zero-variance branch, where it is
     # the difference between a real interval and a zero-width one.
@@ -2856,6 +2917,7 @@ def all_pairwise(
                 agreement_mcc=r.agreement_mcc,
                 binary_confusion=r.binary_confusion,
                 multi_ci=r.multi_ci,
+                interval_at=r.interval_at,
             )
 
     # Simultaneous CIs: Sidak/joint-bootstrap by default, per
@@ -2884,6 +2946,7 @@ def all_pairwise(
                 "max_t": "simultaneous CIs computed with max-T",
                 "sidak": "simultaneous CIs computed with Sidak's procedure",
                 "boot": "simultaneous CIs computed with a joint bootstrap (effective alpha)",
+                "single": "one comparison, so the pairwise CI is unchanged",
             }.get(sim_method, "simultaneous CIs computed with Bonferroni")
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
@@ -2910,6 +2973,7 @@ def all_pairwise(
                     agreement_mcc=r.agreement_mcc,
                     binary_confusion=r.binary_confusion,
                     multi_ci=r.multi_ci,
+                    interval_at=r.interval_at,
                 )
 
     # Friedman omnibus + Nemenyi post-hoc (only when explicitly requested).
@@ -3016,6 +3080,7 @@ def vs_baseline(
                 agreement_mcc=r.agreement_mcc,
                 binary_confusion=r.binary_confusion,
                 multi_ci=r.multi_ci,
+                interval_at=r.interval_at,
             )
             for r, adj_p in zip(results, adjusted)
         ]

@@ -3060,6 +3060,7 @@ _SIMULTANEOUS_CI_DISPLAY_NAMES = {
     "sidak": "Šidák",
     "boot": "Joint bootstrap",
     "bonferroni": "Bonferroni",
+    "single": "none needed (one comparison)",
 }
 
 

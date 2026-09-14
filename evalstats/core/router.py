@@ -98,7 +98,7 @@ def analyze(
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
-    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    template_model_collapse: Literal["mean", "as_runs"] = "mean",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_values: bool = False,
@@ -242,9 +242,8 @@ def analyze(
         Multi-model only. Controls how the per-template (model-agnostic)
         view collapses the model axis:
 
-        * ``'mean'`` averages over models.
-        * ``'as_runs'`` (default) treats models as additional runs to preserve
-            cross-model variation in uncertainty estimates.
+        * ``'mean'`` (default) averages over models within each input.
+        * ``'as_runs'`` treats models as additional runs.
 
     p_values : bool
         When ``True``, p-values are shown in pairwise comparison tables.
@@ -1151,7 +1150,7 @@ def _analyze_multi_model(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
-    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    template_model_collapse: Literal["mean", "as_runs"] = "mean",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_value_method: Optional[str] = None,

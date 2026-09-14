@@ -140,7 +140,9 @@ If your columns don't match any alias above, remap them explicitly: `es.load_fro
 `compare()` also handles:
 
 - **Comparing models**: `factors="model"`
-- **Factorial designs** (model × prompt): `factors=["model", "prompt"]` (routes to an LMM backend)
+- **Any other column**: `factors="temperature"` compares the levels of that column
+- **Model × prompt**: `factors=["model", "prompt"]` compares every (model, prompt) cell; `result.as_view("model")` or `result.as_view("prompt")` gives either marginal, averaged over the other factor. Any other pair of columns works the same way.
+- **Method and correction**: `method=` picks the CI method (default `"auto"`, see [Recommended Methods](#recommended-methods)) and `correction=` the multiple-comparisons correction (default `"auto"`), e.g. `es.compare(evaldata, factors="prompt", method="bca", correction="holm")`
 - **Filtering**: any keyword matching a column name acts as a row filter, e.g. `es.compare(evaldata, factors="model", split="test")`
 - **PPI-corrected inference** for noisy LLM-judge scores: see [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests)
 

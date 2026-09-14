@@ -1083,22 +1083,19 @@ def test_sidak_simultaneous_coverage_near_nominal():
 
 
 def test_router_two_arm_constant_offset_does_not_override_with_zero_width():
-    """End-to-end through all_pairwise: exactly two arms with a constant offset
-    (the k=1 case, which skips Sidak/boot by construction and always lands on
-    the Bonferroni fallback). The simultaneous CI must not replace the
-    method's own interval with a zero-width one at the point estimate."""
+    """End-to-end through all_pairwise: exactly two arms with a constant offset.
+    With one comparison the simultaneous CI must be the method's own interval,
+    not a zero-width one at the point estimate."""
     scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8)])
     mat = all_pairwise(
         scores, ["a", "b"], method="logit_t", score_range=(0.0, 1.0),
         multi_ci=True, rng=_rng(0),
     )
-    assert mat.simultaneous_ci_method == "bonferroni"
+    assert mat.simultaneous_ci_method == "single"
     r = mat.results[("a", "b")]
     assert r.ci_low < r.ci_high, "zero-width simultaneous CI on a k=1 comparison"
     assert r.ci_low < r.point_diff < r.ci_high
-    # k=1 makes Bonferroni's adjustment an exact no-op, so the simultaneous CI
-    # should land on the method's own interval at the same alpha rather than
-    # overriding it.
+    # One comparison needs no adjustment, so this is the method's own interval.
     np.testing.assert_allclose((r.ci_low, r.ci_high), r.multi_ci[0.05], atol=1e-12)
 
 

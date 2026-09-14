@@ -137,8 +137,18 @@ class ComparisonResult:
         pvm = _SUMMARY_UNSET if p_value_method is ComparisonResult._UNSET else p_value_method
         show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
         item_singular, item_plural = _factor_item_labels(self._factors)
+        f = self._factors
+        # The row axis of a two-factor result: models for the canonical pair,
+        # else the first factor named.
+        row_factor = (
+            f[0] if isinstance(f, (list, tuple)) and len(f) == 2
+            and not set(f) <= _STANDARD_FACTOR_NAMES else "model"
+        )
+        factor_singular, factor_plural = _factor_item_labels(row_factor)
         print_analysis_summary(
             self._analysis,
+            factor_singular=factor_singular,
+            factor_plural=factor_plural,
             rng_seed=self.rng_seed,
             top_pairwise=top_pairwise,
             style=style,
@@ -475,7 +485,7 @@ class ComparisonResult:
             return None
         return list(self._analysis.benchmark.template_labels)
 
-    def as_view(self, factor: Literal["model", "prompt"]) -> "ComparisonResult":
+    def as_view(self, factor: str) -> "ComparisonResult":
         """Return this two-factor comparison collapsed onto a single axis.
 
         E.g. ``result.as_view("model")`` averages over prompts to compare
@@ -490,8 +500,12 @@ class ComparisonResult:
                 "factors='model'/'prompt' when both columns are present)."
             )
         view_map = {"model": "model_level", "prompt": "template_level"}
+        f = self._factors
+        if isinstance(f, (list, tuple)) and len(f) == 2 and not set(f) <= _STANDARD_FACTOR_NAMES:
+            # Custom factors: the first is the row axis, the second the column axis.
+            view_map = {f[0]: "model_level", f[1]: "template_level"}
         if factor not in view_map:
-            raise ValueError(f"factor={factor!r} must be 'model' or 'prompt'.")
+            raise ValueError(f"factor={factor!r} must be one of {list(view_map)}.")
         return ComparisonResult(
             self._analysis,
             factors=self._factors,
@@ -988,6 +1002,8 @@ def compare(
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     show_rank_probabilities: bool = False,
     design: Literal["auto", "paired", "unpaired"] = "auto",
+    method: Optional[str] = None,
+    correction: Optional[str] = None,
     **kwargs: Any,
 ) -> Union[ComparisonResult, GroupComparisonResult]:
     """Compare entities along one or more factor axes.
@@ -1001,8 +1017,16 @@ def compare(
 
         * ``"model"`` — compare models
         * ``"prompt"`` — compare prompt templates
-        * ``["model", "prompt"]`` — factorial design (uses LMM backend)
+        * ``["model", "prompt"]`` — every (model, prompt) cell; use
+          :meth:`ComparisonResult.as_view` for either factor averaged over
+          the other
         * Any other column name — compares levels of that column
+        * Any other pair of columns — same as model × prompt
+
+        At most two factors. ``method="lmm"`` runs the experimental factorial
+        mixed model instead.
+
+        A model or prompt column holding a single value is ignored as an axis.
 
     metric : str, optional
         Metric column to analyze. Defaults to the first metric column
@@ -1139,6 +1163,14 @@ def compare(
         ``show_rank_probabilities=`` still have no effect on this path —
         it always reports all-pairs comparisons (no baseline-relative
         view) and has no rank-probability view.
+    method : str, optional
+        CI method, e.g. ``"bca"`` or ``"lmm"``. ``None`` uses ``"auto"``,
+        which picks a validated method from the data type and design; see
+        :func:`~evalstats.core.router.analyze` for the full list.
+    correction : str, optional
+        Multiple-comparisons correction: ``"auto"``, ``"holm"``,
+        ``"bonferroni"``, ``"fdr_bh"``, ``"hochberg"``, ``"shaffer"``,
+        ``"romano_wolf"``, or ``"none"``. ``None`` uses the engine default.
     **kwargs
         Two uses:
 
@@ -1270,6 +1302,11 @@ def compare(
     kwargs["p_values"] = p_values
     kwargs["omnibus"] = omnibus
     kwargs["pairwise_test"] = pairwise_test
+    # Only when passed, so each engine keeps its own default.
+    if method is not None:
+        kwargs["method"] = method
+    if correction is not None:
+        kwargs["correction"] = correction
 
     # ── split kwargs into column filters vs. engine kwargs ────────────────────
     df, engine_kwargs = _apply_kwarg_filters(df, kwargs, _ANALYZE_PARAMS)
@@ -1311,6 +1348,35 @@ def compare(
     # Detect canonical mappings
     model_col  = col.get("model")
     prompt_col = col.get("prompt")
+
+    # A model or prompt column holding a single value is not a second axis:
+    # prompts compared on one model is a single-factor comparison.
+    def _varies(c):
+        return bool(c) and c in df.columns and df[c].nunique() >= 2
+
+    def _factor_column(f):
+        if f == "model":
+            return model_col
+        if f in {"prompt", "template"}:
+            return prompt_col
+        return f
+
+    if len(factors_list) == 2 and all(_factor_column(f) in df.columns for f in factors_list):
+        _kept = [f for f in factors_list if _varies(_factor_column(f))]
+        if len(_kept) == 1:
+            _dropped = next(f for f in factors_list if f not in _kept)
+            warnings.warn(
+                f"factor {_dropped!r} has a single value in the data, so this "
+                f"is a comparison over {_kept[0]!r} alone.",
+                UserWarning,
+                stacklevel=2,
+            )
+            factors_list = _kept
+            _user_factors = _kept[0]
+    if "model" not in factors_list and not _varies(model_col):
+        model_col = None
+    if not ({"prompt", "template"} & set(factors_list)) and not _varies(prompt_col):
+        prompt_col = None
 
     is_model_comparison  = (len(factors_list) == 1 and
                              factors_list[0] in {"model"} and model_col and model_col in df)
@@ -1615,28 +1681,42 @@ def compare(
         )
         return cr
 
-    # ── path D-pre: canonical 2-factor ["model","prompt"] → multi-model path ──
-    # When the user passes exactly the standard factor names (not custom names
-    # that were remapped), prefer the richer MultiModelBundle path over factorial
-    # LMM — it's simpler, faster, and shows the cross-model ranking output the
-    # user usually wants.  An explicit LMM backend opt-in bypasses this.
-    _user_factors_list = [_user_factors] if isinstance(_user_factors, str) else list(_user_factors)
-    _is_canonical_2factor = (
-        is_factorial
-        and len(_user_factors_list) == 2
-        and all(f in _STANDARD_FACTOR_NAMES for f in _user_factors_list)
-        and model_col and model_col in df.columns
-        and prompt_col and prompt_col in df.columns
-        and engine_kwargs.get("backend") not in {"lmm", "factorial_lmm"}
+    # ── path D-pre: two factors → multi-model path ────────────────────────────
+    # Paired analysis of every cell, plus each factor averaged over the other.
+    # The factorial LMM (path D) is experimental and runs only when asked for.
+    _lmm_requested = (
+        engine_kwargs.get("method") in {"lmm", "factorial_lmm"}
+        or engine_kwargs.get("backend") in {"lmm", "factorial_lmm"}
     )
-    if _is_canonical_2factor:
+    if is_factorial and not _lmm_requested:
+        if len(factors_list) > 2:
+            raise ValueError(
+                f"compare() takes at most two factors; got {factors_list!r}. "
+                "Combine columns into one factor first, e.g. "
+                "df['config'] = df['a'] + '|' + df['b'], or pass method='lmm' "
+                "for the experimental factorial mixed model."
+            )
+        _row_f, _col_f = factors_list
+        # The canonical pair always puts models on the row axis.
+        if _row_f in {"prompt", "template"} and _col_f == "model":
+            _row_f, _col_f = _col_f, _row_f
+        row_col, col_col = _factor_column(_row_f), _factor_column(_col_f)
+        missing_factors = [
+            f for f, c in ((_row_f, row_col), (_col_f, col_col))
+            if not c or c not in df.columns
+        ]
+        if missing_factors:
+            raise EvalLoadError(
+                f"Factor column(s) {missing_factors} not found in data. "
+                f"Available columns: {list(df.columns)}"
+            )
         df_multi = df[
-            [model_col, prompt_col, item_col, metric_col]
+            [row_col, col_col, item_col, metric_col]
             + ([run_col] if run_col and run_col in df.columns else [])
         ].copy()
         rename_multi = {
-            model_col: "model",
-            prompt_col: "template",
+            row_col: "model",
+            col_col: "template",
             item_col: "input",
             metric_col: "score",
         }
@@ -1646,6 +1726,8 @@ def compare(
         bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
         reference = baseline if baseline else "grand_mean"
         analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
+        # Both factors were asked for, so the entities are the (model, prompt)
+        # cells; as_view() gives either marginal.
         return ComparisonResult(
             analysis,
             factors=_user_factors,
@@ -1653,7 +1735,7 @@ def compare(
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
-            _mmb_view="model_level",
+            _mmb_view="cross_model",
             min_meaningful_diff=min_meaningful_diff,
             show_rank_probabilities=show_rank_probabilities,
             rng_seed=_rng_seed_used,
@@ -1684,6 +1766,9 @@ def compare(
             if k in {"backend", "ci", "correction", "reference",
                      "spread_percentiles", "failure_threshold", "n_sim", "rng"}
         }
+        # "lmm" only selects this path; the fitting backend keeps its default.
+        if factorial_kwargs.get("backend") in {"lmm", "factorial_lmm"}:
+            factorial_kwargs.pop("backend")
         if "ci" not in factorial_kwargs:
             factorial_kwargs["ci"] = ci_level
 
