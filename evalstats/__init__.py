@@ -49,7 +49,7 @@ from evalstats.quick import (
     DebiasedMeanCI,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.3.1"
 
 __all__ = [
     # High-level spec API
