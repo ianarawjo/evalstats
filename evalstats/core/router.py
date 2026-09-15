@@ -15,6 +15,8 @@ Supported shapes
 from __future__ import annotations
 
 import warnings
+from evalstats._notes import warn as _note_warn
+from evalstats.errors import MissingCellsError, TooFewGroupsError
 from typing import Dict, Literal, Optional, Union
 
 import numpy as np
@@ -57,17 +59,8 @@ def _resolve_p_value_method(
       Shaffer's in that case since Romano-Wolf has no Wilcoxon-compatible
       form).
     - ``pairwise_test='nemenyi'``    → ``'nem'``
-    - ``pairwise_test='auto'`` with ``p_values=True``: ``'auto'`` -- final
-      resolution deferred to print time (see ``core.summary``'s p-value-
-      column logic), since it depends on which FWER correction actually
-      fired for this bundle (Shaffer's vs. Romano-Wolf), which in turn
-      depends on N/data-kind and isn't known until :func:`~evalstats.core.paired.all_pairwise`
-      has run. The default is McNemar mid-p for binary data and Wilcoxon
-      signed-rank for numeric data (per fig:fwer-decision-tree), except
-      when Romano-Wolf step-down is what actually resolved -- it has no Wilcoxon-compatible joint construction (see
-      :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`'s
-      docstring), so its own mean-based bootstrap-t p-value is shown
-      instead in that one case.
+    - ``pairwise_test='auto'`` with ``p_values=True``: ``'auto'``, resolved
+      by :func:`~evalstats.core.paired.all_pairwise` (see its ``p_test``).
     """
     explicit = pairwise_test != "auto"
     if not p_values and not explicit:
@@ -357,12 +350,12 @@ def analyze(
     include_multi_ci = ci_style == "gradient"
 
     if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "mj_floor", "newcombe", "tango", "bonett_price", "permutation", "sign_test", "t_interval", "logit_t", "nig"} and result.n_inputs < 15:
-        warnings.warn(
+        _note_warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
             "Consider using method='bayes_bootstrap', method='smooth_bootstrap', or method='lmm' "
             "for more stable inference with small samples.",
-            UserWarning,
+            code="few_inputs_bootstrap",
             stacklevel=2,
         )
 
@@ -825,11 +818,11 @@ def resolve_auto_robustness_method(
     if binary_routing_applies(run_scores, score_range, stacklevel=stacklevel + 1):
         data_kind = "binary"
         if eval_type is not None:
-            warnings.warn(
+            _note_warn(
                 f"score_type={eval_type!r} was given, but the data was "
                 "auto-detected as binary (0/1) -- binary data always uses "
                 "the binary methods, so this hint was ignored.",
-                UserWarning,
+                code="score_type_ignored_binary",
                 stacklevel=stacklevel,
             )
     else:
@@ -860,7 +853,7 @@ def resolve_auto_robustness_method(
                 )
                 if n_levels is not None and n_levels <= MAX_DISCRETE_LEVELS:
                     data_kind = "likert"
-                    warnings.warn(
+                    _note_warn(
                         f"Bounded numeric evaluation data was auto-detected "
                         f"as discrete/ordinal (grid step={step:g} within "
                         f"range {resolved_score_range}). For pairwise "
@@ -875,7 +868,7 @@ def resolve_auto_robustness_method(
                         "warning, or score_type='continuous' if this "
                         "discreteness is coincidental (e.g. a metric that "
                         "happens to only take a few values in your sample).",
-                        UserWarning,
+                        code="likert_autodetected", severity="info",
                         stacklevel=stacklevel,
                     )
                 else:
@@ -885,7 +878,7 @@ def resolve_auto_robustness_method(
             # Direct warn() call, one frame shallower than the
             # resolve_score_bounds() delegation above (no extra frame in
             # between) -- stacklevel here, not stacklevel + 1.
-            warnings.warn(
+            _note_warn(
                 "Numeric evaluation data outside [0, 1] was auto-detected "
                 "with no explicit score_range, so evalstats is using "
                 "method='t_interval' (a bounds-agnostic default) rather "
@@ -893,7 +886,7 @@ def resolve_auto_robustness_method(
                 "know this eval metric's true (min, max) range, pass it "
                 "explicitly, e.g. score_range=(1, 5) for a Likert scale "
                 "or score_range=(0, 100) for a percentage grade.",
-                UserWarning,
+                code="unbounded_autodetected",
                 stacklevel=stacklevel,
             )
     # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
@@ -902,6 +895,10 @@ def resolve_auto_robustness_method(
         data_kind, N, seeded=R >= 3,
     )
     return pairwise_method, robustness_method, resolved_score_range, data_kind
+
+
+# pairwise_test's resolved code -> all_pairwise's p_test.
+_P_TEST_BY_METHOD = {"boot": "ci", "wsr": "wilcoxon", "nem": "nemenyi"}
 
 
 def _analyze_single(
@@ -930,13 +927,13 @@ def _analyze_single(
     # ------------------------------------------------------------------
     if method == "lmm":
         if statistic == "median":
-            warnings.warn(
+            _note_warn(
                 "statistic='median' is not compatible with method='lmm' "
                 "(the LMM is a mean-based model). Falling back to "
                 "statistic='mean' for this analysis. Pass statistic='mean' "
                 "explicitly to silence this warning, or switch to "
                 "method='auto' to use median with the bootstrap.",
-                UserWarning,
+                code="median_lmm_fallback",
                 stacklevel=2,
             )
             statistic = "mean"
@@ -999,12 +996,19 @@ def _analyze_single(
     # they will collapse to (N, M) and treat as non-seeded.
     # ------------------------------------------------------------------
     if result.has_missing:
-        n_missing = int(np.sum(np.isnan(result.scores)))
-        raise ValueError(
+        nan_cells = np.isnan(result.scores).reshape(result.scores.shape[0], result.scores.shape[1], -1).any(axis=2)
+        t_idx, i_idx = np.nonzero(nan_cells)
+        n_missing = int(nan_cells.sum())
+        raise MissingCellsError(
             f"scores contain {n_missing} NaN (missing) cell(s), which are not "
-            "supported by the bootstrap analysis path. Either fill in missing "
-            "cells or use method='lmm' to analyse benchmarks with incomplete "
-            "designs."
+            "supported by the bootstrap analysis path. Drop incomplete items with "
+            "evalstats.complete_items(), fill in the missing cells, or use "
+            "method='lmm' to model an incomplete design.",
+            missing=[
+                (str(result.template_labels[t]), str(result.input_labels[i]))
+                for t, i in zip(t_idx[:1000], i_idx[:1000])
+            ],
+            n_missing=n_missing,
         )
 
     run_scores = result.get_run_scores()   # (N, M, R) or (N, M, 1)
@@ -1095,6 +1099,8 @@ def _analyze_single(
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
         multi_ci=include_multi_ci, score_range=resolved_score_range,
         eval_type=resolved_eval_type,
+        p_test=_P_TEST_BY_METHOD.get(p_value_method, "auto"),
+        data_kind=data_kind,
     )
     robustness = robustness_metrics(
         run_scores, labels,
@@ -1310,9 +1316,10 @@ def _validate_supported(shape: BenchmarkShape) -> None:
     if shape.n_prompts < 2:
         if shape.n_models > 1 and shape.n_prompts == 1:
             return
-        raise ValueError(
+        raise TooFewGroupsError(
             f"analyze() requires at least 2 prompt templates; got {shape.n_prompts}. "
-            "Add more templates to enable comparative analysis."
+            "Add more templates to enable comparative analysis.",
+            n_groups=shape.n_prompts,
         )
 
     if shape.n_input_vars > 1:

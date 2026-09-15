@@ -509,13 +509,9 @@ class TestRomanoWolfPvalues:
         bundle = result._primary_bundle()
         assert bundle.pairwise.correction_method == "shaffer"
 
-    def test_wilcoxon_companion_pvalues_use_shaffer_not_romano_wolf(self):
-        """Romano-Wolf's joint construction is specific to the paired-mean/
-        PPI estimand and has no Wilcoxon-signed-rank-compatible form (same
-        as the non-PPI path) -- the companion wilcoxon_p correction must
-        substitute Shaffer's (or Holm for a subset) rather than crash trying
-        to pass "romano_wolf" into correct_pvalues(), which doesn't know
-        that method name."""
+    def test_wilcoxon_pvalues_use_shaffer_not_romano_wolf(self):
+        """Romano-Wolf has no Wilcoxon form, so a Wilcoxon p-value requested
+        under it gets Shaffer's (or Holm's for a subset)."""
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=204)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -524,12 +520,13 @@ class TestRomanoWolfPvalues:
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
                 simultaneous_ci=False, correction="romano_wolf",
-                rng=_rng(204),
+                pairwise_test="wilcoxon", rng=_rng(204),
             )
         bundle = result._primary_bundle()
+        assert bundle.pairwise.correction_method in {"shaffer", "holm"}
         for pr in bundle.pairwise.results.values():
-            if pr.wilcoxon_p is not None:
-                assert 0.0 <= pr.wilcoxon_p <= 1.0
+            assert pr.p_test == "wilcoxon_signed_rank"
+            assert 0.0 <= pr.p_value <= 1.0
 
     def test_correction_method_field_reflects_actual_correction(self):
         """bundle.pairwise.correction_method must reflect the correction

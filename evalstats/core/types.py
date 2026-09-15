@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import warnings
+from evalstats._notes import suppress_notes, warn as _note_warn
+from evalstats.errors import TooFewGroupsError
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Union
 
@@ -42,11 +44,11 @@ AnalyzeMethod = Union[CommonStatsMethods, Literal["lmm"]]
 
 def _warn_two_runs(shape: tuple, *, stacklevel: int = 4) -> None:
     """Emit a warning when only 2 repeated runs are detected."""
-    warnings.warn(
+    _note_warn(
         f"scores has shape {shape}: only 2 runs detected. "
         "Seed-variance analysis requires R >= 3 runs. "
         "Scores will be pre-averaged across runs before analysis.",
-        UserWarning,
+        code="two_runs_averaged",
         stacklevel=stacklevel,
     )
 
@@ -62,12 +64,12 @@ def _warn_evaluator_axis_confusion(
 ) -> None:
     """Warn when evaluator_names count accidentally matches the runs axis."""
     if evaluator_names != ["score"] and len(evaluator_names) == n_runs:
-        warnings.warn(
+        _note_warn(
             f"scores has shape {shape} and evaluator_names has "
             f"{len(evaluator_names)} entries matching axis {runs_axis}. "
             f"Axis {runs_axis} is now the *runs* axis, not the evaluator axis. "
             f"For K evaluators without repeated runs use shape {shape_hint}.",
-            UserWarning,
+            code="evaluator_axis_confusion",
             stacklevel=stacklevel,
         )
 
@@ -225,10 +227,10 @@ class BenchmarkResult:
                         "underscores) so it can be used in model formulas."
                     )
             if self.template_factors.isnull().any(axis=None):
-                warnings.warn(
+                _note_warn(
                     "template_factors contains NaN values. Factor columns should "
                     "be fully specified for all templates.",
-                    UserWarning,
+                    code="template_factors_nan",
                     stacklevel=3,
                 )
 
@@ -237,10 +239,10 @@ class BenchmarkResult:
         for i, label in enumerate(self.template_labels):
             row = cell_means_2d[i]
             if not np.all(np.isnan(row)) and np.nanstd(row) == 0:
-                warnings.warn(
+                _note_warn(
                     f"Template '{label}' has zero variance across inputs "
                     f"(all scores identical). This may indicate a problem.",
-                    UserWarning,
+                    code="zero_variance", entities=[label],
                     stacklevel=3,
                 )
 
@@ -390,9 +392,11 @@ class MultiModelBenchmark:
             )
 
         if n_models < 2:
-            raise ValueError(
+            raise TooFewGroupsError(
                 f"MultiModelBenchmark requires at least 2 models; got {n_models}. "
-                "Use BenchmarkResult for single-model benchmarks."
+                "Use BenchmarkResult for single-model benchmarks.",
+                n_groups=n_models,
+                factor="model",
             )
 
         _check_label_length(self.model_labels, n_models, name="model_labels", axis=0)
@@ -410,11 +414,11 @@ class MultiModelBenchmark:
             for t_idx, template_label in enumerate(self.template_labels):
                 row = scores_3d[m_idx, t_idx]
                 if not np.all(np.isnan(row)) and np.nanstd(row) == 0:
-                    warnings.warn(
+                    _note_warn(
                         f"Template '{template_label}' for model '{model_label}' "
                         f"has zero variance across inputs (all scores identical). "
                         f"This may indicate a problem.",
-                        UserWarning,
+                        code="zero_variance", entities=[f"{model_label} / {template_label}"],
                         stacklevel=3,
                     )
 
@@ -591,11 +595,10 @@ class MultiModelBenchmark:
                 "Expected 'mean' or 'as_runs'."
             )
 
-        with warnings.catch_warnings():
-            # With as_runs the run axis holds models, so a "2 runs" count here
-            # means 2 models, not 2 seeds.
-            if collapse_models == "as_runs":
-                warnings.filterwarnings("ignore", message=r".*only 2 runs detected")
+        # With as_runs the run axis holds models, so a "2 runs" count here
+        # means 2 models, not 2 seeds.
+        codes = ("two_runs_averaged",) if collapse_models == "as_runs" else ()
+        with suppress_notes(*codes):
             return BenchmarkResult(
                 scores=collapsed_scores,
                 template_labels=self.template_labels,

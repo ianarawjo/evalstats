@@ -298,7 +298,7 @@ def test_print_summary_includes_critical_difference_groups(capsys):
     assert "Prompt D" in out
 
 
-def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(capsys):
+def test_print_pairwise_summary_names_the_p_test(capsys):
     pair = PairedDiffResult(
         template_a="Prompt A",
         template_b="Prompt B",
@@ -306,13 +306,13 @@ def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(ca
         std_diff=0.20,
         ci_low=0.01,
         ci_high=0.24,
-        p_value=0.42,
+        p_value=0.03125,
         test_method="bayes binary (n=2000)",
         n_inputs=64,
         per_input_diffs=np.array([0.0, 0.2, 0.1, -0.1, 0.3, 0.0, 0.1, -0.2]),
         n_runs=1,
         statistic="mean",
-        wilcoxon_p=0.03125,
+        p_test="wilcoxon_signed_rank",
     )
 
     print_pairwise_summary(pair, alpha=0.05)
@@ -337,7 +337,6 @@ def test_print_pairwise_summary_keeps_mcnemar_pvalue_for_newcombe(capsys):
         per_input_diffs=np.array([0.0, 0.2, 0.1, -0.1, 0.3, 0.0, 0.1, -0.2]),
         n_runs=1,
         statistic="mean",
-        wilcoxon_p=0.0005,
     )
 
     print_pairwise_summary(pair, alpha=0.05)
@@ -361,7 +360,6 @@ def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
         per_input_diffs=np.array([0.0, -0.2, 0.1, -0.1, 0.2, 0.0, -0.1, 0.1]),
         n_runs=1,
         statistic="mean",
-        wilcoxon_p=0.3711,
     )
 
     print_pairwise_summary(pair, alpha=0.05)
@@ -433,7 +431,6 @@ def test_critical_difference_groups_has_two_separate_rank_bands():
                 per_input_diffs=np.zeros(30, dtype=float),
                 n_runs=1,
                 statistic="mean",
-                wilcoxon_p=float(wsr_p),
             )
 
     pairwise = PairwiseMatrix(
@@ -447,7 +444,6 @@ def test_critical_difference_groups_has_two_separate_rank_bands():
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
-        p_source="both",
     )
 
     assert groups == [
@@ -497,7 +493,6 @@ def test_critical_difference_groups_can_have_overlapping_rank_bands():
                 per_input_diffs=np.zeros(30, dtype=float),
                 n_runs=1,
                 statistic="mean",
-                wilcoxon_p=float(wsr_p),
             )
 
     pairwise = PairwiseMatrix(
@@ -511,7 +506,6 @@ def test_critical_difference_groups_can_have_overlapping_rank_bands():
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
-        p_source="both",
     )
 
     assert groups == [
@@ -544,7 +538,6 @@ def test_assign_significance_groups_keeps_clear_winner_in_group_1():
             per_input_diffs=np.zeros(200, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=1.684e-05,
         ),
         ("qwen/qwen3-vl-8b-instruct", "google/gemma-3-4b-it"): PairedDiffResult(
             template_a="qwen/qwen3-vl-8b-instruct",
@@ -559,7 +552,6 @@ def test_assign_significance_groups_keeps_clear_winner_in_group_1():
             per_input_diffs=np.zeros(200, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=1.876e-07,
         ),
         ("gpt-4.1-nano", "google/gemma-3-4b-it"): PairedDiffResult(
             template_a="gpt-4.1-nano",
@@ -574,7 +566,6 @@ def test_assign_significance_groups_keeps_clear_winner_in_group_1():
             per_input_diffs=np.zeros(200, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.1394,
         ),
     }
 
@@ -597,7 +588,7 @@ def _pdr(a: str, b: str, *, point_diff: float, p_value: float) -> PairedDiffResu
         template_a=a, template_b=b, point_diff=point_diff, std_diff=0.05,
         ci_low=point_diff - 0.1, ci_high=point_diff + 0.1, p_value=p_value,
         test_method="bootstrap", n_inputs=50, per_input_diffs=np.zeros(50, dtype=float),
-        n_runs=1, statistic="mean", wilcoxon_p=None,
+        n_runs=1, statistic="mean",
     )
 
 
@@ -703,7 +694,6 @@ def test_single_clear_winner_label_detects_unique_statistical_winner():
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.002,
         ),
         ("Prompt A", "Prompt C"): PairedDiffResult(
             template_a="Prompt A",
@@ -718,7 +708,6 @@ def test_single_clear_winner_label_detects_unique_statistical_winner():
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.004,
         ),
         ("Prompt B", "Prompt C"): PairedDiffResult(
             template_a="Prompt B",
@@ -733,7 +722,6 @@ def test_single_clear_winner_label_detects_unique_statistical_winner():
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.50,
         ),
     }
 
@@ -748,7 +736,6 @@ def test_single_clear_winner_label_detects_unique_statistical_winner():
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
-        p_source="bootstrap",
     )
     assert winner == "Prompt A"
 
@@ -769,7 +756,6 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.002,
         ),
         ("Prompt A", "Prompt C"): PairedDiffResult(
             template_a="Prompt A",
@@ -784,7 +770,6 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.004,
         ),
         ("Prompt B", "Prompt C"): PairedDiffResult(
             template_a="Prompt B",
@@ -799,7 +784,6 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
             per_input_diffs=np.zeros(50, dtype=float),
             n_runs=1,
             statistic="mean",
-            wilcoxon_p=0.50,
         ),
     }
 
@@ -814,7 +798,6 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
-        p_source="bootstrap",
     )
     out = capsys.readouterr().out
 
@@ -1554,6 +1537,7 @@ def test_pairwise_wilcoxon_matches_scipy_and_is_symmetric_on_flip():
         method="bootstrap",
         correction="none",
         n_bootstrap=300,
+        pairwise_test="wilcoxon",
         rng=np.random.default_rng(101),
     )
 
@@ -1561,11 +1545,11 @@ def test_pairwise_wilcoxon_matches_scipy_and_is_symmetric_on_flip():
     pair_ba = analysis.pairwise.get("B", "A")
     expected_p = float(wilcoxon(diffs, zero_method="wilcox", alternative="two-sided").pvalue)
 
-    np.testing.assert_allclose(pair_ab.wilcoxon_p, expected_p, atol=1e-12)
-    np.testing.assert_allclose(pair_ba.wilcoxon_p, expected_p, atol=1e-12)
+    np.testing.assert_allclose(pair_ab.p_value, expected_p, atol=1e-12)
+    np.testing.assert_allclose(pair_ba.p_value, expected_p, atol=1e-12)
 
 
-def test_pairwise_wilcoxon_is_none_when_all_differences_are_zero():
+def test_pairwise_wilcoxon_is_one_when_all_differences_are_zero():
     scores = np.array(
         [
             [2.1, 3.4, 1.8, 4.0, 2.7, 3.3],
@@ -1584,11 +1568,12 @@ def test_pairwise_wilcoxon_is_none_when_all_differences_are_zero():
         method="bootstrap",
         correction="none",
         n_bootstrap=300,
+        pairwise_test="wilcoxon",
         rng=np.random.default_rng(102),
     )
 
     pair_ab = analysis.pairwise.get("A", "B")
-    assert pair_ab.wilcoxon_p is None
+    assert pair_ab.p_value == 1.0 and pair_ab.p_test == "wilcoxon_signed_rank"
 
 
 def test_pairwise_wilcoxon_respects_multiple_testing_correction():
@@ -1613,6 +1598,7 @@ def test_pairwise_wilcoxon_respects_multiple_testing_correction():
         method="bootstrap",
         correction="none",
         n_bootstrap=300,
+        pairwise_test="wilcoxon",
         rng=np.random.default_rng(103),
     )
     analysis_bonf = es.analyze(
@@ -1620,14 +1606,15 @@ def test_pairwise_wilcoxon_respects_multiple_testing_correction():
         method="bootstrap",
         correction="bonferroni",
         n_bootstrap=300,
+        pairwise_test="wilcoxon",
         rng=np.random.default_rng(103),
     )
 
     pairs = [("A", "B"), ("A", "C"), ("B", "C")]
     n_pairs = len(pairs)
     for a, b in pairs:
-        raw_p = analysis_raw.pairwise.get(a, b).wilcoxon_p
-        corr_p = analysis_bonf.pairwise.get(a, b).wilcoxon_p
+        raw_p = analysis_raw.pairwise.get(a, b).p_value
+        corr_p = analysis_bonf.pairwise.get(a, b).p_value
         expected_corr = min(float(raw_p) * n_pairs, 1.0)
         np.testing.assert_allclose(corr_p, expected_corr, atol=1e-12)
 

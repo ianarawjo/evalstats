@@ -240,8 +240,14 @@ class TestPrintAnalysisSummaryOutput:
         assert "p (wsr)" in out
 
     def test_pairwise_test_bootstrap_shows_boot_column(self):
+        # N=40, k=3 resolves Romano-Wolf, which adjusts the CI method's own
+        # bootstrap p-values; the header names that step-down.
         out = self._run_analyze(pairwise_test="bootstrap")
-        assert "p (boot)" in out
+        assert "p (RW)" in out
+        assert "p (wsr)" not in out
+        bench = _make_benchmark(_scores_3prompt(n=20))
+        bundle = es.analyze(bench, n_bootstrap=300, rng=_rng(), pairwise_test="bootstrap")
+        assert bundle.pairwise.p_value_test == "paired_t"
 
     def test_pairwise_test_nemenyi_shows_nem_column(self):
         out = self._run_analyze(pairwise_test="nemenyi")

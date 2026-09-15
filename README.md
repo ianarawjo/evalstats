@@ -146,7 +146,7 @@ If your columns don't match any alias above, remap them explicitly: `es.load_fro
 - **Filtering**: any keyword matching a column name acts as a row filter, e.g. `es.compare(evaldata, factors="model", split="test")`
 - **PPI-corrected inference** for noisy LLM-judge scores: see [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests)
 
-The returned `result` is a `ComparisonResult`. Besides `.summary()`, it has `.to_frame()` / `.to_dict()` for programmatic access, `.plot(method="forest" | "bar" | "cd" | "pareto")` for charts, and `.disagreements()` to surface the items entities disagree on most.
+The returned `result` is a `ComparisonResult`. Besides `.summary()`, it has `.to_frame()` / `.to_dict()` for programmatic access, `.plot(method="forest" | "bar" | "cd" | "pareto")` for charts, and `.disagreements()` to surface the items entities disagree on most. For front ends, `.rank_bands()`, `.methods()` and `.notes` return what `.summary()` shows as JSON-safe data (all embedded in `.to_dict()`), and `compare()` raises typed errors (`InsufficientItemsError`, `MissingCellsError`, `TooFewGroupsError`, `AmbiguousLabelsError`).
 
 <details>
 <summary><strong>Advanced: raw score arrays (low-level engine)</strong></summary>

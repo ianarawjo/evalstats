@@ -10,6 +10,7 @@ import pandas as pd
 
 from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 from evalstats.loader import _CANONICAL_ALIASES, _SCORE_ALIASES, _find_col
+from evalstats.errors import MissingCellsError
 
 
 @dataclass
@@ -471,18 +472,22 @@ def _check_missing(
     if not strict_complete_design:
         return
 
-    missing = []
-    for i, tpl in enumerate(template_labels):
-        for j, inp in enumerate(input_labels):
-            if np.isnan(scores_2d[i, j]):
-                missing.append(f"  ({tpl!r}, {inp!r})")
+    missing_cells = [
+        (str(tpl), str(inp))
+        for i, tpl in enumerate(template_labels)
+        for j, inp in enumerate(input_labels)
+        if np.isnan(scores_2d[i, j])
+    ]
+    missing = [f"  ({tpl!r}, {inp!r})" for tpl, inp in missing_cells]
     ctx = f" [{context}]" if context else ""
-    raise ValueError(
+    raise MissingCellsError(
         f"Incomplete design{ctx}: {len(missing)} missing (prompt, input) combination(s).\n"
         "All prompts must be evaluated on all inputs. You can either: "
         "(1) fill missing cells, (2) set strict_complete_design=False to keep NaNs, "
         "or (3) run analyze(..., method='lmm') for missing-aware modeling.\n"
         "Missing cells:\n"
         + "\n".join(missing[:10])
-        + ("\n  ..." if len(missing) > 10 else "")
+        + ("\n  ..." if len(missing) > 10 else ""),
+        missing=missing_cells[:1000],
+        n_missing=len(missing_cells),
     )

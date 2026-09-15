@@ -18,11 +18,15 @@ from evalstats.core.router import (
     MultiModelBundle,
 )
 from evalstats.core.summary import print_analysis_summary, print_brief_summary
-from evalstats.vis.point_estimates import plot_point_estimates
-from evalstats.vis.critical_difference import plot_critical_difference
-from evalstats.vis.forest import plot_ci_forest
-from evalstats.vis.scoreboard import plot_accuracy_bar
 from evalstats.io import from_dataframe, DataLoadReport
+from evalstats.errors import (
+    MIN_ITEMS,
+    AmbiguousLabelsError,
+    InsufficientItemsError,
+    MissingCellsError,
+    TooFewGroupsError,
+)
+from evalstats._notes import Note
 from evalstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
 from evalstats.core import bayes_evals
 from evalstats.config import set_alpha_ci, get_alpha_ci
@@ -32,6 +36,7 @@ from evalstats.config import set_alpha_ci, get_alpha_ci
 # evalstats.compare submodule registration, which would shadow a bare
 # "compare" name if it were imported before the submodule.
 from evalstats.loader import load_from, EvalResults, EvalLoadError
+from evalstats.completeness import complete_items, CompletenessReport
 from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
 from evalstats.alignment import judge_alignment, AlignmentResult
 from evalstats import ppi
@@ -49,7 +54,7 @@ from evalstats.quick import (
     DebiasedMeanCI,
 )
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     # High-level spec API
@@ -60,6 +65,8 @@ __all__ = [
     "tests",
     "EvalResults",
     "EvalLoadError",
+    "complete_items",
+    "CompletenessReport",
     "compare",
     "compare_models",
     "compare_prompts",
@@ -94,6 +101,12 @@ __all__ = [
     "MultiModelBundle",
     "print_analysis_summary",
     "print_brief_summary",
+    "MIN_ITEMS",
+    "AmbiguousLabelsError",
+    "InsufficientItemsError",
+    "MissingCellsError",
+    "TooFewGroupsError",
+    "Note",
     "plot_point_estimates",
     "plot_critical_difference",
     "plot_ci_forest",
@@ -107,6 +120,28 @@ __all__ = [
     "set_alpha_ci",
     "get_alpha_ci",
 ]
+
+# Plotting functions load matplotlib on first use, not at import.
+_LAZY_PLOTS = {
+    "plot_point_estimates": "evalstats.vis.point_estimates",
+    "plot_critical_difference": "evalstats.vis.critical_difference",
+    "plot_ci_forest": "evalstats.vis.forest",
+    "plot_accuracy_bar": "evalstats.vis.scoreboard",
+}
+
+
+def __getattr__(name):
+    if name in _LAZY_PLOTS:
+        import importlib
+        func = getattr(importlib.import_module(_LAZY_PLOTS[name]), name)
+        globals()[name] = func
+        return func
+    raise AttributeError(f"module 'evalstats' has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_PLOTS))
+
 
 # LMMInfo and FactorialLMMInfo are exported lazily so that statsmodels/pymer4
 # are not hard dependencies.  Access via:

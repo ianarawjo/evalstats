@@ -855,7 +855,13 @@ class TestPValuesOmnibusToggles:
         r_default = es.compare(evaldata, factors="model", metric="score")
         r_explicit_false = es.compare(evaldata, factors="model", metric="score",
                                        p_values=False, omnibus=False)
-        assert r_default.to_dict() == r_explicit_false.to_dict()
+        d_default, d_false = r_default.to_dict(), r_explicit_false.to_dict()
+        m_default, m_false = d_default.pop("methods"), d_false.pop("methods")
+        assert d_default == d_false
+        assert m_default["p_values"]["shown"] and not m_false["p_values"]["shown"]
+        assert m_default["omnibus"] is not None and m_false["omnibus"] is None
+        for key in ("design", "data_kind", "mean_ci", "pairwise_ci", "rank_bands", "resampling"):
+            assert m_default[key] == m_false[key]
 
     def test_unpaired_path_p_values_omnibus_default_matches_paired(self):
         # Both paths share the same default (True).

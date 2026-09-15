@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from evalstats._notes import warn as _note_warn
 from typing import Literal, Optional
 
 import numpy as np
@@ -55,9 +56,9 @@ def _reduce_rows(values: np.ndarray, statistic: Literal["mean", "median"]) -> np
 
 def _warn_smooth_bootstrap_fallback(function_name: str, reason: str) -> None:
     """Warn that a smooth-bootstrap path fell back to plain bootstrap."""
-    warnings.warn(
+    _note_warn(
         f"{function_name} falling back to plain bootstrap; no KDE smoothing applied. Reason: {reason}.",
-        UserWarning,
+        code="smooth_bootstrap_fallback",
         stacklevel=2,
     )
 
@@ -187,7 +188,7 @@ def binary_routing_applies(
     lo, hi = float(score_range[0]), float(score_range[1])
     if lo == 0.0 and hi == 1.0:
         return True
-    warnings.warn(
+    _note_warn(
         f"All scores are 0 or 1, which would normally auto-detect as binary "
         f"data, but score_range={score_range} was given explicitly -- so this "
         "is being treated as bounded numeric data on that scale, not as a "
@@ -198,7 +199,7 @@ def binary_routing_applies(
         "or 1); the binary methods would treat that unseen headroom as "
         "impossible. Drop score_range (or pass score_range=(0, 1)) if the "
         "metric really is binary.",
-        UserWarning,
+        code="score_range_overrides_binary",
         stacklevel=stacklevel,
     )
     return False
@@ -406,14 +407,14 @@ def resolve_score_bounds(
         return lo, hi
 
     if bool(np.all(finite >= 0.0) and np.all(finite <= 1.0)):
-        warnings.warn(
+        _note_warn(
             "Numeric evaluation data was auto-detected as [0, 1]-bounded "
             "(e.g. normalised accuracy, ROUGE) with no explicit score_range "
             "given, so evalstats is using method='logit_t' with score_range="
             "(0, 1). If this metric's true range isn't actually [0, 1], pass "
             "score_range=(true_min, true_max) explicitly to avoid a "
             "miscalibrated CI.",
-            UserWarning,
+            code="bounded_01_autodetected", severity="info",
             stacklevel=stacklevel,
         )
         return 0.0, 1.0
@@ -988,11 +989,11 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
         raise ValueError("logit_t_ci_1d requires all values in [0, 1]")
     out_of_range = (vals < 0.0) | (vals > 1.0)
     if np.any(out_of_range):
-        warnings.warn(
+        _note_warn(
             f"logit_t_ci_1d: {int(np.sum(out_of_range))} value(s) fractionally "
             f"outside [0, 1] (within {_LOGIT_T_BOUNDARY_EPS:g}, consistent with "
             "floating-point rounding) clipped to [0, 1].",
-            UserWarning, stacklevel=2,
+            code="logit_t_clipped", stacklevel=2,
         )
         vals = np.clip(vals, 0.0, 1.0)
     x_bar = float(np.mean(vals))
@@ -3497,10 +3498,10 @@ def bootstrap_t_ci_1d(
         ``'mean'`` (default) or ``'median'``.
     """
     if statistic == "median":
-        warnings.warn(
+        _note_warn(
             "bootstrap_t_ci_1d: bootstrap-t studentization is implemented for "
             "'mean'; falling back to percentile bootstrap for 'median'.",
-            UserWarning,
+            code="bootstrap_t_median_fallback",
             stacklevel=3,
         )
         boot_stats = bootstrap_means_1d(values, n_bootstrap, rng, statistic="median")

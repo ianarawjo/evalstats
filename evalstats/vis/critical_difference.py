@@ -48,7 +48,6 @@ def _sig_matrix_from_rank_bands(
     *,
     labels_sorted: list[str],
     alpha: float,
-    p_source: Literal["bootstrap", "wilcoxon"],
 ) -> pd.DataFrame:
     """Build a symmetric significance matrix from CD-style rank bands.
 
@@ -63,7 +62,6 @@ def _sig_matrix_from_rank_bands(
         pairwise,
         labels_sorted=labels_sorted,
         alpha=alpha,
-        p_source=p_source,
     )
     labels = list(labels_sorted)
     mat = pd.DataFrame(0.0, index=labels, columns=labels)
@@ -143,7 +141,6 @@ def plot_critical_difference(
     *,
     ranks: Optional[Mapping[str, float]] = None,
     labels_sorted: Optional[list[str]] = None,
-    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
     alpha: Optional[float] = None,
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
@@ -179,9 +176,6 @@ def plot_critical_difference(
     labels_sorted : list[str], optional
         Rank order (best to worst) used to compute contiguous rank bands in
         ``pairwise`` mode.
-    p_source : {"bootstrap", "wilcoxon"}
-        P-value source for rank-band grouping when simultaneous CIs are not
-        present in ``pairwise``.
     alpha : float
         Significance threshold for crossbar grouping (default 0.05).
     figsize : tuple[float, float], optional
@@ -330,7 +324,6 @@ def plot_critical_difference(
             pairwise,
             labels_sorted=labels_for_groups,
             alpha=alpha,
-            p_source=p_source,
         )
         if pairwise.simultaneous_ci_method is not None:
             method_note = (
@@ -338,11 +331,7 @@ def plot_critical_difference(
                 f"({pairwise.simultaneous_ci_method}), alpha={alpha:.3g}."
             )
         else:
-            source_long = "bootstrap p-values" if p_source == "bootstrap" else "Wilcoxon p-values"
-            method_note = (
-                "Grouping: pairwise significance from "
-                f"{source_long}, alpha={alpha:.3g}."
-            )
+            method_note = f"Grouping: corrected pairwise p-values, alpha={alpha:.3g}."
         method_note = f"Axis: {axis_source}. {method_note}"
 
         # Optional reviewer-facing reference value: classic Nemenyi CD on the
@@ -389,7 +378,7 @@ def plot_critical_difference(
             if pairwise.simultaneous_ci_method is not None:
                 source = f"CI ({pairwise.simultaneous_ci_method})"
             else:
-                source = "p (boot)" if p_source == "bootstrap" else "p (wsr)"
+                source = "corrected p"
             title = f"Critical Difference Diagram  ·  Pairwise rank bands from {source}"
     ax.set_title(
         title,
