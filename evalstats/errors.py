@@ -36,6 +36,14 @@ class MissingCellsError(ValueError):
         self.n_missing = n_missing
 
 
+class AmbiguousLabelsError(ValueError):
+    """Two-factor cells whose names join to the same ``"model / prompt"`` label."""
+
+    def __init__(self, message: str, *, labels: list[str]):
+        super().__init__(message)
+        self.labels = labels
+
+
 class TooFewGroupsError(ValueError):
     """Fewer than two levels to compare."""
 

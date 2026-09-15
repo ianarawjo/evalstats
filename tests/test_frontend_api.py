@@ -123,8 +123,10 @@ def test_two_factor_levels_survive_the_label_separator():
 
 
 def test_two_factor_label_collision_raises():
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(es.AmbiguousLabelsError, match="ambiguous") as err:
         _compare(_two_factor_df(["a / b", "a"], ["c", "b / c"]), factors=["model", "prompt"])
+    assert err.value.labels == ["a / b / c"]
+    assert isinstance(err.value, ValueError)
 
 
 # ── JSON safety ─────────────────────────────────────────────────────────────
@@ -206,10 +208,16 @@ def test_typed_errors():
         _compare(df[~((df["model"] == "b") & df["item"].isin(["i0", "i1"]))], factors="model")
     assert missing.value.missing == [("b", "i0"), ("b", "i1")]
     assert missing.value.n_missing == 2
+    assert "complete_items()" in str(missing.value)
 
     with pytest.raises(es.TooFewGroupsError) as groups:
         _compare(df[df["model"] == "a"], factors="model")
-    assert groups.value.n_groups == 1
+    assert groups.value.n_groups == 1 and groups.value.factor == "model"
+    assert "2 levels of 'model'" in str(groups.value)
+
+    two = _two_factor_df(["m1"], ["p1"])
+    with pytest.raises(es.TooFewGroupsError, match="2 levels of 'model'"):
+        _compare(two, factors=["model", "prompt"])
 
     for err in (floor.value, missing.value, groups.value):
         assert isinstance(err, ValueError)
@@ -309,14 +317,17 @@ def test_pairs_carry_one_p_value_named_by_p_test():
     assert all("wilcoxon_p" not in p and 0 <= p["p_value"] <= 1 for p in result.to_dict()["pairwise"])
 
 
-def test_romano_wolf_p_value_is_what_the_table_prints():
+def test_romano_wolf_names_bootstrap_t_as_the_test():
     result = _compare(_df({"a": 0.0, "b": 0.05, "c": 0.1}, n=40), factors="model")
-    assert result.pairwise.p_value_test == "romano_wolf"
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        result.summary()
-    assert "p (RW)" in buf.getvalue()
+    assert result.pairwise.p_value_test == "bootstrap_t"
+    assert result.pairwise.correction_method == "romano_wolf"
+    p_values = result.methods()["p_values"]
+    assert p_values["test"] == {"code": "bootstrap_t", "name": "bootstrap-t"}
+    assert p_values["correction"] == {"code": "romano_wolf", "name": "Romano-Wolf"}
+    text = _summary_text(result)
+    assert "p (RW)" in text
+    assert "p-value method: bootstrap-t  |" in text
+    assert "p (RW) = bootstrap-t (Romano-Wolf-corrected)" in text
 
 
 def test_print_time_p_value_method_must_match_the_stored_test():

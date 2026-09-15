@@ -112,9 +112,9 @@ def _pairwise_ci_name(pairwise: PairwiseMatrix) -> Optional[str]:
     return _pretty_marginal_ci_method(first_result.test_method) or first_result.test_method
 
 
-def _p_column_header(p_test: Optional[str], *, ppi_tag: str, binary: bool) -> str:
+def _p_column_header(p_test: Optional[str], *, ppi_tag: str, binary: bool, romano_wolf: bool) -> str:
     """Pairwise-table column header for the stored p-value."""
-    if p_test == "romano_wolf":
+    if p_test == "bootstrap_t" and romano_wolf:
         return f"p ({ppi_tag}RW)"
     if p_test == "wilcoxon_signed_rank":
         return f"p ({ppi_tag}wsr)"
@@ -1150,7 +1150,7 @@ def _pair_efficiency_cells(bundle, left, right) -> dict:
 def _p_side_efficiency_applies(eff_p_source: Optional[str], data_kind=None) -> bool:
     """Whether the p-value tests a different estimand from the interval.
 
-    The paired path's p can come from four places. "boot"/"max_t" are
+    The paired path's p can come from three places. "boot" p-values are
     bootstrap p-values on the SAME mean difference the interval covers, so
     their efficiency is the interval's -- printing a second, separately
     computed pair of columns beside it would imply a distinction that does not
@@ -1221,8 +1221,11 @@ def _prepare_paired_pairwise_rows(
     if p_value_method is None:
         eff_p_source, p_col_header = None, None
     else:
-        eff_p_source = {"wilcoxon_signed_rank": "wsr", "nemenyi": "nem", "max_t": "max_t"}.get(p_test, "boot")
-        p_col_header = _p_column_header(p_test, ppi_tag=_ppi_tag, binary=_is_binary_paired)
+        eff_p_source = {"wilcoxon_signed_rank": "wsr", "nemenyi": "nem"}.get(p_test, "boot")
+        p_col_header = _p_column_header(
+            p_test, ppi_tag=_ppi_tag, binary=_is_binary_paired,
+            romano_wolf=(bundle.pairwise.correction_method == "romano_wolf" and len(bundle.pairwise.results) > 1),
+        )
 
     corr = bundle.pairwise.correction_method
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
@@ -1388,7 +1391,7 @@ def _prepare_paired_pairwise_rows(
             else f"{_pretty_correction(corr)}-corrected"
         )
         if eff_p_source is not None:
-            _p_note = "FWER-controlled" if p_test in {"romano_wolf", "max_t", "nemenyi"} else _corr_note
+            _p_note = "FWER-controlled" if p_test == "nemenyi" else _corr_note
             print(f"{_DIM}  {p_col_header} = {p_value_method_label} ({_p_note}){_RESET}")
         print()
         _cd_labels = list(bundle.labels)

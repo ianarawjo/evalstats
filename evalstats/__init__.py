@@ -21,6 +21,7 @@ from evalstats.core.summary import print_analysis_summary, print_brief_summary
 from evalstats.io import from_dataframe, DataLoadReport
 from evalstats.errors import (
     MIN_ITEMS,
+    AmbiguousLabelsError,
     InsufficientItemsError,
     MissingCellsError,
     TooFewGroupsError,
@@ -101,6 +102,7 @@ __all__ = [
     "print_analysis_summary",
     "print_brief_summary",
     "MIN_ITEMS",
+    "AmbiguousLabelsError",
     "InsufficientItemsError",
     "MissingCellsError",
     "TooFewGroupsError",

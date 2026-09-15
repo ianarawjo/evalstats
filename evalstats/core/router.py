@@ -1001,9 +1001,9 @@ def _analyze_single(
         n_missing = int(nan_cells.sum())
         raise MissingCellsError(
             f"scores contain {n_missing} NaN (missing) cell(s), which are not "
-            "supported by the bootstrap analysis path. Either fill in missing "
-            "cells or use method='lmm' to analyse benchmarks with incomplete "
-            "designs.",
+            "supported by the bootstrap analysis path. Drop incomplete items with "
+            "evalstats.complete_items(), fill in the missing cells, or use "
+            "method='lmm' to model an incomplete design.",
             missing=[
                 (str(result.template_labels[t]), str(result.input_labels[i]))
                 for t, i in zip(t_idx[:1000], i_idx[:1000])

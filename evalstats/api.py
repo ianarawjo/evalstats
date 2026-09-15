@@ -27,7 +27,7 @@ from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisRes
 from evalstats.core.design import detect_paired
 from evalstats.core.unpaired import compare_unpaired, GroupComparisonResult
 from evalstats.core.stats_utils import correct_pvalues
-from evalstats.errors import InsufficientItemsError, MissingCellsError
+from evalstats.errors import AmbiguousLabelsError, InsufficientItemsError, MissingCellsError, TooFewGroupsError
 from evalstats._notes import collect_notes
 from evalstats.core.report import (
     CELL_LABEL_SEP,
@@ -1193,10 +1193,11 @@ def _check_cell_labels_unique(bench) -> None:
     labels = [f"{m}{CELL_LABEL_SEP}{t}" for m in bench.model_labels for t in bench.template_labels]
     dupes = sorted({l for l in labels if labels.count(l) > 1})
     if dupes:
-        raise ValueError(
+        raise AmbiguousLabelsError(
             f"Two-factor cells {dupes[:3]} are ambiguous: different (model, prompt) "
             f"pairs join to the same label with {CELL_LABEL_SEP!r}. Rename levels so "
-            f"no name contains {CELL_LABEL_SEP!r}."
+            f"no name contains {CELL_LABEL_SEP!r}.",
+            labels=dupes,
         )
 
 
@@ -1211,9 +1212,9 @@ def _check_no_missing_cells(bench, method: Optional[str]) -> None:
     n_missing = int(empty.sum())
     raise MissingCellsError(
         f"scores contain {n_missing} NaN (missing) cell(s), which are not supported "
-        "by the bootstrap analysis path. Either fill in missing cells, drop incomplete "
-        "items with evalstats.complete_items(), or use method='lmm' to analyse "
-        "benchmarks with incomplete designs.",
+        "by the bootstrap analysis path. Drop incomplete items with "
+        "evalstats.complete_items(), fill in the missing cells, or use method='lmm' "
+        "to model an incomplete design.",
         missing=[
             (f"{bench.model_labels[m]}{CELL_LABEL_SEP}{bench.template_labels[t]}", str(bench.input_labels[i]))
             for m, t, i in zip(m_idx[:1000], t_idx[:1000], i_idx[:1000])
@@ -1332,8 +1333,8 @@ def compare(
         Which p-value to show in the pairwise table. ``"auto"`` (default)
         follows fig:fwer-decision-tree: McNemar mid-p for binary data and
         Wilcoxon signed-rank for numeric data, Shaffer-corrected below 30
-        items; from 30 items with three or more entities, Romano-Wolf
-        step-down p-values replace them. Multi-run binary p-values are
+        items; from 30 items with three or more entities, bootstrap-t
+        p-values with Romano-Wolf step-down correction replace them. Multi-run binary p-values are
         inverted from the CI. ``"bootstrap"`` shows the CI method's own
         p-value instead. ``"nemenyi"`` needs three or more entities
         and is not supported together with
@@ -1662,6 +1663,13 @@ def compare(
         factors_list[0] if (is_canonical_col and factors_list[0] in df.columns) else
         None
     )
+    if _floor_factor_col is not None and df[_floor_factor_col].nunique() < 2:
+        raise TooFewGroupsError(
+            f"compare() needs at least 2 levels of {factors_list[0]!r} to compare; "
+            f"got {df[_floor_factor_col].nunique()}.",
+            n_groups=int(df[_floor_factor_col].nunique()),
+            factor=str(factors_list[0]),
+        )
     if _floor_factor_col is not None:
         _min_n = int(df.groupby(_floor_factor_col)[item_col].nunique().min())
     else:
@@ -1954,6 +1962,13 @@ def compare(
                 f"Factor column(s) {missing_factors} not found in data. "
                 f"Available columns: {list(df.columns)}"
             )
+        for _f, _c in ((_row_f, row_col), (_col_f, col_col)):
+            if df[_c].nunique() < 2:
+                raise TooFewGroupsError(
+                    f"compare() needs at least 2 levels of {_f!r} to compare; got {df[_c].nunique()}.",
+                    n_groups=int(df[_c].nunique()),
+                    factor=str(_f),
+                )
         df_multi = df[
             [row_col, col_col, item_col, metric_col]
             + ([run_col] if run_col and run_col in df.columns else [])
@@ -3233,7 +3248,7 @@ def _run_alignment_ppi(
     # when it ran, the method's own test on binary data, else Wilcoxon.
     corrected = effective_correction != "none" and n_pairs > 1
     rw_reported = used_romano_wolf and corrected
-    own_test = "max_t" if used_max_t else "romano_wolf" if rw_reported else _PPI_OWN_P_TEST.get(pairwise_method)
+    own_test = "bootstrap_t" if (used_max_t or rw_reported) else _PPI_OWN_P_TEST.get(pairwise_method)
     use_wilcoxon = bundle.p_value_method == "wsr" or (
         bundle.p_value_method != "boot" and not rw_reported and data_kind != "binary"
     )
@@ -3298,7 +3313,7 @@ def _run_alignment_ppi(
     # correction fell back to "shaffer"), which PairwiseMatrix.summary()
     # displays via each pair's own .summary(correction=...).
     bundle.pairwise.correction_method = (
-        (wsr_correction if use_wilcoxon else effective_correction) if corrected else None
+        (wsr_correction if use_wilcoxon else "max_t" if used_max_t else effective_correction) if corrected else None
     )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────

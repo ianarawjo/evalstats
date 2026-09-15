@@ -29,7 +29,7 @@ from evalstats.tests import _mcnemar_midp_p
 
 N_BOOT = 200
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-P_COL = {"romano_wolf": "p ({t}RW)", "wilcoxon_signed_rank": "p ({t}wsr)", "nemenyi": "p (nem)",
+P_COL = {"wilcoxon_signed_rank": "p ({t}wsr)", "nemenyi": "p (nem)",
          "mcnemar_midp": "p (mcnemar)", "ci_inversion": "p (CI)"}
 
 
@@ -191,11 +191,13 @@ def _block_mismatches(result, text: str) -> list[str]:
                                       or (code == "paired_t" and ppi and "paired t-test" in label)),
                f"p method {label!r} vs {m['p_values']['test']}")
         expect(f2 and f2.group(2) == corr["name"], f"correction {f2 and f2.group(2)!r} vs {corr}")
-        note = ("FWER-controlled" if code in {"romano_wolf", "max_t", "nemenyi"}
+        note = ("FWER-controlled" if code == "nemenyi"
                 else "one comparison, uncorrected" if n_pairs == 1 else f"{corr['name']}-corrected")
         expect(f"  {p_col} = {label} ({note})" in L, f"p detail line for {p_col} = {label} ({note})")
         binary = str(bundle.resolved_data_kind) == "binary"
-        want = P_COL.get(code, "p (PPI-paired-t)" if (ppi and binary) else "p ({t}boot)").format(t="PPI-" if ppi else "")
+        rw = code == "bootstrap_t" and corr["code"] == "romano_wolf"
+        want = ("p ({t}RW)" if rw else P_COL.get(code, "p (PPI-paired-t)" if (ppi and binary) else "p ({t}boot)")).format(
+            t="PPI-" if ppi else "")
         expect(p_col == want, f"p column {p_col!r} vs {want!r}")
 
     omni = _first(L, r"--- Omnibus Test: (PPI-)?Friedman ---")

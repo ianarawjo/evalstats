@@ -25,8 +25,9 @@ in place of `evalstats>=0.3.1` and drop its imports of private helpers.
   `significant`; and top-level `order`, `notes` and `methods`. `to_frame()` adds
   `rank`, `band`, `verdict` and `significant`.
 - Typed errors, each a `ValueError` subclass: `InsufficientItemsError`
-  (`n_items`, `min_items`), `MissingCellsError` (`missing`, `n_missing`) and
-  `TooFewGroupsError` (`n_groups`). `evalstats.MIN_ITEMS` is the 15-item floor.
+  (`n_items`, `min_items`), `MissingCellsError` (`missing`, `n_missing`),
+  `TooFewGroupsError` (`n_groups`, `factor`) and `AmbiguousLabelsError`
+  (`labels`). `evalstats.MIN_ITEMS` is the 15-item floor.
 - `evalstats.complete_items(evaldata, factors)` drops items that lack a score in
   any (factor levels x run) cell and returns a `CompletenessReport` of what it
   dropped. It never changes the design.
@@ -36,10 +37,10 @@ in place of `evalstats>=0.3.1` and drop its imports of private helpers.
 ### Changed
 
 - **One pairwise p-value.** `PairedDiffResult.p_value` is always the p-value the
-  pairwise table prints: Romano-Wolf step-down when that correction resolves, the
-  method's own test on binary data (McNemar mid-p, or inverted from the CI for
-  multiple runs), and Wilcoxon signed-rank otherwise, corrected as the table
-  footer states. Previously, for numeric data without Romano-Wolf (N < 30 with
+  pairwise table prints: bootstrap-t with Romano-Wolf step-down correction when
+  that correction resolves, the method's own test on binary data (McNemar mid-p,
+  or inverted from the CI for multiple runs), and Wilcoxon signed-rank otherwise,
+  corrected as the table footer states. Previously, for numeric data without Romano-Wolf (N < 30 with
   k >= 3, or k = 2), the table printed `wilcoxon_p` while `p_value` held the CI
   method's own p-value. Printed p-values, CIs and means are unchanged.
 - `pair.summary()` reports that same p-value. It used to prefer Wilcoxon
@@ -55,8 +56,14 @@ in place of `evalstats>=0.3.1` and drop its imports of private helpers.
 - Leaderboard order is descending mean with ties in data order, in the executive
   summary and the pairwise table alike (the table broke ties by label). The
   executive summary uses the result's alpha, not the global one.
-- Two-factor cell labels (`"model / prompt"`) that would collide raise a clear
-  `ValueError`. Factor levels come from the data, not from splitting labels.
+- Two-factor cell labels (`"model / prompt"`) that would collide raise
+  `AmbiguousLabelsError`. Factor levels come from the data, not from splitting
+  labels.
+- Romano-Wolf and max-T p-values name their test as bootstrap-t, with Romano-Wolf
+  or max-T as the correction, in `.summary()` and `methods()`. They used to name
+  the correction as the test.
+- `MissingCellsError` suggests `evalstats.complete_items()` first, and
+  `TooFewGroupsError` from `compare()` names the factor with too few levels.
 - `import evalstats` no longer imports matplotlib; plotting functions load it on
   first use.
 - `pairwise_test="nemenyi"` computes Nemenyi p-values without `omnibus=True`

@@ -180,8 +180,6 @@ P_TEST_NAMES: dict[str, str] = {
     "paired_t": "paired t-test",
     "bootstrap": "bootstrap",
     "bootstrap_t": "bootstrap-t",
-    "romano_wolf": "Romano-Wolf step-down",
-    "max_t": "max-T bootstrap",
     "nemenyi": "Nemenyi post-hoc",
     "mann_whitney": "Mann-Whitney U",
     "lmm_wald": "LMM Wald test",
@@ -2850,7 +2848,7 @@ def all_pairwise(
         :attr:`PairwiseMatrix.friedman`.
     p_test : {"auto", "ci", "wilcoxon", "nemenyi"}
         The test behind each pair's ``p_value``. ``"auto"`` uses
-        Romano-Wolf step-down when that correction
+        bootstrap-t with Romano-Wolf step-down correction when that correction
         resolves (k >= 3), else the method's own test for binary data
         (McNemar mid-p, or CI inversion for multi-run), else Wilcoxon
         signed-rank. ``"ci"`` is the CI method's own test, and
@@ -2938,7 +2936,7 @@ def all_pairwise(
         pair_test = "wilcoxon_signed_rank"
     elif rw_pvalues is not None:
         final_p = {p: float(rw_pvalues[p]) for p in pairs}
-        pair_test = "romano_wolf"
+        pair_test = "bootstrap_t"
     else:
         final_p = _corrected({p: float(results[p].p_value) for p in pairs}, resolved_correction)
 
@@ -3004,7 +3002,7 @@ def all_pairwise(
                     ci_low=ci_low,
                     ci_high=ci_high,
                     p_value=sim_pvalues[pair] if use_max_t_p else r.p_value,
-                    p_test="max_t" if use_max_t_p else r.p_test,
+                    p_test="bootstrap_t" if use_max_t_p else r.p_test,
                     multi_ci=band_cis.get(pair, r.multi_ci) if r.multi_ci is not None else None,
                 )
 
