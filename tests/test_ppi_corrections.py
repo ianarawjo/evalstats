@@ -3489,3 +3489,29 @@ class TestPPICorrectedRankBiserialRange:
                                 design="paired", alignment={"score": ar}, p_values=True)
         reported = result._pair_es[("A", "B")]
         assert reported == pytest.approx(1.0)
+
+        # The structured API must report the same number the summary prints,
+        # in both directions.
+        assert result.pairwise.get("A", "B").rank_biserial == pytest.approx(reported)
+        assert result.pairwise.get("B", "A").rank_biserial == pytest.approx(-reported)
+
+    def test_corrected_effect_size_reaches_the_structured_api(self):
+        """Without a correction attached the property stays on the raw
+        signed-rank value, so this pins the corrected one specifically."""
+        import evalstats as es
+        from evalstats.alignment import judge_alignment
+        from evalstats.core.paired import _rank_biserial
+
+        df = self._paired_frame(seed=7)
+        wide = df.pivot(index="item", columns="condition")
+        raw = _rank_biserial(wide[("score", "A")].to_numpy(float)
+                             - wide[("score", "B")].to_numpy(float))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            evaldata = es.load_from(df, metric_cols=["score", "human_score"],
+                                    factors="condition")
+            ar = judge_alignment(evaldata, llm_metric="score",
+                                 human_groundtruth="human_score", selection="random")
+            result = es.compare(evaldata, factors="condition", metric="score",
+                                design="paired", alignment={"score": ar}, p_values=True)
+        assert result.pairwise.get("A", "B").rank_biserial != pytest.approx(raw)

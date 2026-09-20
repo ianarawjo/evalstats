@@ -2907,6 +2907,15 @@ def _run_alignment_ppi(
                     cr._pair_es[(str(_a), str(_b))] = float(
                         np.clip(2.0 * float(_th.estimate), -1.0, 1.0)
                     )
+            # Mirror onto the stored results so the structured API and the
+            # printed summary report the same effect size.
+            for (_ka, _kb), _res in getattr(cr.pairwise, "results", {}).items():
+                _v = cr._pair_es.get((_ka, _kb))
+                if _v is None:
+                    _flip = cr._pair_es.get((_kb, _ka))
+                    _v = None if _flip is None else -_flip
+                if _v is not None:
+                    _res.ppi_rank_biserial = _v
         except Exception:
             cr._pair_es = {}
 

@@ -1281,15 +1281,6 @@ def _prepare_paired_pairwise_rows(
             right_pos = pos_b
             swapped_multi_ci = result.multi_ci
 
-        # PairedDiffResult.rank_biserial is computed from the raw judge
-        # differences. When PPI is applied, prefer the corrected 2*theta
-        # attached in api.py so the effect size does not sit uncorrected
-        # beside a corrected mean, CI and p-value.
-        _es_map = getattr(bundle, "_pair_es", None) or {}
-        _es_ppi = _es_map.get((str(a), str(b)))
-        if _es_ppi is not None:
-            rank_biserial = -float(_es_ppi) if left_item == b else float(_es_ppi)
-
         display_p = result.p_value if eff_p_source is not None else None
 
         # binary_confusion is symmetric in n11/n00; n10/n01 swap with direction
