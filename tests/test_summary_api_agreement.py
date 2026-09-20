@@ -229,6 +229,12 @@ def _block_mismatches(result, text: str) -> list[str]:
                f"row {left}-{right} {c} vs {p}")
         if p_col:
             expect(c[p_col] == _format_p_value(p.get("p_value")), f"row {left}-{right} p {c[p_col]} vs {p.get('p_value')}")
+        if "ES" in c:
+            # The printed effect size must be the one the API returns for the
+            # same orientation -- under PPI these came from two different
+            # places and could disagree.
+            es_api = pw.get(left, right).rank_biserial
+            expect(_close(c["ES"], es_api), f"row {left}-{right} ES {c['ES']} vs {es_api}")
 
     ex, bands = _exec_rows(L), result.rank_bands()
     expect(ex is not None and len(ex) == len(bands), "leaderboard rows")
@@ -300,6 +306,7 @@ CASES = [
     ("two", "cont", 3, 20, 1, {"alpha": 0.1}),
     ("two", "bin", 2, 40, 1, {}),
     ("ppi", "bin", 3, 0, 1, {}),
+    ("ppi", "cont", 3, 0, 1, {}),
 ]
 
 

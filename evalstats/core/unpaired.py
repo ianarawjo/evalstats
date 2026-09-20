@@ -1241,7 +1241,10 @@ def compare_unpaired(
                 lambda _x, _y: _p_x_gt_y_midrank(_x, _y) - 0.5,
                 alpha, n_boot, rng,
             )
-            return 2.0 * float(res.estimate)
+            # Display-only clip, as in the paired path: the PPI-corrected theta
+            # is a sum, not a proportion, so 2*theta can exceed the rank-
+            # biserial's range at small n_lab.
+            return float(np.clip(2.0 * float(res.estimate), -1.0, 1.0))
         except Exception:
             return None
 

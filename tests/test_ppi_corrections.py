@@ -3432,3 +3432,86 @@ class TestKruskalInfluenceCovariance:
         tl = _kw_pairwise_thetas([g[m] for g, m in zip(groups, masks)], pairs)
         assert 0.0 <= pw["lam"] <= 1.0
         assert np.allclose(th + pw["lam"] * (tu - tl), pw["theta_hat"], atol=1e-12)
+
+
+class TestPPICorrectedRankBiserialRange:
+    """The PPI-corrected rank-biserial is a sum of three bounded terms, not a
+    normalized rank count, so nothing confines it to [-1, 1]. The reported
+    effect size is clipped back; the estimate, CI and p-value are not."""
+
+    @staticmethod
+    def _paired_frame(seed: int, n: int = 200, n_lab: int = 15, effect: float = 1.2):
+        import pandas as pd
+        rng = np.random.default_rng(seed)
+        d = rng.normal(effect, 0.5, n)
+        base = rng.normal(3.0, 1.0, n)
+        a_h, b_h = base + d, base
+        a_j = a_h + rng.normal(0, 0.4, n)
+        b_j = b_h + rng.normal(0, 0.4, n)
+        labeled = set(rng.permutation(n)[:n_lab].tolist())
+        rows = []
+        for i in range(n):
+            for name, judge, human in (("A", a_j[i], a_h[i]), ("B", b_j[i], b_h[i])):
+                rows.append({"item": i, "condition": name, "score": judge,
+                             "human_score": human if i in labeled else np.nan})
+        return pd.DataFrame(rows)
+
+    def test_unclipped_estimate_does_leave_the_range(self):
+        """Guards the premise: without a clip there is something to clip."""
+        import evalstats as es
+        from evalstats.tests import _ppi_paired_arrays
+        from evalstats.ppi import paired_walsh_midrank_theta
+
+        df = self._paired_frame(seed=7)
+        wide = df.pivot(index="item", columns="condition")
+        a_j = wide[("score", "A")].to_numpy(float)
+        b_j = wide[("score", "B")].to_numpy(float)
+        a_lab = wide[("human_score", "A")].to_numpy(float)
+        b_lab = wide[("human_score", "B")].to_numpy(float)
+        raw = 2.0 * float(_ppi_paired_arrays(
+            a_j, b_j, a_lab, b_lab, paired_walsh_midrank_theta, 0.05, 2000,
+            np.random.default_rng(0), rectifier_func=paired_walsh_midrank_theta,
+            power_tune=True).estimate)
+        assert abs(raw) > 1.0
+
+    def test_paired_reported_effect_size_is_clipped(self):
+        import evalstats as es
+        from evalstats.alignment import judge_alignment
+
+        df = self._paired_frame(seed=7)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            evaldata = es.load_from(df, metric_cols=["score", "human_score"],
+                                    factors="condition")
+            ar = judge_alignment(evaldata, llm_metric="score",
+                                 human_groundtruth="human_score", selection="random")
+            result = es.compare(evaldata, factors="condition", metric="score",
+                                design="paired", alignment={"score": ar}, p_values=True)
+        reported = result._pair_es[("A", "B")]
+        assert reported == pytest.approx(1.0)
+
+        # The structured API must report the same number the summary prints,
+        # in both directions.
+        assert result.pairwise.get("A", "B").rank_biserial == pytest.approx(reported)
+        assert result.pairwise.get("B", "A").rank_biserial == pytest.approx(-reported)
+
+    def test_corrected_effect_size_reaches_the_structured_api(self):
+        """Without a correction attached the property stays on the raw
+        signed-rank value, so this pins the corrected one specifically."""
+        import evalstats as es
+        from evalstats.alignment import judge_alignment
+        from evalstats.core.paired import _rank_biserial
+
+        df = self._paired_frame(seed=7)
+        wide = df.pivot(index="item", columns="condition")
+        raw = _rank_biserial(wide[("score", "A")].to_numpy(float)
+                             - wide[("score", "B")].to_numpy(float))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            evaldata = es.load_from(df, metric_cols=["score", "human_score"],
+                                    factors="condition")
+            ar = judge_alignment(evaldata, llm_metric="score",
+                                 human_groundtruth="human_score", selection="random")
+            result = es.compare(evaldata, factors="condition", metric="score",
+                                design="paired", alignment={"score": ar}, p_values=True)
+        assert result.pairwise.get("A", "B").rank_biserial != pytest.approx(raw)

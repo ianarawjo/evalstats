@@ -240,6 +240,10 @@ class PairedDiffResult:
     agreement_mcc: Optional[float] = None  # pass/fail pattern correlation (binary data only)
     binary_confusion: Optional[tuple[int, int, int, int]] = None  # (n11, n10, n01, n00)
     multi_ci: Optional[dict[float, tuple[float, float]]] = None  # {alpha: (lo, hi)} gradient bands
+    # PPI-corrected rank-biserial (2*theta, clipped to [-1, 1]), set by the
+    # alignment path. When present, ``rank_biserial`` returns it, so the
+    # structured result and the printed summary report the same number.
+    ppi_rank_biserial: Optional[float] = None
     # This pair's own interval at any alpha, for constructions that need more
     # than per_input_diffs (multi-run binary). Simultaneous CIs widen it.
     interval_at: Optional[Callable[[float], tuple[float, float]]] = field(
@@ -258,7 +262,11 @@ class PairedDiffResult:
         rank absolute non-zero differences, then return (R+ − R−) / (R+ + R−).
         Range is [−1, 1].  Interpretation guidelines (Kerby, 2014):
         small ≈ 0.1, medium ≈ 0.3, large ≈ 0.5.
+
+        Returns the PPI-corrected value instead when one is attached.
         """
+        if self.ppi_rank_biserial is not None:
+            return self.ppi_rank_biserial
         return _rank_biserial(self.per_input_diffs)
 
     @property
@@ -452,6 +460,8 @@ class PairwiseMatrix:
                 binary_confusion=flipped_conf,
                 multi_ci=flipped_multi_ci,
                 interval_at=flipped_interval_at,
+                ppi_rank_biserial=(None if r.ppi_rank_biserial is None
+                                   else -r.ppi_rank_biserial),
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
 
