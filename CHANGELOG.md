@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.3
+
+Two fixes to the effect size reported beside a judge-corrected comparison.
+
+### Fixed
+
+- The judge-corrected rank-biserial could fall outside `[-1, 1]`. The corrected
+  estimand is a sum -- a human term plus a weighted judge correction -- rather
+  than a normalized rank count, so nothing bounded it. With few labeled items
+  and a large true effect it left the range in roughly one run in ten. The
+  reported effect size is now clipped, in both the paired and unpaired paths;
+  the estimate, interval and p-value are unchanged.
+- A paired comparison reported two different effect sizes: the printed table
+  showed the corrected value while `pairwise.get(a, b).rank_biserial` returned
+  the uncorrected one. Both now read the same field.
+
 ## 0.3.2
 
 A public, JSON-safe result API for tools that show evalstats results outside the
