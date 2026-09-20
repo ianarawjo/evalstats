@@ -2901,7 +2901,12 @@ def _run_alignment_ppi(
                         paired_walsh_midrank_theta, alpha, 2000, np.random.default_rng(0),
                         rectifier_func=paired_walsh_midrank_theta, power_tune=True,
                     )
-                    cr._pair_es[(str(_a), str(_b))] = 2.0 * float(_th.estimate)
+                    # Display-only clip: theta is a sum (human term + weighted judge
+                    # correction), not a proportion, so 2*theta can leave the rank-
+                    # biserial's range at small n_lab. Estimate/CI/p are untouched.
+                    cr._pair_es[(str(_a), str(_b))] = float(
+                        np.clip(2.0 * float(_th.estimate), -1.0, 1.0)
+                    )
         except Exception:
             cr._pair_es = {}
 
