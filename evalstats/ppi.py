@@ -9,6 +9,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import os as _os
 import numpy as np
 from scipy.special import expit as _sigmoid
 from scipy.stats import norm as _norm_dist
@@ -553,6 +554,10 @@ def _walsh_theta_lambda_replicates(
 
 
 _WALSH_SIGNFLIP_B = 200
+# Price the labeled human and judge terms in ONE joint sign-flip randomization
+# (see _walsh_theta_joint_signflip_null_var). Set False to restore the
+# pre-0.3.4 assembly from separately estimated variances.
+_WALSH_JOINT_SIGNFLIP = _os.environ.get("EVALSTATS_WALSH_JOINT", "1") != "0"
 """Sign-flip draws used by :func:`_walsh_theta_signflip_null_var`. 200 is
 enough for a variance (not a tail quantile) and keeps the cost well below
 the two :func:`_walsh_theta_lambda_replicates` calls the cross-fitted
@@ -594,6 +599,50 @@ def _walsh_theta_signflip_null_var(Y_lab: np.ndarray, n_boot: int = _WALSH_SIGNF
     rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
     flips = rng.choice(np.array([-1.0, 1.0]), size=(n_boot, n))
     return float(np.var([paired_walsh_midrank_theta(d * flips[b]) for b in range(n_boot)], ddof=1))
+
+
+def _walsh_theta_joint_signflip_null_var(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, lam: float,
+    n_boot: int = _WALSH_SIGNFLIP_B,
+) -> Optional[float]:
+    """Null variance of the LABELED part of the corrected statistic,
+    ``theta^H_lab - lam * theta^J_lab``, under JOINT sign-flip randomization.
+
+    :func:`_walsh_theta_signflip_null_var` flips the human differences alone
+    and so prices only the human term; the judge terms are then priced
+    separately and glued on with an estimated correlation. Flipping an item's
+    human and judge difference TOGETHER is the same randomization -- a sign
+    flip swaps that item's two conditions, which moves both scores -- so one
+    pass prices the whole labeled contribution, covariance included.
+
+    Two things follow. The result is the variance of an actual quantity, so
+    it is non-negative by construction and needs no Cauchy-Schwarz repair.
+    And it cannot collapse while EITHER side still varies under flipping: on
+    an all-tied labeled human set, where the human-only variance is exactly 0
+    and the judge's own labeled variance is 0 whenever its differences are
+    unanimous, the joint flip still moves ``theta^J_lab`` by the full
+    signed-rank spread, which is what stops a numerically tiny correction
+    term from being divided by a vanishing standard error.
+
+    Returns ``None`` only when nothing varies under flipping (every labeled
+    human AND judge difference is exactly 0), where the statistic is
+    deterministic and no test is possible.
+
+    Deterministic (fixed :data:`_ANALYTIC_TARGET_SEED`).
+    """
+    d_h = np.asarray(Y_lab, dtype=float)
+    d_j = np.asarray(Y_hat_lab, dtype=float)
+    n = len(d_h)
+    if n < 2 or (not np.any(d_h != 0.0) and not np.any(d_j != 0.0)):
+        return None
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    flips = rng.choice(np.array([-1.0, 1.0]), size=(n_boot, n))
+    vals = [
+        paired_walsh_midrank_theta(d_h * flips[b])
+        - lam * paired_walsh_midrank_theta(d_j * flips[b])
+        for b in range(n_boot)
+    ]
+    return float(np.var(vals, ddof=1))
 
 
 def _cross_fit_satterthwaite_df(vA: float, dfA: float, vB: float, dfB: float) -> float:
@@ -712,17 +761,26 @@ def _analytic_walsh_theta_correct(
     # The result is a quadratic in lam with discriminant
     # 4*var_null*(rho^2*var_hat_lab - D) <= 0, since D = var_unlab +
     # var_hat_lab >= var_hat_lab >= rho^2*var_hat_lab -- provably non-negative.
-    var_lab_used, cov_used = var_lab, cov_lab_hatlab
-    if power_tune:
-        var_null = _walsh_theta_signflip_null_var(Y_lab)
-        if var_null is not None and var_lab > 1e-15 and var_hat_lab > 1e-15:
-            rho = float(np.clip(cov_lab_hatlab / np.sqrt(var_lab * var_hat_lab), -1.0, 1.0))
-            var_lab_used = var_null
-            cov_used = rho * float(np.sqrt(var_null * var_hat_lab))
+    joint_null = None
+    if power_tune and _WALSH_JOINT_SIGNFLIP:
+        joint_null = _walsh_theta_joint_signflip_null_var(Y_lab, Y_hat_lab, lam)
 
-    var_estimate = max(
-        var_lab_used + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_used, 0.0
-    )
+    if joint_null is not None:
+        # One randomization prices the whole labeled contribution; only the
+        # independent unlabeled judge average is added on top.
+        var_estimate = max(joint_null + lam * lam * var_unlab, 0.0)
+    else:
+        var_lab_used, cov_used = var_lab, cov_lab_hatlab
+        if power_tune:
+            var_null = _walsh_theta_signflip_null_var(Y_lab)
+            if var_null is not None and var_lab > 1e-15 and var_hat_lab > 1e-15:
+                rho = float(np.clip(cov_lab_hatlab / np.sqrt(var_lab * var_hat_lab), -1.0, 1.0))
+                var_lab_used = var_null
+                cov_used = rho * float(np.sqrt(var_null * var_hat_lab))
+
+        var_estimate = max(
+            var_lab_used + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_used, 0.0
+        )
     if power_tune:
         var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
@@ -735,6 +793,29 @@ def _analytic_walsh_theta_correct(
         t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
         ci_low, ci_high = estimate - t_crit * se, estimate + t_crit * se
         p_value = min(max(float(2.0 * (1.0 - _t_dist.cdf(abs(estimate) / se, df))), 0.0), 1.0)
+    if power_tune and _WALSH_JOINT_SIGNFLIP:
+        # DEGENERATE-LABELED-SET GUARD. With fewer than two non-tied human
+        # differences the labeled sign-flip randomization has at most two
+        # outcomes and carries no evidence about direction, so no signed-rank
+        # test can report anything below 1.0; classical Wilcoxon returns
+        # exactly that. The joint sign-flip variance above already keeps the
+        # standard error from collapsing here, so this is a backstop, not the
+        # primary fix.
+        #
+        # It deliberately does NOT extend to the full 2^-(k-1) randomization
+        # resolution: that bound applies to a test using the labeled data
+        # alone, whereas PPI legitimately borrows precision from N_unlab
+        # judge-scored items. Imposing it measured Type I at 0.013 and power
+        # at 0.050 where the unfloored test held 0.054 and 0.165.
+        _k = int(np.count_nonzero(np.asarray(Y_lab, dtype=float)))
+        _p_floor = 1.0 if _k < 2 else 0.0
+        if _p_floor > p_value:
+            p_value = _p_floor
+            # Keep the interval consistent with the p-value printed beside it.
+            if ci_low > 0.0:
+                ci_low = 0.0
+            elif ci_high < 0.0:
+                ci_high = 0.0
 
     return PPIResult(
         estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
