@@ -30,7 +30,7 @@ Scientists can use our PPI-corrected statistical tests for **mixed human-AI subj
 As long as items for human labeling were sampled at random from the full dataset, p-values stay calibrated even when the LLM judge is biased or miscalibrated, validated via extensive Monte Carlo simulations (see [`simulations/harness`](simulations/harness)). To the best of our knowledge, `evalstats` provides the only known implementations of PPI-corrected rank-based nonparametric tests like Wilcoxon.
 
 > [!IMPORTANT]
-> We are actively building out this project. A paper with the full methodology and simulation-backed validation behind every default is forthcoming: see [Recommended Methods](#recommended-methods) and [Citation](#citation). In the meantime, the [Stats for LLM Evals guide](https://statsforevals.com/) covers the same material in web form. If there's something you'd like to see, let us know by raising an Issue.
+> We are actively building out this project. A paper with the methodology and simulation-backed validation behind `evalstats.compare()`'s default methods is [here](https://arxiv.org/abs/2609.35815). See also [Recommended Methods](#recommended-methods) and [Citation](#citation). The [Stats for LLM Evals guide](https://statsforevals.com/) is a companion website. If there's something you'd like to see, let us know by raising an Issue.
 
 ## Contents
 
@@ -112,7 +112,7 @@ And LLMs are stochastic at temperature > 0: the "noise plot" visualizes (in)stab
 
 ![Decision tree for selecting a p-value method or FWER correction](docs/decision-tree-pvalue.png)
 
-A paper with the full methodology, simulation results, and justification behind each recommendation is forthcoming (see [Citation](#citation)). Until then, see the [Which Method?](https://statsforevals.com/which-method.html) page on the `evalstats` site for the web version of these trees, and [`simulations/harness`](simulations/harness) to reproduce the underlying simulations yourself.
+The simulations backing these recommendations are available in [our paper](https://arxiv.org/abs/2609.35815). You can also reproduce results yourself via the [`simulations/harness`](simulations/harness).
 
 ## Python API
 
@@ -369,14 +369,15 @@ We welcome contributions, especially refinements to our statistical methods. If 
 
 ## Citation
 
-`evalstats` doesn't have a paper yet. One covering the full simulation-backed method validation is forthcoming. Until then, please cite the GitHub repository:
+If you use `evalstats` in your academic work, please cite it using: 
 
 ```bibtex
-@software{arawjo_evalstats,
-  author  = {Arawjo, Ian},
-  title   = {evalstats: Statistically Sound Analysis for LLM Evaluations},
-  url     = {https://github.com/ianarawjo/evalstats},
-  year    = {2026}
+@article{evalstats,
+      title={How to Run Statistics over LLM Judges and Trust the Results: Calibrated Inference for Small-Sample AI Evaluation with evalstats},
+      author={Arawjo, Ian},
+      journal={arXiv preprint arXiv:2609.35815},
+      year={2026},
+      doi={10.48550/arXiv:2609.35815}
 }
 ```
 
