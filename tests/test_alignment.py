@@ -10,8 +10,15 @@ import pytest
 
 import evalstats as es
 from evalstats.config import GRADIENT_CI_ALPHAS
-from evalstats.alignment import AlignmentResult, judge_alignment, _fit_calibration
+from evalstats.alignment import AlignmentResult, judge_alignment, _fit_calibration, _judge_alignment_pairwise
 from evalstats.api import ComparisonResult
+
+def _pairwise(conds, design=None, test=None, selection="unknown", **kw):
+    """The per-condition machinery behind judge_alignment's comparison report."""
+    return _judge_alignment_pairwise(conds, design=design, alpha=0.05, test=test,
+                                     selection=selection, **kw)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1053,14 +1060,14 @@ class TestMultiConditionAlignment:
     def test_design_required_when_ambiguous(self):
         conds = _cond(_rng(1))
         with pytest.raises(ValueError, match="design"):
-            judge_alignment(conds, selection="random")
+            _pairwise(conds, selection="random")
 
     def test_test_implies_design_and_conflict_raises(self):
         conds = _cond(_rng(2), paired=True)
-        r = judge_alignment(conds, test="wilcoxon", selection="random")
+        r = _pairwise(conds, test="wilcoxon", selection="random")
         assert r.design == "within"          # implied, not passed
         with pytest.raises(ValueError, match="always design"):
-            judge_alignment(conds, test="wilcoxon", design="between", selection="random")
+            _pairwise(conds, test="wilcoxon", design="between", selection="random")
 
     def test_two_condition_test_decomposes_over_pairs(self):
         """A 2-condition-only test given 3+ conditions is BY DESIGN reported
@@ -1068,7 +1075,7 @@ class TestMultiConditionAlignment:
         rng = _rng(3)
         conds = _cond(rng, paired=True)
         conds["C"] = _cond(rng, paired=True)["B"]
-        r = judge_alignment(conds, test="wilcoxon", selection="random")
+        r = _pairwise(conds, test="wilcoxon", selection="random")
         assert r.omnibus_metric is None
         assert set(r.test_pairwise_metrics) == {("A", "B"), ("A", "C"), ("B", "C")}
 
@@ -1115,7 +1122,7 @@ class TestMultiConditionAlignment:
     def test_two_condition_tests_report_per_pair(self, test, paired):
         conds = _cond(_rng(7), paired=paired)
         kw = {} if test in ("wilcoxon", "mannwhitney") else {"design": "within" if paired else "between"}
-        r = judge_alignment(conds, test=test, selection="random", **kw)
+        r = _pairwise(conds, test=test, selection="random", **kw)
         assert r.omnibus_metric is None
         m = r.test_pairwise_metrics[("A", "B")]
         assert np.isfinite(m["estimate"]) and 0.0 <= m["n_eff"] < np.inf
@@ -1128,7 +1135,7 @@ class TestMultiConditionAlignment:
         conds = _cond(rng, paired=paired)
         conds["C"] = _cond(rng, paired=paired)["B"]
         kw = {"design": "within" if paired else "between"} if test == "anova_oneway" else {}
-        r = judge_alignment(conds, test=test, selection="random", **kw)
+        r = _pairwise(conds, test=test, selection="random", **kw)
         assert r.omnibus_metric is not None    # whole-design number
         assert r.test_pairwise_metrics is None
         assert len(r.pairwise_metrics) == 3    # raw pairwise still reported
@@ -1155,7 +1162,7 @@ class TestMultiConditionAlignment:
             human[n_lab:] = np.nan
             conds[f"c{i}"] = (judge, human)
         kw = {"design": design} if test == "anova_oneway" else {}
-        r = judge_alignment(conds, test=test, selection="random", ci=False, **kw)
+        r = _pairwise(conds, test=test, selection="random", ci=False, **kw)
         m = r.omnibus_metric
 
         # n_lab and N must share a scale, so their ratio is the labeled fraction.
@@ -1196,7 +1203,7 @@ class TestMultiConditionAlignment:
 
     def test_per_condition_counts_reported(self):
         conds = _cond(_rng(9), n=400, n_lab=120)
-        r = judge_alignment(conds, design="between", selection="random")
+        r = _pairwise(conds, design="between", selection="random")
         for name in ("A", "B"):
             n_lab, n_tot = r.condition_counts[name]
             assert n_lab == 120 and n_tot == 400
@@ -1204,7 +1211,7 @@ class TestMultiConditionAlignment:
     def test_selection_warns_when_unknown(self):
         conds = _cond(_rng(10))
         with pytest.warns(UserWarning, match="selection"):
-            judge_alignment(conds, design="between")
+            _pairwise(conds, design="between")
 
     def test_wilcoxon_rho_is_the_production_hajek_projection(self):
         """The whole point of test=: for a rank test the reported rho is the
@@ -1213,7 +1220,7 @@ class TestMultiConditionAlignment:
         from evalstats.ppi import _walsh_theta_h1_components
 
         conds = _cond(_rng(11), paired=True, d=0.5)
-        r = judge_alignment(conds, test="wilcoxon", selection="random")
+        r = _pairwise(conds, test="wilcoxon", selection="random")
 
         (ja, al), (jb, bl) = conds["A"], conds["B"]
         m = ~np.isnan(al) & ~np.isnan(bl)
@@ -1350,3 +1357,270 @@ class TestLabelPositionCheckPairedDesign:
         random_lab = set(np.random.default_rng(2).choice(items, size=15, replace=False))
         assert _position_check(_reveal_items(df, random_lab))["passed"]
         assert not _position_check(_reveal_items(df, set(items[:15])))["passed"]
+
+
+# ── Half-point grids, rho^2 reporting, and n_total ────────────────────────────
+
+def _half_point_pair(n=120, seed=0):
+    rng = np.random.default_rng(seed)
+    human = np.round(rng.uniform(1, 5, n) * 2) / 2
+    judge = np.clip(np.round((human + rng.normal(0, 0.5, n)) * 2) / 2, 1, 5)
+    return judge, human
+
+
+class TestHalfPointGrid:
+    def test_half_point_scores_get_weighted_kappa(self):
+        judge, human = _half_point_pair()
+        res = judge_alignment(judge, human, selection="random")
+        assert res.score_type == "likert"
+        assert "weighted_kappa" in res.alignment_metrics
+
+    def test_kappa_matches_doubling_to_integers(self):
+        judge, human = _half_point_pair()
+        half = judge_alignment(judge, human, selection="random")
+        whole = judge_alignment(judge * 2, human * 2, selection="random")
+        assert half.alignment_metrics["weighted_kappa"]["estimate"] == pytest.approx(
+            whole.alignment_metrics["weighted_kappa"]["estimate"])
+
+    def test_unused_level_still_counts_toward_distance(self):
+        """Categories are grid positions: level 3 is never used, but it still sits
+        between 2 and 4, so this must equal kappa computed over labels 1..5."""
+        sk = pytest.importorskip("sklearn.metrics")
+        judge = np.array([1, 1, 5, 5, 1, 5, 1, 5] * 5, dtype=float)
+        human = np.array([1, 2, 5, 4, 1, 5, 2, 4] * 5, dtype=float)
+        res = judge_alignment(judge, human, selection="random", ci=False)
+        expected = sk.cohen_kappa_score(judge.astype(int), human.astype(int),
+                                        weights="quadratic", labels=[1, 2, 3, 4, 5])
+        assert res.alignment_metrics["weighted_kappa"]["estimate"] == pytest.approx(expected)
+
+    def test_fractional_judge_stays_continuous(self):
+        judge, human = _half_point_pair()
+        judge = judge + np.random.default_rng(3).normal(0, 0.03, judge.size)
+        assert judge_alignment(judge, human, selection="random").score_type == "continuous"
+
+    def test_declared_likert_on_half_points(self):
+        judge, human = _half_point_pair()
+        assert judge_alignment(judge, human, selection="random", score_type="likert").score_type == "likert"
+
+    def test_declared_likert_off_grid_raises(self):
+        judge, human = _half_point_pair()
+        judge = judge + np.random.default_rng(3).normal(0, 0.03, judge.size)
+        with pytest.raises(ValueError, match="grid"):
+            judge_alignment(judge, human, selection="random", score_type="likert")
+
+    def test_declared_continuous_overrides_detection(self):
+        judge, human = _half_point_pair()
+        assert judge_alignment(judge, human, selection="random", score_type="continuous").score_type == "continuous"
+
+    def test_unknown_score_type_raises(self):
+        judge, human = _half_point_pair()
+        with pytest.raises(ValueError, match="score_type"):
+            judge_alignment(judge, human, selection="random", score_type="ordinal")
+
+    def test_evaldata_form_detects_and_accepts_declaration(self):
+        judge, human = _half_point_pair()
+        lab = np.full(judge.size, np.nan)
+        lab[:60] = human[:60]
+        rng = np.random.default_rng(5).permutation(judge.size)
+        d = pd.DataFrame({"item": range(judge.size), "condition": ["a", "b"] * (judge.size // 2),
+                          "judge": judge[rng], "human": np.where(np.isin(np.arange(judge.size), rng[:60]), human[rng], np.nan)})
+        ed = es.load_from(d, metric_cols=["judge", "human"])
+        auto = judge_alignment(ed, llm_metric="judge", human_groundtruth="human", selection="random")
+        declared = judge_alignment(ed, llm_metric="judge", human_groundtruth="human",
+                                   selection="random", score_type="likert")
+        assert auto.score_type == declared.score_type == "likert"
+
+
+def _evaldata(design="between", k=3, n_per=40, label_frac=0.5, seed=0, labeled_all=False, half=True):
+    """Likert-like judge/human scores in k conditions, as evaldata."""
+    rng = np.random.default_rng(seed)
+    names = list("abcdefg")[:k]
+    rows = []
+    shared = np.round(rng.uniform(1, 5, n_per) * 2) / 2
+    for ci, name in enumerate(names):
+        human = (shared + rng.normal(0, 0.4, n_per) if design == "within"
+                 else np.round(rng.uniform(1, 5, n_per) * 2) / 2)
+        human = np.clip(np.round((human + 0.1 * ci) * 2) / 2, 1, 5)
+        judge = np.clip(np.round((human + rng.normal(0, 0.5, n_per)) * 2) / 2, 1, 5)
+        if not half:
+            human, judge = np.round(human), np.round(judge)
+        item = np.arange(n_per) if design == "within" else np.arange(n_per) + ci * n_per
+        lab = np.ones(n_per, bool) if labeled_all else rng.random(n_per) < label_frac
+        rows.append(pd.DataFrame({"item": item, ("model" if design == "within" else "condition"): name,
+                                  "judge": judge, "human": np.where(lab, human, np.nan)}))
+    return es.load_from(pd.concat(rows, ignore_index=True), metric_cols=["judge", "human"])
+
+
+def _align(ed, **kw):
+    return judge_alignment(ed, llm_metric="judge", human_groundtruth="human", selection="random", **kw)
+
+
+class TestComparisonReport:
+    def test_between_runs_the_tests_compare_runs(self):
+        res = _align(_evaldata("between", k=4))
+        c = res.comparison
+        assert c["design"] == "between" and c["design_inferred"]
+        assert [t["test"] for t in c["tests"]] == ["kruskalwallis", "mannwhitney"]
+        om = c["tests"][0]["metric"]
+        assert om["rho2"] == pytest.approx(om["estimate"] ** 2)
+        assert len(c["tests"][1]["pairs"]) == 6
+
+    def test_two_conditions_have_no_omnibus(self):
+        res = _align(_evaldata("between", k=2))
+        assert [t["test"] for t in res.comparison["tests"]] == ["mannwhitney"]
+
+    def test_within_design_inferred_from_shared_items(self):
+        res = _align(_evaldata("within", k=3))
+        assert res.comparison["design"] == "within"
+        assert [t["test"] for t in res.comparison["tests"]] == ["friedman", "ttest", "wilcoxon"]
+
+    def test_ambiguous_design_is_reported_not_raised(self):
+        ed = _evaldata("between", k=3)
+        mask = ed._df.condition == "b"
+        ed._df.loc[mask, "item"] = np.arange(mask.sum())   # now overlaps condition a's ids, but not fully
+        res = _align(ed)
+        assert res.comparison is None and "design" in res.comparison_error
+        with pytest.raises(ValueError, match="design"):
+            _align(ed, test="mannwhitney")     # asking for a test explicitly makes it an error
+
+    def test_explicit_design_overrides_inference(self):
+        ed = _evaldata("between", k=3)
+        res = _align(ed, design="unpaired")
+        assert res.comparison["design"] == "between" and not res.comparison["design_inferred"]
+
+    def test_test_override_reports_only_that_test(self):
+        res = _align(_evaldata("between", k=3), test="anova_oneway")
+        assert [t["test"] for t in res.comparison["tests"]] == ["anova_oneway"]
+
+    def test_test_conflicting_with_design_raises(self):
+        with pytest.raises(ValueError, match="within-subjects test"):
+            _align(_evaldata("between", k=3), test="friedman")
+
+    def test_single_condition_reports_mean_estimate(self):
+        ed = _evaldata("between", k=2)
+        d = ed._df[ed._df.condition == "a"]
+        one = es.load_from(d[["item", "condition", "judge", "human"]], metric_cols=["judge", "human"])
+        res = _align(one)
+        assert res.comparison is None and res.test_metric["rho2"] >= 0
+
+    def test_dict_form_is_gone(self):
+        with pytest.raises(TypeError, match="no longer takes"):
+            judge_alignment({"a": (np.ones(5), np.ones(5))}, selection="random")
+
+    def test_summary_reports_rho2_for_each_test(self, capsys):
+        _align(_evaldata("between", k=4)).summary()
+        out = capsys.readouterr().out
+        assert "Omnibus, Kruskal-Wallis" in out and "Pairs, Mann-Whitney U" in out
+        assert "rho^2" in out and " rho (" not in out
+
+    def test_agrees_with_compare(self):
+        """judge_alignment and compare() report the same rho^2 and N_eff for the same test."""
+        ed = _evaldata("between", k=4, n_per=60, label_frac=0.4, half=False)
+        al = _align(ed)
+        res = es.compare(ed, factors="condition", metric="judge", design="unpaired",
+                         alignment={"judge": al}, eval_type="likert", score_range=(1, 5),
+                         omnibus=True, p_values=True)
+        om = al.comparison["tests"][0]["metric"]
+        assert res.omnibus_rho2 == pytest.approx(om["rho2"], abs=1e-6)
+        assert res.omnibus_n_eff == pytest.approx(om["n_eff_per_condition"], rel=1e-6)
+
+    def test_ci_false_skips_intervals(self):
+        res = _align(_evaldata("between", k=3), ci=False)
+        assert np.isnan(res.comparison["tests"][0]["metric"]["rho2_ci_low"])
+
+
+class TestNEffProjection:
+    def test_fully_labeled_omits_n_eff(self, capsys):
+        res = _align(_evaldata("between", k=3, labeled_all=True))
+        assert not res.comparison["projects_n_eff"]
+        res.summary()
+        assert "N_eff" not in capsys.readouterr().out
+
+    def test_n_total_restores_n_eff(self, capsys):
+        ed = _evaldata("between", k=3, labeled_all=True)
+        res = _align(ed, n_total=300)
+        assert res.comparison["projects_n_eff"]
+        assert res.comparison["tests"][0]["metric"]["n_eff_per_condition"] > 40
+        res.summary()
+        assert "N_eff" in capsys.readouterr().out
+
+    def test_dict_and_int_agree_for_equal_conditions(self):
+        ed = _evaldata("between", k=3, labeled_all=True)
+        a = _align(ed, n_total=300).comparison["tests"][0]["metric"]["n_eff"]
+        b = _align(ed, n_total={"a": 100, "b": 100, "c": 100}).comparison["tests"][0]["metric"]["n_eff"]
+        assert a == pytest.approx(b)
+
+    def test_n_total_smaller_than_data_raises(self):
+        with pytest.raises(ValueError, match="can't be smaller"):
+            _align(_evaldata("between", k=3, labeled_all=True), n_total=10)
+
+    def test_n_total_does_not_trip_the_position_check(self):
+        res = _align(_evaldata("between", k=3, labeled_all=True), n_total=300)
+        assert "label_contiguity" not in res.representativeness
+
+    def test_arrays_form_n_total(self):
+        judge, human = _half_point_pair(60)
+        res = judge_alignment(judge, human, test="mean_estimate", selection="random", n_total=600)
+        assert res.n_total == 600 and res.n_eff > 60
+        assert res.test_metric["rho2"] == pytest.approx(res.test_metric["estimate"] ** 2)
+
+
+class TestReportLayout:
+    def _out(self, res, capsys, **kw):
+        res.summary(**kw)
+        return capsys.readouterr().out
+
+    def test_sections_in_order_and_pooled_is_labeled(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3)), capsys)
+        i = out.index("Overall agreement (all conditions pooled")
+        j = out.index("Agreement by condition")
+        k = out.index("Label efficiency")
+        assert i < j < k
+
+    def test_score_type_is_stated_not_rationalized(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3)), capsys)
+        assert "score type inferred: likert, half-point steps" in out
+        assert "ordered categories" not in out and "metrics designed for" not in out
+
+    def test_declared_score_type_is_marked(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3), score_type="likert"), capsys)
+        assert "score type declared: likert" in out
+
+    def test_per_condition_rho2_and_n_eff_are_stored(self):
+        pc = _align(_evaldata("between", k=3)).per_condition_metrics["conditions"]
+        for entry in pc.values():
+            assert entry["rho2"] == pytest.approx(entry["r"] ** 2)
+            assert entry["n_total"] >= entry["n"] and entry["n_eff"] >= entry["n"] * 0.999
+
+    def test_per_condition_rho2_is_the_squared_correlation_of_the_labeled_pairs(self):
+        ed = _evaldata("between", k=3)
+        res = _align(ed)
+        df = ed._df
+        for cond, entry in res.per_condition_metrics["conditions"].items():
+            lab = df[(df.condition == cond) & df.human.notna()]
+            assert entry["rho2"] == pytest.approx(np.corrcoef(lab.judge, lab.human)[0, 1] ** 2)
+
+    def test_fully_labeled_has_no_n_eff_column(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3, labeled_all=True)), capsys)
+        assert "N_eff" not in out and "rho^2" in out
+
+    def test_n_total_adds_n_eff_to_every_row(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3, labeled_all=True), n_total=300), capsys)
+        assert out.count("N_eff") >= 4     # means, omnibus, pairs, footnote
+
+    def test_pairs_listed_up_to_ten_then_summarized(self, capsys):
+        few = self._out(_align(_evaldata("between", k=4)), capsys)             # 6 pairs
+        assert few.count(" vs ") == 6
+        many = self._out(_align(_evaldata("between", k=6, n_per=30)), capsys)  # 15 pairs
+        assert " vs " not in many and "across 15 pairs" in many
+
+    def test_verbose_lists_every_pair(self, capsys):
+        out = self._out(_align(_evaldata("between", k=6, n_per=30)), capsys, verbose=True)
+        assert out.count(" vs ") >= 15
+
+    def test_single_condition_report_is_short(self, capsys):
+        ed = _evaldata("between", k=2)
+        d = ed._df[ed._df.condition == "a"][["item", "condition", "judge", "human"]]
+        out = self._out(_align(es.load_from(d, metric_cols=["judge", "human"])), capsys)
+        assert "Agreement (score type" in out and "pooled" not in out
+        assert "Mean:  rho^2" in out and "Agreement by condition" not in out

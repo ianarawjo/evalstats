@@ -1532,13 +1532,6 @@ def _prepare_unpaired_pairwise_rows(
                          else "uncorrected, single comparison")
             print(f"{_DIM}  {p_col_header} = {ppi_prefix}{pairwise_test_name} ({corr_note}){_RESET}")
         _print_pairwise_efficiency_note(_rows, result)
-        if n_pairs > 1 and show_p:
-            print(
-                f"  {_DIM}Verdict reflects the {result.ci_correction}-corrected CI; p is "
-                f"independently {result.pvalue_correction}-corrected -- the two can rarely "
-                f"disagree right at the boundary, since they're different (both valid) "
-                f"FWER corrections.{_RESET}"
-            )
         # Critical-difference rank bands, shared with the paired path's own
         # (see _prepare_paired_pairwise_rows) -- reuses
         # _critical_difference_groups/_print_critical_difference_groups

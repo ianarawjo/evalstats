@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.3.4
+
+`judge_alignment` now takes the same evaldata as `compare()` and reports everything
+in one call: an ordinal agreement score for half-point scales, and rho^2 and `N_eff`
+for the tests `compare()` will run.
+
+### Added
+
+- `judge_alignment(evaldata, ...)` on data with 2+ conditions reports rho^2 and
+  `N_eff` for the tests `compare()` will run on it, in `AlignmentResult.comparison`
+  and in `.summary()`. The design is read from the item ids (the same items in every
+  condition is within-subjects; items that never repeat is between-subjects); pass
+  `design=` when the ids don't settle it. `test=` is now honoured on this form to
+  report one named test instead. `compare()` and `judge_alignment` read one table of
+  which test runs for which design, so they report the same numbers.
+- `judge_alignment(..., n_total=)`: the size of the full dataset, for when the items
+  passed in are only the human-labeled validation set. `N_eff` is then computed for
+  labeling that many items out of `n_total`. An int, or a `{condition: size}` dict
+  for several conditions.
+- `score_type=` on the evaldata form of `judge_alignment`, as on the array form.
+- Per-condition rho^2 and `N_eff` (for each condition's mean) alongside the per-condition
+  agreement, in `AlignmentResult.per_condition_metrics`.
+
+### Changed
+
+- Scores on any bounded quantization grid, such as half-point ratings, are now
+  detected as `likert`, the same detector `compare()` uses, so they get
+  quadratic-weighted kappa instead of being treated as continuous. Declaring
+  `score_type="likert"` on scores that are not on a grid raises, rather than
+  producing a meaningless kappa. Kappa now counts categories as positions on the
+  grid, so a level nobody used still counts toward the distance between its
+  neighbours; this can change kappa on whole-number data with an unused level.
+- Test-specific alignment is reported as rho^2, with its confidence interval,
+  rather than rho. The raw Pearson and Spearman lines are still r.
+- With every item labeled and no `n_total=`, the report leaves out `N_eff`, which
+  would only restate the sample size.
+- The single-condition form prints rho^2 and `N_eff` when `test="mean_estimate"`.
+- `judge_alignment(...).summary()` is reorganized: "Overall agreement" (pooled across
+  conditions), "Agreement by condition", then "Label efficiency", which lists rho^2 and
+  `N_eff` for each condition's mean, the omnibus test and each pair, each named by what it
+  corrects. Pairs are listed up to 10; beyond that the summary gives a range and
+  `summary(verbose=True)` lists them. The header states whether the score type was
+  inferred or declared instead of explaining the choice.
+- The label-position check is skipped when `n_total=` says the rows passed in are
+  only a validation subset, where position carries no information.
+- `compare().summary()` no longer prints the note that the verdict follows the corrected CI
+  while p is corrected independently; the correction methods are already listed above it.
+
+### Removed
+
+- `judge_alignment({condition: (judge, human)}, design=..., test=...)`. Pass the
+  evaldata you give `compare()`; the conditions, design and tests are read from it.
+
 ## 0.3.3
 
 Two fixes to the effect size reported beside a judge-corrected comparison.

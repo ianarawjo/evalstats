@@ -2875,9 +2875,10 @@ def _run_alignment_ppi(
             cr._marginal_n_eff = None
         if any(v is None for v in cr._marginal_rho2):
             cr._marginal_rho2 = None
-        _, _ci_pairs = _efficiency_metric(_conds, test="ttest", design="within",
+        from evalstats.alignment import _WITHIN_TESTS
+        _, _ci_pairs = _efficiency_metric(_conds, test=_WITHIN_TESTS["pairwise_ci"], design="within",
                                           want_pairs=True)
-        _, _p_pairs = _efficiency_metric(_conds, test="wilcoxon", design="within",
+        _, _p_pairs = _efficiency_metric(_conds, test=_WITHIN_TESTS["pairwise_p"], design="within",
                                          want_pairs=True)
         cr._pair_ci_eff = _ci_pairs
         cr._pair_p_eff = _p_pairs
@@ -2921,7 +2922,7 @@ def _run_alignment_ppi(
 
         cr._omnibus_eff = None
         if len(labels) >= 3:
-            _om, _ = _efficiency_metric(_conds, test="friedman", design="within",
+            _om, _ = _efficiency_metric(_conds, test=_WITHIN_TESTS["omnibus"], design="within",
                                         want_pairs=False)
             # Friedman's linearization emits one number per (item, condition),
             # so its n_eff spans all k conditions; the display reports labels

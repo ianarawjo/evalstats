@@ -790,14 +790,15 @@ def _compute_group_stats(
 # Main dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
+from evalstats.alignment import _BETWEEN_TESTS
+
 _EFFICIENCY_TESTS = {
     # family -> (omnibus test, pairwise test), in judge_alignment's vocabulary.
     # These MUST track what compare_unpaired actually runs a few hundred lines
-    # below: anova_oneway/Welch t for binary, Kruskal-Wallis/Mann-Whitney for
-    # the rank_based family. A mismatch would report the efficiency of a test
-    # the user never ran, which is worse than reporting nothing.
-    "binary_proportion": ("anova_oneway", "ttest"),
-    "rank_based": ("kruskalwallis", "mannwhitney"),
+    # below, so they come from the table judge_alignment reads too: a mismatch
+    # would report the efficiency of a test the user never ran.
+    "binary_proportion": _BETWEEN_TESTS["binary"],
+    "rank_based": _BETWEEN_TESTS["rank"],
 }
 
 
@@ -809,13 +810,12 @@ def _ppi_label_efficiency(labels, group_arrays, group_lab_arrays, family):
     reporting extra, so a failure here must never take down a comparison that
     otherwise succeeded.
 
-    Why judge_alignment is called again here rather than reusing the caller's
-    AlignmentResult: that one is score-level (kappa, Pearson, Spearman on the
-    raw scores) and carries no n_eff at all unless the caller happened to pass
-    ``test=``, which the documented workflow does not. The number that governs
-    a PPI variance reduction is the correlation of the two INFLUENCE functions
-    for the specific test, so it has to be requested per test. Form 3 takes the
-    same (judge, human) arrays already in hand.
+    Why this asks the per-condition machinery behind judge_alignment's
+    comparison report directly rather than reusing the caller's AlignmentResult:
+    the number that governs a PPI variance reduction is the correlation of the
+    two INFLUENCE functions for the specific test, so it has to be requested per
+    test, and these are the (judge, human) arrays already in hand. judge_alignment
+    reads the same test table, so the two report the same numbers.
 
     n_eff arrives as a total over the conditions a correlation spans (see
     ``_pair_total_n``), so it is divided by k for the omnibus and by 2 for each
@@ -832,14 +832,11 @@ def _ppi_label_efficiency(labels, group_arrays, group_lab_arrays, family):
     k = len(conds)
 
     def _call(test):
-        from evalstats.alignment import judge_alignment
-        # Suppressed for the same reason the omnibus call above is: this
-        # constructs its own AlignmentResult with no selection=, and letting it
-        # print would drop a second, worse-disclosed alignment report into the
-        # middle of ours.
+        from evalstats.alignment import _judge_alignment_pairwise
+        # Suppressed so a second alignment report doesn't print in the middle of ours.
         with contextlib.redirect_stdout(io.StringIO()):
-            return judge_alignment(conds, design="between", test=test,
-                                   selection="random", ci=False)
+            return _judge_alignment_pairwise(conds, design="between", alpha=0.05, test=test,
+                                             selection="random", ci=False, include_raw=False)
 
     om_rho2 = om_neff = None
     if k >= 3:
