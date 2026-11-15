@@ -138,6 +138,8 @@ class AlignmentResult:
         self.test = test
         self.test_metric = test_metric
         self.per_condition_metrics = per_condition_metrics
+        self.comparison: Optional[dict] = None
+        self.comparison_error: Optional[str] = None
 
     @property
     def n_eff(self) -> float:
@@ -318,10 +320,64 @@ class AlignmentResult:
             print(f"  {label:<{label_width}} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
         self._print_test_metric()
         print()
+        self._print_comparison_block()
         self._print_per_condition_block()
         print("Run .summary(verbose=True) for definitions, rationale, and")
         print("citation-ready wording for each check above.")
         print("─" * 58)
+
+    def _print_comparison_block(self, *, verbose: bool = False) -> None:
+        """rho^2 (and, when there is a larger pool to project onto, N_eff) for each test
+        compare() will run on this data."""
+        c = self.comparison
+        if c is None:
+            if self.comparison_error:
+                print("Label efficiency for the comparison: not estimated.")
+                print(f"  {self.comparison_error}")
+                print()
+            return
+        k = len(c["conditions"])
+        how = "inferred from the item ids" if c["design_inferred"] else "as given"
+        print(f"Label efficiency for the tests compare() will run "
+              f"({c['design']}-subjects, {how}; {k} conditions):")
+        proj = c["projects_n_eff"]
+
+        def span(vals, fmt):
+            vals = [v for v in vals if np.isfinite(v)]
+            if not vals:
+                return "n/a"
+            lo, hi = min(vals), max(vals)
+            return fmt(lo) if fmt(lo) == fmt(hi) else f"{fmt(lo)} to {fmt(hi)}"
+
+        for t in c["tests"]:
+            if "metric" in t:
+                m = t["metric"]
+                ci = ""
+                if np.isfinite(m["rho2_ci_low"]) and np.isfinite(m["rho2_ci_high"]):
+                    ci = f"  [{m['rho2_ci_low']:.2f}, {m['rho2_ci_high']:.2f}]"
+                line = f"  {t['label']:<26} rho^2 = {m['rho2']:.2f}{ci}"
+                if proj:
+                    line += f"   N_eff = {m['n_eff_per_condition']:.0f} per condition"
+                print(line)
+            else:
+                ps = list(t["pairs"].values())
+                line = (f"  {t['label']:<26} rho^2 = {span([p['rho2'] for p in ps], lambda v: f'{v:.2f}')}"
+                        f" across {len(ps)} pair{'s' if len(ps) != 1 else ''}")
+                if proj:
+                    line += (f"   N_eff = "
+                             f"{span([p['n_eff_per_condition'] for p in ps], lambda v: f'{v:.0f}')} per condition")
+                print(line)
+                if verbose:
+                    for (a, b), p in t["pairs"].items():
+                        extra = f"   N_eff = {p['n_eff_per_condition']:.0f}" if proj else ""
+                        print(f"      {a} vs {b}: rho^2 = {p['rho2']:.2f}{extra}")
+        if proj:
+            counts = list(c["n_labeled"].values())
+            same = len(set(counts)) == 1
+            print(f"  (N_eff is labels per condition; you labeled "
+                  f"{counts[0] if same else 'between ' + str(min(counts)) + ' and ' + str(max(counts))}"
+                  f"{' per condition' if same else ''})")
+        print()
 
     def _print_test_metric(self) -> None:
         """rho^2 (and N_eff, when there is an unlabeled pool to project onto)
@@ -443,6 +499,8 @@ class AlignmentResult:
                 print(f"      -> Example paper reporting: {example}")
             print()
 
+        self._print_test_metric()
+        self._print_comparison_block(verbose=True)
         self._print_per_condition_block(verbose=True)
 
         if self.bias_check is not None:
@@ -1784,7 +1842,9 @@ def _judge_alignment_core(
                     stacklevel=warn_stacklevel,
                 )
 
-    if labeled_mask is not None:
+    # Position says something only when the rows passed in ARE the pool. When n_total
+    # declares a larger dataset, they are just the labeled validation set.
+    if labeled_mask is not None and n_total == len(labeled_mask):
         contiguity_result = _check_label_contiguity(n_total, labeled_mask, item_ids=item_ids)
         rep["label_contiguity"] = contiguity_result
         if not contiguity_result["passed"]:
@@ -1807,8 +1867,8 @@ def _judge_alignment_core(
     if test is not None:
         if test != "mean_estimate":
             raise ValueError(
-                f"test={test!r} needs a comparison (2+ conditions) -- pass a "
-                "{name: (judge_scores, human_scores)} dict instead of plain "
+                f"test={test!r} needs a comparison (2+ conditions) -- pass evaldata "
+                "with a condition column (from load_from) instead of plain "
                 "arrays, or use test='mean_estimate' for a single-condition "
                 "estimate (no comparison)."
             )
@@ -1878,6 +1938,130 @@ def _resolve_per_condition_col(evaldata, df, factors) -> Optional[str]:
     return None
 
 
+_DESIGN_ALIASES = {"paired": "within", "unpaired": "between", "within": "within", "between": "between"}
+
+
+def _normalize_design(design: Optional[str]) -> Optional[str]:
+    if design is None:
+        return None
+    if design not in _DESIGN_ALIASES:
+        raise ValueError(
+            f"design={design!r} -- expected 'within' (or 'paired') or 'between' (or 'unpaired')."
+        )
+    return _DESIGN_ALIASES[design]
+
+
+def _comparison_conditions(df, group_col, item_col, llm_metric, human_col, design):
+    """Split the evaldata into ``{condition: (judge, human)}`` and settle the design.
+
+    The design is read off the item ids when not given: the same items in every
+    condition is within-subjects, items that never repeat across conditions is
+    between-subjects, and anything in between is ambiguous and raises."""
+    groups = list(dict.fromkeys(df[group_col].tolist()))
+    inferred = design is None
+    if inferred:
+        if item_col is None or item_col not in df.columns:
+            raise ValueError(
+                "Can't tell whether this is a within- or between-subjects comparison "
+                "without item ids. Pass design='within' (the same items in every "
+                "condition) or design='between' (different items per condition)."
+            )
+        item_sets = {g: set(df.loc[df[group_col] == g, item_col].tolist()) for g in groups}
+        total = sum(len(v) for v in item_sets.values())
+        union = set().union(*item_sets.values())
+        if all(v == item_sets[groups[0]] for v in item_sets.values()) and len(groups) > 1:
+            design = "within"
+        elif total == len(union):
+            design = "between"
+        else:
+            raise ValueError(
+                f"Some items, but not all, appear in more than one {group_col!r} "
+                "condition, so the design can't be inferred. Pass design='within' or "
+                "design='between'."
+            )
+
+    conditions = {}
+    for g in groups:
+        sub = df[df[group_col] == g]
+        if design == "within":
+            if item_col is None or item_col not in df.columns:
+                raise ValueError("design='within' needs an item column to line the conditions up.")
+            if sub[item_col].duplicated().any():
+                raise ValueError(
+                    f"Condition {g!r} has several rows for the same item, so its scores "
+                    "can't be lined up across conditions. Aggregate to one row per "
+                    "item and condition first."
+                )
+            sub = sub.sort_values(item_col)
+        conditions[str(g)] = (sub[llm_metric].to_numpy(dtype=float),
+                              sub[human_col].to_numpy(dtype=float))
+    if design == "within":
+        lens = {len(v[0]) for v in conditions.values()}
+        if len(lens) > 1:
+            raise ValueError("design='within' needs the same items in every condition.")
+    return conditions, design, inferred
+
+
+def _per_condition_n_eff(design: str, role: str, n_eff_total: float, k: int) -> float:
+    """compare() quotes N_eff as labels per condition; judge_alignment's totals span the
+    conditions a correlation pools, so divide the same way compare() does."""
+    if not np.isfinite(n_eff_total):
+        return float("nan")
+    if role == "omnibus":
+        return n_eff_total / k
+    return n_eff_total / 2 if design == "between" else n_eff_total
+
+
+def _comparison_report(
+    conditions: dict, design: str, inferred: bool, score_type: str, test: Optional[str],
+    *, alpha: float, n_total, ci: bool,
+) -> dict:
+    """rho^2 and N_eff for the tests compare() would run on these conditions."""
+    names = list(conditions)
+    k = len(names)
+    if test is not None:
+        if test not in _TEST_STRUCTURE or _TEST_STRUCTURE[test]["min_k"] < 2:
+            known = sorted(t for t, v in _TEST_STRUCTURE.items() if v["min_k"] >= 2)
+            raise ValueError(f"test={test!r} -- expected one of {known}.")
+        implied = _TEST_STRUCTURE[test]["design"]
+        if implied is not None and implied != design:
+            raise ValueError(f"test={test!r} is a {implied}-subjects test, but this data is {design}-subjects.")
+        plan = [(test, "omnibus" if _TEST_STRUCTURE[test]["max_k"] is None else "pairs")]
+    else:
+        plan = _comparison_tests(design, score_type, k)
+
+    totals = _resolve_condition_totals(conditions, n_total, design)
+    n_lab = {n: int(np.sum(~np.isnan(np.asarray(conditions[n][1], dtype=float)))) for n in names}
+    n_all = {n: (totals[n] if totals else len(conditions[n][0])) for n in names}
+
+    entries = []
+    for t, role in plan:
+        # The caller has already warned about how the labels were selected; saying so
+        # again here would print the same warning once per test.
+        res = _judge_alignment_pairwise(
+            conditions, design=design, alpha=alpha, test=t, selection="random",
+            n_total=n_total, ci=ci, include_raw=False,
+        )
+        if role == "omnibus":
+            m = res.omnibus_metric
+            metric = dict(m)
+            metric["n_eff_per_condition"] = _per_condition_n_eff(design, role, m["n_eff"], k)
+            entries.append({"test": t, "role": role, "label": _TEST_LABELS.get(t, t), "metric": metric})
+        else:
+            pairs = {}
+            for key, m in res.test_pairwise_metrics.items():
+                metric = dict(m)
+                metric["n_eff_per_condition"] = _per_condition_n_eff(design, role, m["n_eff"], k)
+                pairs[key] = metric
+            entries.append({"test": t, "role": role, "label": _TEST_LABELS.get(t, t), "pairs": pairs})
+    return {
+        "design": design, "design_inferred": inferred, "conditions": names,
+        "n_labeled": n_lab, "n_total": n_all,
+        "projects_n_eff": any(n_all[n] > n_lab[n] for n in names),
+        "tests": entries,
+    }
+
+
 def _check_n_total(override: Optional[int], actual: int) -> int:
     """The full-dataset size to report: the caller's ``n_total=`` if given, else
     the number of items actually passed in."""
@@ -1901,7 +2085,9 @@ def _judge_alignment_from_evaldata(
     ci: bool = True,
     factors=None,
     score_type: Optional[str] = None,
-    n_total: Optional[int] = None,
+    n_total=None,
+    design: Optional[str] = None,
+    test: Optional[str] = None,
 ) -> AlignmentResult:
     df = evaldata._df
 
@@ -1918,6 +2104,12 @@ def _judge_alignment_from_evaldata(
 
     labeled_mask = df[human_groundtruth].notna()
     n_labeled = int(labeled_mask.sum())
+    design_arg = _normalize_design(design)
+    if isinstance(n_total, dict):
+        n_total_by_condition = {str(k): int(v) for k, v in n_total.items()}
+        n_total = sum(n_total_by_condition.values())
+    else:
+        n_total_by_condition = None
     n_total = _check_n_total(n_total, len(df))
 
     if n_labeled == 0:
@@ -1965,7 +2157,10 @@ def _judge_alignment_from_evaldata(
             alpha=alpha, grid_step=grid_step,
         )
 
-    return _judge_alignment_core(
+    n_conditions = int(df[group_col].nunique()) if group_col is not None else 0
+    compares = n_conditions >= 2 and test != "mean_estimate"
+
+    result = _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth,
         alpha=alpha, n_total=n_total, all_llm=all_llm, grid_step=grid_step,
@@ -1976,8 +2171,29 @@ def _judge_alignment_from_evaldata(
                   if evaldata._col.get("item") in df.columns else None),
         selection=selection, ci=ci,
         per_condition_metrics=per_condition_metrics,
+        # Only a single condition has no comparison to describe; its efficiency is that
+        # of a plain mean.
+        test=None if compares else "mean_estimate",
         warn_stacklevel=4,
     )
+
+    if compares:
+        # rho^2 and N_eff for the tests compare() will run on these conditions. A design
+        # that can't be worked out is reported in the summary rather than raised, unless
+        # the caller named the design or test themselves.
+        try:
+            conditions, resolved, inferred = _comparison_conditions(
+                df, group_col, evaldata._col.get("item"), llm_metric, human_groundtruth, design_arg)
+            result.comparison = _comparison_report(
+                conditions, resolved, inferred, score_type, test, alpha=alpha,
+                n_total=n_total_by_condition if n_total_by_condition is not None
+                else (n_total if n_total != len(df) else None),
+                ci=ci)
+        except ValueError as exc:
+            if design_arg is not None or test is not None:
+                raise
+            result.comparison_error = str(exc)
+    return result
 
 
 def _judge_alignment_from_arrays(
@@ -2087,6 +2303,39 @@ _VALID_DESIGNS = ("within", "between")
 # design: the design each test implies, or None if the caller must say
 # ("within"/"between" both valid, e.g. ttest/anova_oneway paired vs
 # independent). min_k/max_k: condition-count bounds (None = unbounded).
+# The tests compare() runs when a metric is judge-corrected, in judge_alignment's
+# vocabulary. compare() and judge_alignment both read these, so the efficiency a
+# report quotes is always for the test that was actually run. A mismatch would
+# describe the power of a test the user never ran.
+_BETWEEN_TESTS = {
+    # kind of scores -> (omnibus test, pairwise test)
+    "binary": ("anova_oneway", "ttest"),
+    "rank": ("kruskalwallis", "mannwhitney"),
+}
+_WITHIN_TESTS = {"pairwise_ci": "ttest", "pairwise_p": "wilcoxon", "omnibus": "friedman"}
+
+_TEST_LABELS = {
+    "kruskalwallis": "Kruskal-Wallis (omnibus)", "anova_oneway": "one-way ANOVA (omnibus)",
+    "friedman": "Friedman (omnibus)", "mannwhitney": "Mann-Whitney U (pairs)",
+    "ttest": "t-test (pairs)", "wilcoxon": "Wilcoxon (pairs)",
+    "mean_estimate": "mean estimate",
+}
+
+
+def _comparison_tests(design: str, score_type: str, k: int) -> list:
+    """``[(test, role), ...]`` for the tests compare() runs on ``k`` conditions."""
+    if design == "within":
+        out = [(_WITHIN_TESTS["pairwise_ci"], "pairs"), (_WITHIN_TESTS["pairwise_p"], "pairs")]
+        if k >= 3:
+            out.insert(0, (_WITHIN_TESTS["omnibus"], "omnibus"))
+        return out
+    omnibus, pairwise = _BETWEEN_TESTS["binary" if score_type == "binary" else "rank"]
+    out = [(pairwise, "pairs")]
+    if k >= 3:
+        out.insert(0, (omnibus, "omnibus"))
+    return out
+
+
 _TEST_STRUCTURE = {
     "ttest":         {"design": None,      "min_k": 2, "max_k": 2},
     "wilcoxon":      {"design": "within",  "min_k": 2, "max_k": 2},
@@ -2488,7 +2737,7 @@ def _add_rho2(metric: dict) -> dict:
 
 def _single_metric(
     judge: np.ndarray, human: np.ndarray, *, alpha: float, rng: np.random.Generator,
-    label: str, what: str = "", why: str = "",
+    label: str, what: str = "", why: str = "", ci: bool = True,
 ) -> dict:
     """One Pearson-r metric dict (point estimate + bootstrap CI) from two
     already-linearized 1-D arrays -- the shared low-level computation
@@ -2502,7 +2751,10 @@ def _single_metric(
     def pe(a, b):
         return _quiet_corr(pearsonr, a, b)
 
-    est, lo, hi = _bootstrap_ci_2(pe, judge, human, alpha=alpha, rng=rng)
+    if ci:
+        est, lo, hi = _bootstrap_ci_2(pe, judge, human, alpha=alpha, rng=rng)
+    else:
+        est, lo, hi = float(pe(judge, human)), float("nan"), float("nan")
     band, interp, example = _interpret_corr(est, lo, hi, n, label)
     return _add_rho2({
         "estimate": est, "ci_low": lo, "ci_high": hi, "label": label, "band": band, "n": n,
@@ -2513,11 +2765,12 @@ def _single_metric(
 class PairwiseAlignmentResult:
     """Judge-human correlation for every pair among 2+ named conditions.
 
-    Returned by :func:`judge_alignment` when called with a dict of named
-    conditions instead of a single (judge, human) array pair. Answers "how
-    well does my judge track human labels for the comparison I'm about to
-    run" across every pairwise comparison, rather than a single item-level
-    number -- see :attr:`pairwise_metrics`.
+    Internal: the per-condition machinery behind the comparison report that
+    :func:`judge_alignment` builds from evaldata (``AlignmentResult.comparison``),
+    and that ``compare()`` asks for directly. Answers "how well does my judge
+    track human labels for the comparison I'm about to run" across every
+    pairwise comparison, rather than a single item-level number -- see
+    :attr:`pairwise_metrics`.
 
     Attributes
     ----------
@@ -2750,7 +3003,7 @@ def _attach_savings(metric: dict, N: int) -> dict:
 def _judge_alignment_pairwise(
     conditions: dict, *, design: Optional[str], alpha: float,
     test: Optional[str] = None, selection: str = "unknown", warn_stacklevel: int = 3,
-    n_total=None,
+    n_total=None, ci: bool = True, include_raw: bool = True,
 ) -> PairwiseAlignmentResult:
     if len(conditions) < 2:
         raise ValueError(
@@ -2792,7 +3045,7 @@ def _judge_alignment_pairwise(
 
     rng = np.random.default_rng(42)
     pairwise_metrics = {}
-    for name_a, name_b in combinations(names, 2):
+    for name_a, name_b in (combinations(names, 2) if include_raw else ()):
         judge_a, human_a = conditions[name_a]
         judge_b, human_b = conditions[name_b]
         judge, human = _condition_pair_arrays(
@@ -2824,6 +3077,7 @@ def _judge_alignment_pairwise(
                 m = _single_metric(
                     jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (test-correct)",
                     why=f"The correlation that actually governs {test}'s PPI variance reduction, not raw Pearson/Spearman.",
+                    ci=ci,
                 )
                 test_pairwise_metrics[(name_a, name_b)] = _attach_savings(m, pair_n)
         else:
@@ -2835,6 +3089,7 @@ def _judge_alignment_pairwise(
             m = _single_metric(
                 jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (whole-design)",
                 why=f"{test}'s own validated correlation across all conditions at once -- not decomposable into pairs.",
+                ci=ci,
             )
             omnibus_metric = _attach_savings(m, whole_n)
 
@@ -2860,137 +3115,84 @@ def judge_alignment(
     ci: bool = True,
     factors=None,
     n_total=None,
-) -> "AlignmentResult | PairwiseAlignmentResult":
+) -> AlignmentResult:
     """Validate how well an LLM judge aligns with human graders.
 
-    Parameters
-    ----------
-    factors : str, optional
-        Column to break the alignment down by for the per-condition report.
-        Defaults to the ``model`` role column, then to the sole factor column.
-        Required when the data has more than one factor and no ``model`` role.
-    ci : bool, default True
-        Whether to bootstrap confidence intervals for the alignment metrics.
-        ``ci=False`` returns the point estimates with NaN bounds and skips
-        roughly 2000 resamples per metric -- the bulk of this function's
-        runtime. Use it when only the estimates are consumed (for example
-        building the ``alignment=`` argument to :func:`compare`, whose PPI
-        correction reads point estimates only), or in large sweeps.
+    Two call forms:
 
-    Three call forms:
+    1. ``judge_alignment(evaldata, llm_metric=..., human_groundtruth=...)`` --
+       the form to use. ``evaldata`` is what you pass to :func:`compare`
+       (from :func:`load_from`); judge scores exist for every item and human
+       labels for a subset, identified by column name. The result holds the
+       agreement metrics (quadratic-weighted kappa for ordinal scores,
+       correlations, ICC), a per-condition breakdown, the representativeness
+       checks, and -- when the data has 2+ conditions -- rho^2 and N_eff for the
+       tests :func:`compare` will run on it (see ``comparison``). Pass it on as
+       ``compare(alignment={metric: result})``.
+    2. ``judge_alignment(judge_scores, human_scores)`` -- a quick form for two
+       plain arrays of the same length, ``NaN`` in ``human_scores`` for items
+       with no label. One condition, so there is no comparison to describe;
+       ``test="mean_estimate"`` gives the rho^2 of a plain mean. The result
+       can't be passed to ``compare(alignment=...)``: it has no underlying
+       DataFrame to look values up in.
 
-    1. ``judge_alignment(evaldata, *, llm_metric=..., human_groundtruth=...)``
-       -- the common case where LLM judge scores exist for all items but
-       human labels are available for only a subset (the alignment set),
-       identified by column name in ``evaldata``. Runs the full
-       representativeness diagnostics (score-distribution check against
-       the full item pool, plus categorical slice-column checks) since the
-       full dataset and its other columns are available. The returned
-       result can be passed to ``compare(alignment={metric: result})``.
-    2. ``judge_alignment(judge_scores, human_scores)`` -- a quick-primitive
-       form for when you don't want to build an ``EvalResults`` first.
-       ``judge_scores`` is every item's judge score; ``human_scores`` is
-       the *same length*, with ``NaN`` for items that don't have a human
-       label (or no ``NaN`` at all if every item happens to be labeled).
-       This mirrors form 1's sparse-column convention exactly, so you can
-       hand it whatever you already have without pre-splitting anything
-       yourself. When some items are unlabeled, the score-distribution
-       representativeness check runs automatically (``judge_scores`` is
-       already the full pool); pass ``all_judge_scores`` explicitly to
-       override this. The categorical slice-column checks are
-       DataFrame-specific and are always skipped in this form. **The
-       result from this form carries placeholder column names and cannot
-       be passed to ``compare(alignment=...)``** (there's no underlying
-       DataFrame for it to look values up in) -- use form 1 for that.
-    3. ``judge_alignment({"pre": (judge_a, human_a), "post": (judge_b, human_b)},
-       design="within")`` -- for a comparison you're about to run across 2+
-       named conditions (arms of a study, timepoints, whatever your design
-       calls them), rather than a single item-level check. Each dict value
-       is a ``(judge_scores, human_scores)`` pair in form 2's shape (same
-       length, ``NaN`` for unlabeled items). Returns a
-       :class:`PairwiseAlignmentResult` with raw Pearson r and Spearman r
-       for every pair of conditions (for comparability to prior work),
-       PLUS -- when you pass ``test=`` -- the correlation that actually
-       governs THAT test's PPI variance reduction, which for every
-       rank-based test is NOT the same as raw Spearman (raw Spearman
-       drifts with effect size; see ``test=`` below). ``design`` is
-       required unless ``test=`` implies one (e.g. ``test="wilcoxon"``
-       always implies ``"within"``) and can't otherwise be inferred from
-       the data: "within" (paired/repeated-measures -- the same
-       items/participants in every condition) or "between" (independent
-       groups) -- two conditions look identical positionally either way,
-       but need different math. Every correlation reported also carries
-       ``multiplier``/``n_eff`` -- see :attr:`PairwiseAlignmentResult
-       .pairwise_metrics` -- so there's no separate function to call for
-       "how many effective human labels do I have."
-
-    Every form fits a Bayesian calibration model that can later be used to
-    propagate judge uncertainty into downstream comparisons (forms 1-2
-    only; form 3 has no single calibration model to fit, since it spans 2+
-    conditions -- use form 1 or 2 per-condition first if you need that).
+    Every form fits a Bayesian calibration model that is later used to
+    propagate judge uncertainty into downstream comparisons.
 
     Parameters
     ----------
-    judge_scores_or_evaldata : EvalResults, array-like, or dict
-        Evaluation data from :func:`load_from` (form 1), every item's judge
-        score (form 2), or a ``{name: (judge_scores, human_scores)}`` dict
-        of 2+ named conditions (form 3).
+    judge_scores_or_evaldata : EvalResults or array-like
+        Evaluation data from :func:`load_from` (form 1), or every item's judge
+        score (form 2).
     human_scores : array-like, optional
-        Same length as ``judge_scores_or_evaldata``, ``NaN`` for unlabeled
-        items (form 2 only).
-    design : {"within", "between"}, optional
-        Form 3 only. Required there unless ``test=`` implies a design. See
-        form 3 above.
-    test : str, optional
-        One of ``"ttest"``, ``"wilcoxon"``, ``"mannwhitney"`` (exactly 2
-        conditions), ``"anova_oneway"``, ``"kruskalwallis"``, ``"friedman"``
-        (2+ conditions, form 3 only), or ``"mean_estimate"`` (form 1/2
-        only -- a single condition, no comparison, e.g. a one-sample
-        mean/proportion estimate). When given, computes the correlation
-        that actually governs that test's PPI variance reduction, and
-        unlocks :attr:`AlignmentResult.n_eff`/:attr:`.multiplier` (forms
-        1-2) -- for a 2-condition-only test in form 3, one number per pair
-        (:attr:`PairwiseAlignmentResult.test_pairwise_metrics`, also the
-        number to use for planning pairwise post-hoc tests with 3+
-        conditions); for a test that spans the whole design, one number
-        across all conditions at once
-        (:attr:`PairwiseAlignmentResult.omnibus_metric`) -- e.g. with 3+
-        conditions and ``test="friedman"``, you get BOTH Friedman's own
-        whole-design number AND the raw pairwise breakdown. See
-        :data:`_TEST_STRUCTURE` and each ``_linearize_*`` function for the
-        recipe/validation behind each test.
+        Form 2 only: same length as the judge scores, ``NaN`` for unlabeled
+        items.
     llm_metric : str, optional
         Form 1: column name of the LLM judge scores (required). Form 2:
         optional display name for the judge, used only in printed reports.
     human_groundtruth : str, optional
-        Form 1: column name of the human rater scores (required),
-        expected to be sparsely populated (non-null for the alignment
-        subset, ``NaN`` elsewhere). Form 2: optional display name for the
-        human rater, used only in printed reports.
+        Form 1: column name of the human rater scores (required), non-null for
+        the alignment subset and ``NaN`` elsewhere. Form 2: optional display
+        name for the human rater, used only in printed reports.
     all_judge_scores : array-like, optional
-        Form 2 only: override which array is treated as "every item's
-        judge score" for the representativeness check. Only needed if
-        that shouldn't just be ``judge_scores_or_evaldata`` itself.
+        Form 2 only: override which array is treated as "every item's judge
+        score" for the representativeness check.
     score_type : str, optional
-        Forms 1-2: declare the score type (``"binary"``, ``"likert"``, or
-        ``"continuous"``) instead of having it detected. Detected from the
-        labeled judge and human scores when not given: 0/1 is binary, whole
-        numbers or any other bounded quantization grid of at most
-        ``MAX_DISCRETE_LEVELS`` levels (e.g. half-point scores) is likert, and
-        anything else is continuous. Likert scores get quadratic-weighted
-        Cohen's kappa, computed on grid positions. Declaring ``"likert"`` for
-        scores that don't sit on a grid raises -- round them first.
+        Declare the score type (``"binary"``, ``"likert"``, or ``"continuous"``)
+        instead of having it detected. Detected from the labeled judge and
+        human scores when not given: 0/1 is binary, whole numbers or any other
+        bounded quantization grid of at most ``MAX_DISCRETE_LEVELS`` levels
+        (e.g. half-point scores) is likert, and anything else is continuous.
+        Likert scores get quadratic-weighted Cohen's kappa, computed on grid
+        positions. Declaring ``"likert"`` for scores that don't sit on a grid
+        raises -- round them first.
+    design : {"within", "between"}, optional
+        Form 1: whether the conditions share the same items (within-subjects,
+        also spelled ``"paired"``) or have different items (between-subjects,
+        ``"unpaired"``). Worked out from the item ids when not given; pass it
+        when the ids don't settle it.
+    test : str, optional
+        Which test's rho^2 and N_eff to report. By default, the tests
+        :func:`compare` runs: Kruskal-Wallis (omnibus, 3+ conditions) and
+        Mann-Whitney for between-subjects, or binary data's ANOVA and t-test;
+        Friedman, t-test and Wilcoxon for within-subjects. Name one of
+        ``"ttest"``, ``"wilcoxon"``, ``"mannwhitney"``, ``"anova_oneway"``,
+        ``"kruskalwallis"``, ``"friedman"`` to report only that one. rho^2 depends
+        on the test: a rank test's governing correlation is computed on a
+        test-specific transform of the scores, not on the raw scores, so the
+        raw Pearson and Spearman r above are not a substitute. Form 2 accepts
+        ``"mean_estimate"``.
     n_total : int or dict, optional
         The size of the full dataset, for when the items you pass in are only
         the human-labeled validation set (nothing left unlabeled). With every
-        item labeled there is no larger pool to project onto, so the
-        multiplier and ``N_eff`` are left out of the printed report; give the
-        size of the dataset the judge will actually score and they come back,
-        computed for labeling ``n_lab`` of ``n_total`` items. Forms 1-2: an
-        int. Form 3: a ``{condition: size}`` dict, or an int for the whole
-        design (split across conditions in proportion to the sizes passed
-        in for ``design="between"``; shared by all conditions for
-        ``"within"``). Must be at least the number of items passed in.
+        item labeled there is no larger pool to project onto, so the report
+        leaves out N_eff; give the size of the dataset the judge will actually
+        score and it comes back, computed for labeling these items out of
+        ``n_total``. An int, or for form 1 with several conditions a
+        ``{condition: size}`` dict (an int is split across conditions in
+        proportion to their sizes when between-subjects, and shared by all of
+        them when within-subjects). Must be at least the number of items
+        passed in.
     alpha : float
         Significance level for alignment metric CIs.  Default ``0.05``.
     selection : {"random", "stratified", "manual", "unknown"}
@@ -3004,53 +3206,44 @@ def judge_alignment(
         the kind of selection that breaks this assumption. ``"manual"``
         and ``"stratified"`` are for acknowledging a known-non-random
         selection explicitly rather than leaving it unexamined.
-
-    Notes
-    -----
-    ``alignment_metrics`` (forms 1-2) and ``pairwise_metrics`` (form 3)
-    always include both raw ``pearson_r`` and ``spearman_r`` (alongside
-    score-type-specific metrics: percent agreement/Cohen's κ for binary,
-    weighted κ/ICC(2,1) for likert, ICC(2,1) for continuous/grade) --
-    reported for comparability to prior work. These are NOT simply "Pearson
-    for mean-based tests, Spearman for rank-based tests": that split is the
-    naive recipe, and for every rank-based test (Mann-Whitney, Wilcoxon,
-    Kruskal-Wallis, Friedman) it drifts with effect size -- confirmed via
-    Monte Carlo to overstate ``n_eff`` by -13% to +89% depending on the
-    test and effect size (see :data:`_TEST_STRUCTURE`'s docstring and
-    notes/omnibus_label_efficiency.html). The correlation that actually
-    governs a given test's PPI variance reduction is a Pearson correlation
-    on a TEST-SPECIFIC linearization of the raw values (identity for
-    mean-type tests, a genuine transform -- Hájek projection, empirical
-    placements, or centered ranks -- for rank-type ones); pass ``test=`` to
-    get it, rather than reading ``pearson_r``/``spearman_r`` directly for a
-    rank-based test.
-
-    If you're comparing 2+ conditions (a study arm, a timepoint, anything
-    with its own judge/human scores), use form 3 above rather than form
-    1/2 called once per condition -- it computes the right correlation
-    automatically for both within-subjects (paired-difference) and
-    between-subjects (pooled, within-group-centered) designs, and covers
-    3+ conditions via every pairwise comparison (plus, with ``test=``, an
-    omnibus test's own whole-design number where applicable).
+    ci : bool, default True
+        Whether to bootstrap confidence intervals for the alignment metrics.
+        ``ci=False`` returns the point estimates with NaN bounds and skips
+        roughly 2000 resamples per metric -- the bulk of this function's
+        runtime. Use it when only the estimates are consumed, or in large
+        sweeps.
+    factors : str, optional
+        Form 1: the column that defines the conditions, for the per-condition
+        report and the comparison's rho^2. Defaults to the ``model`` role
+        column, then to the sole factor column. Required when the data has more
+        than one factor and no ``model`` role.
 
     Returns
     -------
-    AlignmentResult or PairwiseAlignmentResult
-        ``PairwiseAlignmentResult`` for form 3 (dict input); ``AlignmentResult``
-        for forms 1-2.
+    AlignmentResult
+        ``.alignment_metrics`` holds the agreement metrics; ``.comparison``
+        holds rho^2 and N_eff per test for a multi-condition form 1 (``None``
+        otherwise, with ``.comparison_error`` saying why when it could not be
+        worked out); ``.summary()`` prints it all.
+
+    Notes
+    -----
+    The correlation that governs a test's PPI variance reduction is a Pearson
+    correlation on a TEST-SPECIFIC linearization of the raw values (identity
+    for mean-type tests; a Hajek projection, empirical placements or centered
+    ranks for rank-type ones). It is NOT simply "Pearson for mean-based tests,
+    Spearman for rank-based ones": for every rank-based test that split drifts
+    with effect size, overstating N_eff by -13% to +89% in simulation (see
+    :data:`_TEST_STRUCTURE` and notes/omnibus_label_efficiency.html). That is
+    why ``comparison`` is separate from the raw Pearson/Spearman metrics, which
+    are reported for comparability to prior work.
     """
     if isinstance(judge_scores_or_evaldata, dict):
-        if human_scores is not None:
-            raise TypeError(
-                "judge_alignment(conditions_dict, ...) doesn't take a second "
-                "positional argument -- each dict value is already a "
-                "(judge_scores, human_scores) pair."
-            )
-        return _judge_alignment_pairwise(
-            judge_scores_or_evaldata, design=design, alpha=alpha, test=test, selection=selection,
-            n_total=n_total,
+        raise TypeError(
+            "judge_alignment() no longer takes a {condition: (judge, human)} dict. Pass the "
+            "same evaldata you give compare() (from load_from), with llm_metric= and "
+            "human_groundtruth=; the conditions, the design and the tests are read from it."
         )
-
     from evalstats.loader import EvalResults
 
     if isinstance(judge_scores_or_evaldata, EvalResults):
@@ -3071,7 +3264,7 @@ def judge_alignment(
         return _judge_alignment_from_evaldata(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
             selection=selection, ci=ci, factors=factors, score_type=score_type,
-            n_total=n_total,
+            n_total=n_total, design=design, test=test,
         )
 
     if human_scores is None:
@@ -3133,8 +3326,8 @@ def _efficiency_metric(conds, *, test, design, want_pairs):
     import contextlib as _c, io as _io
     try:
         with _c.redirect_stdout(_io.StringIO()):
-            res = judge_alignment(conds, design=design, test=test,
-                                  selection="random", ci=False)
+            res = _judge_alignment_pairwise(conds, design=design, alpha=0.05, test=test,
+                                            selection="random", ci=False, include_raw=False)
     except Exception:
         return None, {}
     om = None
