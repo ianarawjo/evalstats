@@ -17,7 +17,9 @@ Omnibus methods are excluded (only_methods): they carry bootstraps the
 two-group methods don't, dominate the runtime, and appear in no panel here.
 """
 import argparse, datetime as _dt, sys
-sys.path.insert(0, "/Users/ianarawjo/Documents/prompt-stats")
+# Worktree-aware: resolve simulations/ and evalstats/ from THIS checkout,
+# not the main repo, or the run silently tests the other branch.
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 import simulations.harness.cases.pvalues as P
 
 FIG16_METHODS = ("ttest", "ttest_welch", "paired_t", "mwu", "wilcoxon")
