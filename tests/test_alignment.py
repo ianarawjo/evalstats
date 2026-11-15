@@ -1350,3 +1350,129 @@ class TestLabelPositionCheckPairedDesign:
         random_lab = set(np.random.default_rng(2).choice(items, size=15, replace=False))
         assert _position_check(_reveal_items(df, random_lab))["passed"]
         assert not _position_check(_reveal_items(df, set(items[:15])))["passed"]
+
+
+# ── Half-point grids, rho^2 reporting, and n_total ────────────────────────────
+
+def _half_point_pair(n=120, seed=0):
+    rng = np.random.default_rng(seed)
+    human = np.round(rng.uniform(1, 5, n) * 2) / 2
+    judge = np.clip(np.round((human + rng.normal(0, 0.5, n)) * 2) / 2, 1, 5)
+    return judge, human
+
+
+class TestHalfPointGrid:
+    def test_half_point_scores_get_weighted_kappa(self):
+        judge, human = _half_point_pair()
+        res = judge_alignment(judge, human, selection="random")
+        assert res.score_type == "likert"
+        assert "weighted_kappa" in res.alignment_metrics
+
+    def test_kappa_matches_doubling_to_integers(self):
+        judge, human = _half_point_pair()
+        half = judge_alignment(judge, human, selection="random")
+        whole = judge_alignment(judge * 2, human * 2, selection="random")
+        assert half.alignment_metrics["weighted_kappa"]["estimate"] == pytest.approx(
+            whole.alignment_metrics["weighted_kappa"]["estimate"])
+
+    def test_unused_level_still_counts_toward_distance(self):
+        """Categories are grid positions: level 3 is never used, but it still sits
+        between 2 and 4, so this must equal kappa computed over labels 1..5."""
+        sk = pytest.importorskip("sklearn.metrics")
+        judge = np.array([1, 1, 5, 5, 1, 5, 1, 5] * 5, dtype=float)
+        human = np.array([1, 2, 5, 4, 1, 5, 2, 4] * 5, dtype=float)
+        res = judge_alignment(judge, human, selection="random", ci=False)
+        expected = sk.cohen_kappa_score(judge.astype(int), human.astype(int),
+                                        weights="quadratic", labels=[1, 2, 3, 4, 5])
+        assert res.alignment_metrics["weighted_kappa"]["estimate"] == pytest.approx(expected)
+
+    def test_fractional_judge_stays_continuous(self):
+        judge, human = _half_point_pair()
+        judge = judge + np.random.default_rng(3).normal(0, 0.03, judge.size)
+        assert judge_alignment(judge, human, selection="random").score_type == "continuous"
+
+    def test_declared_likert_on_half_points(self):
+        judge, human = _half_point_pair()
+        assert judge_alignment(judge, human, selection="random", score_type="likert").score_type == "likert"
+
+    def test_declared_likert_off_grid_raises(self):
+        judge, human = _half_point_pair()
+        judge = judge + np.random.default_rng(3).normal(0, 0.03, judge.size)
+        with pytest.raises(ValueError, match="grid"):
+            judge_alignment(judge, human, selection="random", score_type="likert")
+
+    def test_declared_continuous_overrides_detection(self):
+        judge, human = _half_point_pair()
+        assert judge_alignment(judge, human, selection="random", score_type="continuous").score_type == "continuous"
+
+    def test_unknown_score_type_raises(self):
+        judge, human = _half_point_pair()
+        with pytest.raises(ValueError, match="score_type"):
+            judge_alignment(judge, human, selection="random", score_type="ordinal")
+
+    def test_evaldata_form_detects_and_accepts_declaration(self):
+        judge, human = _half_point_pair()
+        lab = np.full(judge.size, np.nan)
+        lab[:60] = human[:60]
+        rng = np.random.default_rng(5).permutation(judge.size)
+        d = pd.DataFrame({"item": range(judge.size), "condition": ["a", "b"] * (judge.size // 2),
+                          "judge": judge[rng], "human": np.where(np.isin(np.arange(judge.size), rng[:60]), human[rng], np.nan)})
+        ed = es.load_from(d, metric_cols=["judge", "human"])
+        auto = judge_alignment(ed, llm_metric="judge", human_groundtruth="human", selection="random")
+        declared = judge_alignment(ed, llm_metric="judge", human_groundtruth="human",
+                                   selection="random", score_type="likert")
+        assert auto.score_type == declared.score_type == "likert"
+
+
+def _validation_conditions(n=15, seed=0):
+    rng = np.random.default_rng(seed)
+    out = {}
+    for i, name in enumerate(["a", "b", "c"]):
+        human = np.round(rng.uniform(1, 5, n) * 2) / 2
+        out[name] = (np.clip(human + rng.normal(0, 0.5, n) + 0.1 * i, 1, 5), human)
+    return out
+
+
+class TestRho2AndNTotal:
+    def test_test_metric_carries_rho2(self):
+        res = judge_alignment(_validation_conditions(), design="between", test="kruskalwallis")
+        m = res.omnibus_metric
+        assert m["rho2"] == pytest.approx(m["estimate"] ** 2)
+        assert 0 <= m["rho2_ci_low"] <= m["rho2"] <= m["rho2_ci_high"] <= 1
+
+    def test_summary_prints_rho2_not_rho(self, capsys):
+        judge_alignment(_validation_conditions(), design="between", test="kruskalwallis").summary()
+        out = capsys.readouterr().out
+        assert "rho^2" in out and " rho (" not in out
+
+    def test_fully_labeled_omits_n_eff(self, capsys):
+        res = judge_alignment(_validation_conditions(), design="between", test="kruskalwallis")
+        judge_alignment(_validation_conditions(), design="between", test="kruskalwallis").summary()
+        assert "N_eff" not in capsys.readouterr().out
+        assert res.omnibus_metric["multiplier"] == pytest.approx(1.0)   # stored value unchanged
+
+    def test_n_total_restores_n_eff(self, capsys):
+        conds = _validation_conditions()
+        res = judge_alignment(conds, design="between", test="kruskalwallis", n_total=300)
+        assert res.omnibus_metric["N"] == 300
+        assert res.omnibus_metric["n_eff"] > res.omnibus_metric["n"]
+        res.summary()
+        assert "N_eff" in capsys.readouterr().out
+
+    def test_n_total_dict_and_int_agree_for_equal_conditions(self):
+        conds = _validation_conditions()
+        a = judge_alignment(conds, design="between", test="kruskalwallis", n_total=300)
+        b = judge_alignment(conds, design="between", test="kruskalwallis",
+                            n_total={"a": 100, "b": 100, "c": 100})
+        assert a.omnibus_metric["n_eff"] == pytest.approx(b.omnibus_metric["n_eff"])
+
+    def test_n_total_smaller_than_data_raises(self):
+        with pytest.raises(ValueError, match="can't be smaller"):
+            judge_alignment(_validation_conditions(), design="between", test="kruskalwallis", n_total=10)
+
+    def test_arrays_form_n_total(self):
+        judge, human = _half_point_pair(60)
+        res = judge_alignment(judge, human, test="mean_estimate", selection="random", n_total=600)
+        assert res.n_total == 600
+        assert res.n_eff > 60
+        assert res.test_metric["rho2"] == pytest.approx(res.test_metric["estimate"] ** 2)

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.4
+
+`judge_alignment` now reports an ordinal agreement score for half-point scales, and
+reports test-specific alignment as rho^2.
+
+### Added
+
+- `judge_alignment(..., n_total=)`: the size of the full dataset, for when the items
+  passed in are only the human-labeled validation set. The multiplier and `N_eff`
+  are then computed for labeling that many items out of `n_total`. A `{condition:
+  size}` dict works for the multi-condition form.
+- `score_type=` on the column-based form of `judge_alignment`, as on the array form.
+
+### Changed
+
+- Scores on any bounded quantization grid, such as half-point ratings, are now
+  detected as `likert`, the same detector `compare()` uses, so they get
+  quadratic-weighted kappa instead of being treated as continuous. Declaring
+  `score_type="likert"` on scores that are not on a grid raises, rather than
+  producing a meaningless kappa. Kappa now counts categories as positions on the
+  grid, so a level nobody used still counts toward the distance between its
+  neighbours; this can change kappa on whole-number data with an unused level.
+- Test-specific alignment (`test=`) is printed as rho^2, with its confidence
+  interval, rather than rho. The raw Pearson and Spearman lines are still r.
+  Each metric dict also carries `rho2`, `rho2_ci_low` and `rho2_ci_high`; the
+  existing `estimate` is unchanged.
+- With every item labeled and no `n_total=`, the printed report leaves out the
+  multiplier and `N_eff`, which would only restate the sample size. The stored
+  values are unchanged.
+- The single-condition form prints rho^2 and `N_eff` when `test="mean_estimate"`.
+
 ## 0.3.3
 
 Two fixes to the effect size reported beside a judge-corrected comparison.

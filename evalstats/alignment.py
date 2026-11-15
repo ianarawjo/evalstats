@@ -316,11 +316,25 @@ class AlignmentResult:
             band = entry.get("band")
             tail = f"  {band}" if band else ""
             print(f"  {label:<{label_width}} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
+        self._print_test_metric()
         print()
         self._print_per_condition_block()
         print("Run .summary(verbose=True) for definitions, rationale, and")
         print("citation-ready wording for each check above.")
         print("─" * 58)
+
+    def _print_test_metric(self) -> None:
+        """rho^2 (and N_eff, when there is an unlabeled pool to project onto)
+        for the ``test=`` given to judge_alignment, if any."""
+        tm = self.test_metric
+        if tm is None or "rho2" not in tm:
+            return
+        print(
+            f"  {'rho^2 (' + str(self.test) + ')':<{max(len(e.get('label', '')) for e in self.alignment_metrics.values())}} "
+            f"{tm['rho2']:6.2f}  [{tm['rho2_ci_low']:5.2f}, {tm['rho2_ci_high']:5.2f}]"
+        )
+        if self.n_total > self.n_labeled:
+            print(f"      multiplier = {tm['multiplier']:.2f}x   N_eff = {tm['n_eff']:.0f}  (N={self.n_total})")
 
     def _print_per_condition_block(self, *, verbose: bool = False) -> None:
         """Per-condition alignment breakdown, shared by both summary modes.
@@ -762,6 +776,54 @@ def _build_bias_check(
     }
 
 
+_VALID_SCORE_TYPES = ("binary", "likert", "continuous")
+
+
+def _resolve_score_type(
+    declared: Optional[str], auto: str, llm: np.ndarray, human: np.ndarray,
+) -> tuple[str, Optional[float]]:
+    """Pick the score type and, for ordinal data, the grid step it sits on.
+
+    ``declared`` (the caller's ``score_type=``) always wins. Otherwise whole-number
+    scales are ``likert`` as before, and so is any other bounded quantization grid
+    (e.g. half-point scores) -- the same detector ``compare()`` uses -- so that
+    half-point ratings get an ordinal metric rather than being demoted to
+    ``continuous``. The returned step is ``None`` unless the type is ``likert``.
+    """
+    from evalstats.config import MAX_DISCRETE_LEVELS
+    from evalstats.core.resampling import detect_quantization_step
+
+    if declared is not None and declared not in _VALID_SCORE_TYPES:
+        raise ValueError(
+            f"score_type={declared!r} -- expected one of {list(_VALID_SCORE_TYPES)}."
+        )
+    score_type = declared or auto
+    if score_type != "likert" and not (declared is None and auto == "continuous"):
+        return score_type, None
+
+    pooled = np.concatenate([np.asarray(llm, dtype=float), np.asarray(human, dtype=float)])
+    pooled = pooled[np.isfinite(pooled)]
+    if pooled.size and bool(np.all(pooled == np.floor(pooled))):
+        step: Optional[float] = 1.0
+    else:
+        step = detect_quantization_step(pooled)
+    if step is not None and pooled.size:
+        levels = (float(pooled.max()) - float(pooled.min())) / step + 1
+        if levels > MAX_DISCRETE_LEVELS:
+            step = None
+
+    if declared == "likert" and step is None:
+        raise ValueError(
+            "score_type='likert' but the judge and human scores don't sit on a "
+            f"grid of at most {MAX_DISCRETE_LEVELS} levels (e.g. whole numbers or "
+            "half points). Round the scores to the scale's grid first."
+        )
+    if declared is None and step is None:
+        return "continuous", None
+    return "likert", step
+
+
+
 def _compute_alignment_metrics(
     llm: np.ndarray,
     human: np.ndarray,
@@ -770,6 +832,7 @@ def _compute_alignment_metrics(
     alpha: float = 0.05,
     rng: np.random.Generator,
     ci: bool = True,
+    grid_step: Optional[float] = None,
 ) -> dict:
     metrics: dict = {}
 
@@ -869,20 +932,25 @@ def _compute_alignment_metrics(
         ))
 
     elif score_type == "likert":
-        cats = sorted(set(llm.tolist()) | set(human.tolist()))
-        k = len(cats)
-        cat_idx = {c: i for i, c in enumerate(cats)}
+        # Categories are positions on the scale's grid (step 1 for whole-number
+        # scales, the detected step for e.g. half-point ones), not the ranks of
+        # the values that happen to be observed: a level nobody used must still
+        # count toward the distance between its neighbours.
+        step = float(grid_step) if grid_step else 1.0
+        origin = float(min(np.min(llm), np.min(human)))
+
+        def _pos(v):
+            return np.rint((np.asarray(v, dtype=float) - origin) / step).astype(int)
+
+        k = int(max(_pos(llm).max(), _pos(human).max())) + 1
         ii = np.arange(k, dtype=float)
         wm = 1.0 - (ii[:, None] - ii[None, :])**2 / max((k - 1)**2, 1)
 
         def wk(a, b):
-            n = len(a)
-            p_o = sum(
-                1.0 - (cat_idx[ai] - cat_idx[bi])**2 / max((k - 1)**2, 1)
-                for ai, bi in zip(a, b)
-            ) / n
-            p_a = np.array([(a == c).mean() for c in cats])
-            p_b = np.array([(b == c).mean() for c in cats])
+            ai, bi = _pos(a), _pos(b)
+            p_o = float(np.mean(1.0 - (ai - bi)**2 / max((k - 1)**2, 1)))
+            p_a = np.bincount(ai, minlength=k) / len(ai)
+            p_b = np.bincount(bi, minlength=k) / len(bi)
             p_e = float((p_a[:, None] * p_b[None, :] * wm).sum())
             return (p_o - p_e) / (1.0 - p_e) if p_e < 1.0 else 1.0
 
@@ -1085,6 +1153,7 @@ def _compute_per_condition_alignment(
     score_type: str,
     *,
     alpha: float,
+    grid_step: Optional[float] = None,
 ) -> Optional[dict]:
     """Per-condition/model breakdown of the headline alignment metric.
 
@@ -1132,6 +1201,7 @@ def _compute_per_condition_alignment(
         cond_human = labeled_df.loc[cond_mask, human_col].to_numpy(dtype=float)
         metrics = _compute_alignment_metrics(
             cond_llm, cond_human, score_type, alpha=alpha, rng=rng, ci=False,
+            grid_step=grid_step,
         )
         entry = metrics.get(primary_key)
         if entry is None:
@@ -1620,6 +1690,7 @@ def _judge_alignment_core(
     alpha: float,
     n_total: int,
     ci: bool = True,
+    grid_step: Optional[float] = None,
     all_llm: Optional[np.ndarray] = None,
     slice_df: Optional[pd.DataFrame] = None,
     slice_labeled_mask: Optional[pd.Series] = None,
@@ -1651,7 +1722,8 @@ def _judge_alignment_core(
 
     rng = np.random.default_rng(42)
     alignment_metrics = _compute_alignment_metrics(
-        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng, ci=ci
+        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng, ci=ci,
+        grid_step=grid_step,
     )
     bias_check = alignment_metrics.pop("_bias_check", None)
 
@@ -1740,7 +1812,7 @@ def _judge_alignment_core(
                 "arrays, or use test='mean_estimate' for a single-condition "
                 "estimate (no comparison)."
             )
-        test_metric = dict(alignment_metrics["pearson_r"])
+        test_metric = _add_rho2(dict(alignment_metrics["pearson_r"]))
         test_metric["label"] = "mean_estimate rho"
 
     return AlignmentResult(
@@ -1806,6 +1878,19 @@ def _resolve_per_condition_col(evaldata, df, factors) -> Optional[str]:
     return None
 
 
+def _check_n_total(override: Optional[int], actual: int) -> int:
+    """The full-dataset size to report: the caller's ``n_total=`` if given, else
+    the number of items actually passed in."""
+    if override is None:
+        return int(actual)
+    if int(override) < int(actual):
+        raise ValueError(
+            f"n_total={override}, but {actual} items were passed in; n_total is "
+            "the size of the full dataset and can't be smaller."
+        )
+    return int(override)
+
+
 def _judge_alignment_from_evaldata(
     evaldata,
     *,
@@ -1815,6 +1900,8 @@ def _judge_alignment_from_evaldata(
     selection: str = "unknown",
     ci: bool = True,
     factors=None,
+    score_type: Optional[str] = None,
+    n_total: Optional[int] = None,
 ) -> AlignmentResult:
     df = evaldata._df
 
@@ -1831,7 +1918,7 @@ def _judge_alignment_from_evaldata(
 
     labeled_mask = df[human_groundtruth].notna()
     n_labeled = int(labeled_mask.sum())
-    n_total = len(df)
+    n_total = _check_n_total(n_total, len(df))
 
     if n_labeled == 0:
         raise ValueError(
@@ -1848,14 +1935,15 @@ def _judge_alignment_from_evaldata(
             stacklevel=3,
         )
 
-    score_type = evaldata._score_types.get(llm_metric)
-    if score_type is None:
+    auto_type = evaldata._score_types.get(llm_metric)
+    if auto_type is None:
         from evalstats.loader import _detect_score_type
-        score_type = _detect_score_type(df[llm_metric].dropna())
+        auto_type = _detect_score_type(df[llm_metric].dropna())
 
     llm_aligned = df.loc[labeled_mask, llm_metric].to_numpy(dtype=float)
     human_aligned = df.loc[labeled_mask, human_groundtruth].to_numpy(dtype=float)
     all_llm = df[llm_metric].to_numpy(dtype=float)
+    score_type, grid_step = _resolve_score_type(score_type, auto_type, llm_aligned, human_aligned)
 
     # Structural role columns (model/item/run) are row/group identifiers, not
     # domain covariates -- an "item" column is frequently just a sequential
@@ -1874,13 +1962,13 @@ def _judge_alignment_from_evaldata(
     if group_col is not None:
         per_condition_metrics = _compute_per_condition_alignment(
             df, labeled_mask, group_col, llm_metric, human_groundtruth, score_type,
-            alpha=alpha,
+            alpha=alpha, grid_step=grid_step,
         )
 
     return _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth,
-        alpha=alpha, n_total=n_total, all_llm=all_llm,
+        alpha=alpha, n_total=n_total, all_llm=all_llm, grid_step=grid_step,
         slice_df=df, slice_labeled_mask=labeled_mask,
         slice_exclude_cols=frozenset({llm_metric, human_groundtruth}) | structural_cols,
         labeled_mask=labeled_mask.to_numpy(),
@@ -1904,6 +1992,7 @@ def _judge_alignment_from_arrays(
     selection: str = "unknown",
     test: Optional[str] = None,
     ci: bool = True,
+    n_total: Optional[int] = None,
 ) -> AlignmentResult:
     judge_full = np.asarray(judge_scores, dtype=float)
     human_full = np.asarray(human_scores, dtype=float)
@@ -1960,16 +2049,16 @@ def _judge_alignment_from_arrays(
         position_mask = labeled_mask
     else:
         all_llm = None
-    n_total = int(all_llm.size) if all_llm is not None else n_labeled
+    n_total = _check_n_total(n_total, int(all_llm.size) if all_llm is not None else n_labeled)
 
-    if score_type is None:
-        from evalstats.loader import _detect_score_type
-        score_type = _detect_score_type(pd.Series(llm_aligned))
+    from evalstats.loader import _detect_score_type
+    score_type, grid_step = _resolve_score_type(
+        score_type, _detect_score_type(pd.Series(llm_aligned)), llm_aligned, human_aligned)
 
     return _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
-        alpha=alpha, n_total=n_total, all_llm=all_llm,
+        alpha=alpha, n_total=n_total, all_llm=all_llm, grid_step=grid_step,
         slice_df=None, slice_labeled_mask=None,
         labeled_mask=position_mask, selection=selection, test=test, ci=ci,
         warn_stacklevel=4,
@@ -2376,6 +2465,27 @@ def _condition_pair_arrays(
     return judge, human
 
 
+def _add_rho2(metric: dict) -> dict:
+    """Add ``rho2`` (and its CI) to a test-specific correlation metric dict.
+
+    rho^2, not rho, is the quantity the label-efficiency multiplier and the
+    reporting guidance are stated in, so it is the number that gets printed.
+    The CI is the correlation's CI squared; when it straddles zero the lower
+    bound is 0."""
+    r, lo, hi = metric["estimate"], metric["ci_low"], metric["ci_high"]
+    metric["rho2"] = float(r) ** 2
+    if np.isfinite(lo) and np.isfinite(hi):
+        if lo >= 0:
+            metric["rho2_ci_low"], metric["rho2_ci_high"] = lo ** 2, hi ** 2
+        elif hi <= 0:
+            metric["rho2_ci_low"], metric["rho2_ci_high"] = hi ** 2, lo ** 2
+        else:
+            metric["rho2_ci_low"], metric["rho2_ci_high"] = 0.0, max(lo ** 2, hi ** 2)
+    else:
+        metric["rho2_ci_low"] = metric["rho2_ci_high"] = float("nan")
+    return metric
+
+
 def _single_metric(
     judge: np.ndarray, human: np.ndarray, *, alpha: float, rng: np.random.Generator,
     label: str, what: str = "", why: str = "",
@@ -2394,10 +2504,10 @@ def _single_metric(
 
     est, lo, hi = _bootstrap_ci_2(pe, judge, human, alpha=alpha, rng=rng)
     band, interp, example = _interpret_corr(est, lo, hi, n, label)
-    return {
+    return _add_rho2({
         "estimate": est, "ci_low": lo, "ci_high": hi, "label": label, "band": band, "n": n,
         "what": what, "why": why, "interpretation": interp, "example": example,
-    }
+    })
 
 
 class PairwiseAlignmentResult:
@@ -2489,11 +2599,20 @@ class PairwiseAlignmentResult:
 
     @staticmethod
     def _print_metric(d: dict) -> None:
-        print(
-            f"    {d['label']:<28} {d['estimate']:+.3f}  "
-            f"95% CI [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]  (n={d['n']})"
-        )
-        if "n_eff" in d:
+        if "rho2" in d:
+            # A test-specific correlation is reported as rho^2.
+            print(
+                f"    {d['label'].replace(' rho', ' rho^2'):<28} {d['rho2']:.3f}  "
+                f"95% CI [{d['rho2_ci_low']:.3f}, {d['rho2_ci_high']:.3f}]  (n={d['n']})"
+            )
+        else:
+            print(
+                f"    {d['label']:<28} {d['estimate']:+.3f}  "
+                f"95% CI [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]  (n={d['n']})"
+            )
+        # With every item labeled there is nothing to extrapolate to, so N_eff would
+        # just restate n. Pass n_total= to judge_alignment to project it onto a larger set.
+        if "n_eff" in d and d["N"] > d["n"]:
             print(f"        multiplier = {d['multiplier']:.2f}x   N_eff = {d['n_eff']:.0f}  (N={d['N']})")
 
     def summary(self) -> None:
@@ -2524,15 +2643,53 @@ class PairwiseAlignmentResult:
             print()
 
 
-def _pair_total_n(conditions: dict, names: list, design: str) -> int:
+def _resolve_condition_totals(conditions: dict, n_total, design: str) -> Optional[dict]:
+    """Per-condition full-dataset sizes from ``judge_alignment(n_total=...)``.
+
+    ``None`` -> ``None`` (use the lengths of the arrays as passed). A dict gives
+    each condition's size directly. An int is the whole design's size: shared by
+    every condition for ``design="within"`` (the same items sit in all of them),
+    or split across conditions in proportion to the sizes passed in for
+    ``"between"``. Every size must be at least the number of items passed in."""
+    if n_total is None:
+        return None
+    lens = {n: len(np.asarray(conditions[n][0])) for n in conditions}
+    if isinstance(n_total, dict):
+        missing = [n for n in conditions if n not in n_total]
+        if missing:
+            raise ValueError(f"n_total is missing conditions {missing}; expected one entry per condition.")
+        totals = {n: int(n_total[n]) for n in conditions}
+    elif design == "within":
+        totals = {n: int(n_total) for n in conditions}
+    else:
+        whole = float(sum(lens.values()))
+        if design == "between" and int(n_total) < whole:
+            raise ValueError(
+                f"n_total={n_total}, but {int(whole)} items were passed in across the conditions; "
+                "n_total is the size of the full dataset and can't be smaller."
+            )
+        totals = {n: int(round(int(n_total) * lens[n] / whole)) for n in conditions}
+    for n, t in totals.items():
+        if t < lens[n]:
+            raise ValueError(
+                f"n_total for {n!r} is {t}, but {lens[n]} items were passed in for it; "
+                "n_total is the size of the full dataset and can't be smaller."
+            )
+    if design == "within" and len(set(totals.values())) > 1:
+        raise ValueError("With design='within' every condition shares the same items, so n_total must be one number.")
+    return totals
+
+
+def _pair_total_n(conditions: dict, names: list, design: str, totals: Optional[dict] = None) -> int:
     """Total (labeled+unlabeled) item count spanned by a correlation over
     `names`' conditions: one condition's length for design="within" (every
     condition shares the same items by construction, enforced elsewhere),
     or the sum across conditions for design="between" (independent groups,
     pooled)."""
+    size = (lambda n: totals[n]) if totals else (lambda n: len(np.asarray(conditions[n][0])))
     if design == "within":
-        return len(np.asarray(conditions[names[0]][0]))
-    return sum(len(np.asarray(conditions[n][0])) for n in names)
+        return size(names[0])
+    return sum(size(n) for n in names)
 
 
 def _full_linearized_n(conditions: dict, *, test: str, design: Optional[str]) -> int:
@@ -2593,6 +2750,7 @@ def _attach_savings(metric: dict, N: int) -> dict:
 def _judge_alignment_pairwise(
     conditions: dict, *, design: Optional[str], alpha: float,
     test: Optional[str] = None, selection: str = "unknown", warn_stacklevel: int = 3,
+    n_total=None,
 ) -> PairwiseAlignmentResult:
     if len(conditions) < 2:
         raise ValueError(
@@ -2625,11 +2783,12 @@ def _judge_alignment_pairwise(
         )
 
     names = list(conditions.keys())
+    totals = _resolve_condition_totals(conditions, n_total, resolved_design)
     condition_counts = {}
     for n in names:
         j, h = conditions[n]
         h = np.asarray(h, dtype=float)
-        condition_counts[n] = (int((~np.isnan(h)).sum()), len(h))
+        condition_counts[n] = (int((~np.isnan(h)).sum()), totals[n] if totals else len(h))
 
     rng = np.random.default_rng(42)
     pairwise_metrics = {}
@@ -2639,7 +2798,7 @@ def _judge_alignment_pairwise(
         judge, human = _condition_pair_arrays(
             judge_a, human_a, judge_b, human_b, design=resolved_design, label_a=name_a, label_b=name_b,
         )
-        pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design)
+        pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design, totals)
         metrics = _pearson_spearman_metrics(
             judge, human, alpha=alpha, rng=rng,
             pearson_label="Pearson r", spearman_label="Spearman r",
@@ -2661,7 +2820,7 @@ def _judge_alignment_pairwise(
             for name_a, name_b in combinations(names, 2):
                 pair = {name_a: conditions[name_a], name_b: conditions[name_b]}
                 jl, hl, _ = _linearize_for_test(pair, test=test, design=resolved_design)
-                pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design)
+                pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design, totals)
                 m = _single_metric(
                     jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (test-correct)",
                     why=f"The correlation that actually governs {test}'s PPI variance reduction, not raw Pearson/Spearman.",
@@ -2670,6 +2829,9 @@ def _judge_alignment_pairwise(
         else:
             jl, hl, _ = _linearize_for_test(conditions, test=test, design=resolved_design)
             whole_n = _full_linearized_n(conditions, test=test, design=resolved_design)
+            if totals:   # rescale from the items passed in to the full dataset
+                whole_n = int(round(whole_n * _pair_total_n(conditions, names, resolved_design, totals)
+                                    / _pair_total_n(conditions, names, resolved_design)))
             m = _single_metric(
                 jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (whole-design)",
                 why=f"{test}'s own validated correlation across all conditions at once -- not decomposable into pairs.",
@@ -2697,6 +2859,7 @@ def judge_alignment(
     selection: str = "unknown",
     ci: bool = True,
     factors=None,
+    n_total=None,
 ) -> "AlignmentResult | PairwiseAlignmentResult":
     """Validate how well an LLM judge aligns with human graders.
 
@@ -2809,9 +2972,25 @@ def judge_alignment(
         judge score" for the representativeness check. Only needed if
         that shouldn't just be ``judge_scores_or_evaldata`` itself.
     score_type : str, optional
-        Form 2 only: override the auto-detected score type (``"binary"``,
-        ``"likert"``, or ``"continuous"``). Auto-detected from
-        the labeled judge scores when not given.
+        Forms 1-2: declare the score type (``"binary"``, ``"likert"``, or
+        ``"continuous"``) instead of having it detected. Detected from the
+        labeled judge and human scores when not given: 0/1 is binary, whole
+        numbers or any other bounded quantization grid of at most
+        ``MAX_DISCRETE_LEVELS`` levels (e.g. half-point scores) is likert, and
+        anything else is continuous. Likert scores get quadratic-weighted
+        Cohen's kappa, computed on grid positions. Declaring ``"likert"`` for
+        scores that don't sit on a grid raises -- round them first.
+    n_total : int or dict, optional
+        The size of the full dataset, for when the items you pass in are only
+        the human-labeled validation set (nothing left unlabeled). With every
+        item labeled there is no larger pool to project onto, so the
+        multiplier and ``N_eff`` are left out of the printed report; give the
+        size of the dataset the judge will actually score and they come back,
+        computed for labeling ``n_lab`` of ``n_total`` items. Forms 1-2: an
+        int. Form 3: a ``{condition: size}`` dict, or an int for the whole
+        design (split across conditions in proportion to the sizes passed
+        in for ``design="between"``; shared by all conditions for
+        ``"within"``). Must be at least the number of items passed in.
     alpha : float
         Significance level for alignment metric CIs.  Default ``0.05``.
     selection : {"random", "stratified", "manual", "unknown"}
@@ -2869,6 +3048,7 @@ def judge_alignment(
             )
         return _judge_alignment_pairwise(
             judge_scores_or_evaldata, design=design, alpha=alpha, test=test, selection=selection,
+            n_total=n_total,
         )
 
     from evalstats.loader import EvalResults
@@ -2890,7 +3070,8 @@ def judge_alignment(
             )
         return _judge_alignment_from_evaldata(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-            selection=selection, ci=ci, factors=factors,
+            selection=selection, ci=ci, factors=factors, score_type=score_type,
+            n_total=n_total,
         )
 
     if human_scores is None:
@@ -2904,7 +3085,7 @@ def judge_alignment(
         judge_scores_or_evaldata, human_scores,
         all_judge_scores=all_judge_scores, score_type=score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-        selection=selection, test=test, ci=ci,
+        selection=selection, test=test, ci=ci, n_total=n_total,
     )
 
 
