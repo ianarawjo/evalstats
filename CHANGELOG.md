@@ -20,6 +20,8 @@ for the tests `compare()` will run.
   labeling that many items out of `n_total`. An int, or a `{condition: size}` dict
   for several conditions.
 - `score_type=` on the evaldata form of `judge_alignment`, as on the array form.
+- Per-condition rho^2 and `N_eff` (for each condition's mean) alongside the per-condition
+  agreement, in `AlignmentResult.per_condition_metrics`.
 
 ### Changed
 
@@ -35,8 +37,16 @@ for the tests `compare()` will run.
 - With every item labeled and no `n_total=`, the report leaves out `N_eff`, which
   would only restate the sample size.
 - The single-condition form prints rho^2 and `N_eff` when `test="mean_estimate"`.
+- `judge_alignment(...).summary()` is reorganized: "Overall agreement" (pooled across
+  conditions), "Agreement by condition", then "Label efficiency", which lists rho^2 and
+  `N_eff` for each condition's mean, the omnibus test and each pair, each named by what it
+  corrects. Pairs are listed up to 10; beyond that the summary gives a range and
+  `summary(verbose=True)` lists them. The header states whether the score type was
+  inferred or declared instead of explaining the choice.
 - The label-position check is skipped when `n_total=` says the rows passed in are
   only a validation subset, where position carries no information.
+- `compare().summary()` no longer prints the note that the verdict follows the corrected CI
+  while p is corrected independently; the correction methods are already listed above it.
 
 ### Removed
 

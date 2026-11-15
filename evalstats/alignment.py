@@ -140,6 +140,8 @@ class AlignmentResult:
         self.per_condition_metrics = per_condition_metrics
         self.comparison: Optional[dict] = None
         self.comparison_error: Optional[str] = None
+        self.score_type_source: str = "inferred"   # or "declared"
+        self.grid_step: Optional[float] = None
 
     @property
     def n_eff(self) -> float:
@@ -302,131 +304,153 @@ class AlignmentResult:
             print("✓ Representativeness: labeled items look like the full item pool")
         print()
 
-        score_type_note = _SCORE_TYPE_NOTES.get(
-            self.score_type, f"score type detected as {self.score_type!r}"
-        )
-        print(f"Alignment metrics ({self.score_type} scores, {score_type_note}):")
+        self._print_overall_block()
+        self._print_condition_agreement_block()
+        self._print_efficiency_block()
+        print("Run .summary(verbose=True) for definitions, rationale, and")
+        print("citation-ready wording for each check above.")
+        print("─" * 58)
+
+    # ── report blocks ────────────────────────────────────────────────────────
+
+    def _score_type_phrase(self) -> str:
+        """What score type was used and whether it was inferred or declared."""
+        base = self.score_type
+        if base == "likert":
+            step = self.grid_step
+            if step is None or abs(step - 1.0) < 1e-9:
+                base = "likert, whole-number steps"
+            elif abs(step - 0.5) < 1e-9:
+                base = "likert, half-point steps"
+            else:
+                base = f"likert, steps of {step:g}"
+        return f"score type {self.score_type_source}: {base}"
+
+    def _print_overall_block(self) -> None:
+        pooled = self.per_condition_metrics is not None
+        lead = "Overall agreement (all conditions pooled; " if pooled else "Agreement ("
+        print(f"{lead}{self._score_type_phrase()}):")
         label_width = max(
             (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
             default=20,
         )
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
-            est = entry["estimate"]
-            lo = entry["ci_low"]
-            hi = entry["ci_high"]
             band = entry.get("band")
             tail = f"  {band}" if band else ""
-            print(f"  {label:<{label_width}} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
-        self._print_test_metric()
-        print()
-        self._print_comparison_block()
-        self._print_per_condition_block()
-        print("Run .summary(verbose=True) for definitions, rationale, and")
-        print("citation-ready wording for each check above.")
-        print("─" * 58)
-
-    def _print_comparison_block(self, *, verbose: bool = False) -> None:
-        """rho^2 (and, when there is a larger pool to project onto, N_eff) for each test
-        compare() will run on this data."""
-        c = self.comparison
-        if c is None:
-            if self.comparison_error:
-                print("Label efficiency for the comparison: not estimated.")
-                print(f"  {self.comparison_error}")
-                print()
-            return
-        k = len(c["conditions"])
-        how = "inferred from the item ids" if c["design_inferred"] else "as given"
-        print(f"Label efficiency for the tests compare() will run "
-              f"({c['design']}-subjects, {how}; {k} conditions):")
-        proj = c["projects_n_eff"]
-
-        def span(vals, fmt):
-            vals = [v for v in vals if np.isfinite(v)]
-            if not vals:
-                return "n/a"
-            lo, hi = min(vals), max(vals)
-            return fmt(lo) if fmt(lo) == fmt(hi) else f"{fmt(lo)} to {fmt(hi)}"
-
-        for t in c["tests"]:
-            if "metric" in t:
-                m = t["metric"]
-                ci = ""
-                if np.isfinite(m["rho2_ci_low"]) and np.isfinite(m["rho2_ci_high"]):
-                    ci = f"  [{m['rho2_ci_low']:.2f}, {m['rho2_ci_high']:.2f}]"
-                line = f"  {t['label']:<26} rho^2 = {m['rho2']:.2f}{ci}"
-                if proj:
-                    line += f"   N_eff = {m['n_eff_per_condition']:.0f} per condition"
-                print(line)
-            else:
-                ps = list(t["pairs"].values())
-                line = (f"  {t['label']:<26} rho^2 = {span([p['rho2'] for p in ps], lambda v: f'{v:.2f}')}"
-                        f" across {len(ps)} pair{'s' if len(ps) != 1 else ''}")
-                if proj:
-                    line += (f"   N_eff = "
-                             f"{span([p['n_eff_per_condition'] for p in ps], lambda v: f'{v:.0f}')} per condition")
-                print(line)
-                if verbose:
-                    for (a, b), p in t["pairs"].items():
-                        extra = f"   N_eff = {p['n_eff_per_condition']:.0f}" if proj else ""
-                        print(f"      {a} vs {b}: rho^2 = {p['rho2']:.2f}{extra}")
-        if proj:
-            counts = list(c["n_labeled"].values())
-            same = len(set(counts)) == 1
-            print(f"  (N_eff is labels per condition; you labeled "
-                  f"{counts[0] if same else 'between ' + str(min(counts)) + ' and ' + str(max(counts))}"
-                  f"{' per condition' if same else ''})")
+            print(f"  {label:<{label_width}} {entry['estimate']:6.2f}  "
+                  f"[{entry['ci_low']:5.2f}, {entry['ci_high']:5.2f}]{tail}")
         print()
 
-    def _print_test_metric(self) -> None:
-        """rho^2 (and N_eff, when there is an unlabeled pool to project onto)
-        for the ``test=`` given to judge_alignment, if any."""
-        tm = self.test_metric
-        if tm is None or "rho2" not in tm:
-            return
-        print(
-            f"  {'rho^2 (' + str(self.test) + ')':<{max(len(e.get('label', '')) for e in self.alignment_metrics.values())}} "
-            f"{tm['rho2']:6.2f}  [{tm['rho2_ci_low']:5.2f}, {tm['rho2_ci_high']:5.2f}]"
-        )
-        if self.n_total > self.n_labeled:
-            print(f"      multiplier = {tm['multiplier']:.2f}x   N_eff = {tm['n_eff']:.0f}  (N={self.n_total})")
-
-    def _print_per_condition_block(self, *, verbose: bool = False) -> None:
-        """Per-condition alignment breakdown, shared by both summary modes.
-
-        See :func:`_compute_per_condition_alignment`'s docstring for why
-        this exists: a pooled IRR number can look fine while hiding a judge
-        biased differently per condition, which no pooled statistic --
-        including the scale-bias check above -- can catch.
-        """
+    def _print_condition_agreement_block(self, *, verbose: bool = False) -> None:
+        """Agreement by condition. See :func:`_compute_per_condition_alignment`: a pooled
+        number can look fine while hiding a judge biased differently per condition,
+        which no pooled statistic -- including the scale-bias check -- can catch."""
         pc = self.per_condition_metrics
         if pc is None:
             return
         conds = pc["conditions"]
-        widest = max((len(str(c)) for c in conds), default=8)
-        print(f"Per-condition alignment ({pc['column']!r}):")
+        first = next((e for e in conds.values() if not e.get("too_few")), None)
+        label = first["label"] if first else "metric"
+        short = "κ" if "κ" in label else label
+        with_r = short != "Pearson r"
+        width = max((len(str(c)) for c in conds), default=9)
+        width = max(width, len("condition"))
+        print(f"Agreement by condition ({pc['column']!r}):")
         if verbose:
-            print(
-                "  The pooled metric above averages over every condition. It "
-                "stays high even if the judge is generous to one condition and "
-                "stingy to another, as long as the two roughly cancel out."
-            )
+            print("  The pooled numbers above stay high even if the judge is generous to one "
+                  "condition and stingy to another, as long as the two roughly cancel out.")
+        print(f"  {'condition':<{width}}  {'labeled':>7}  {short:>6}" + (f"  {'r':>5}" if with_r else ""))
         for cond, entry in conds.items():
-            cond_str = f"{str(cond):<{widest}}"
             if entry.get("too_few"):
-                print(f"  {cond_str}   too few human labels (n={entry['n']}) to estimate")
+                print(f"  {str(cond):<{width}}  {entry['n']:>7}  too few human labels to estimate")
             else:
-                print(f"  {cond_str}   {entry['label']} = {entry['estimate']:.2f}  (n={entry['n']})")
+                row = f"  {str(cond):<{width}}  {entry['n']:>7}  {entry['estimate']:>6.2f}"
+                if with_r:
+                    row += f"  {entry['r']:>5.2f}"
+                print(row)
         spread = pc["spread"]
         if spread >= _PER_CONDITION_SPREAD_FLAG:
-            print(
-                f"  ⚠ Spread of {spread:.2f} across conditions on the same scale "
-                "as the pooled metric above. The judge may be tracking humans "
-                "unevenly."
-            )
+            print(f"  ⚠ Spread of {spread:.2f} across conditions on the same scale as the "
+                  "pooled metric above. The judge may be tracking humans unevenly.")
         else:
             print("  ✓ No condition stands out from the others on this metric.")
+        print()
+
+    def _print_efficiency_block(self, *, verbose: bool = False) -> None:
+        """rho^2 and N_eff for each result compare() will report: each condition's mean,
+        the omnibus test, and each pair. rho^2 is a squared judge-human correlation on
+        the quantity being corrected, so it differs by result and each line names it."""
+        pc, c, tm = self.per_condition_metrics, self.comparison, self.test_metric
+        if pc is None and c is None and tm is None and not self.comparison_error:
+            return
+        print("Label efficiency: what the judge adds to each result compare() will report")
+        print("  rho^2 is the squared judge-human correlation on the quantity being estimated, so it differs by result.")
+
+        projects = False
+        if pc is not None:
+            rows = [(k, e) for k, e in pc["conditions"].items() if not e.get("too_few")]
+            projects = any(e["n_total"] > e["n"] for _, e in rows)
+            title = "Mean of each condition"
+            w = max([len(title)] + [len(str(k)) + 2 for k, _ in rows])
+            print(f"  {title:<{w}}  {'rho^2':>6}" + (f"  {'N_eff':>6}" if projects else ""))
+            for k, e in rows:
+                line = f"    {str(k):<{w - 2}}  {e['rho2']:>6.2f}"
+                if projects:
+                    line += f"  {e['n_eff']:>6.0f}"
+                print(line)
+        elif tm is not None and "rho2" in tm:
+            projects = self.n_total > self.n_labeled
+            ci = ""
+            if np.isfinite(tm["rho2_ci_low"]) and np.isfinite(tm["rho2_ci_high"]):
+                ci = f"  95% CI [{tm['rho2_ci_low']:.2f}, {tm['rho2_ci_high']:.2f}]"
+            line = f"  Mean:  rho^2 {tm['rho2']:.2f}{ci}"
+            if projects:
+                line += f"   N_eff {tm['n_eff']:.0f}"
+            print(line)
+
+        if c is not None:
+            projects = projects or c["projects_n_eff"]
+            for t in c["tests"]:
+                name = _TEST_NAMES.get(t["test"], t["test"])
+                if "metric" in t:
+                    m = t["metric"]
+                    ci = ""
+                    if np.isfinite(m["rho2_ci_low"]) and np.isfinite(m["rho2_ci_high"]):
+                        ci = f"  95% CI [{m['rho2_ci_low']:.2f}, {m['rho2_ci_high']:.2f}]"
+                    line = f"  Omnibus, {name}:  rho^2 {m['rho2']:.2f}{ci}"
+                    if c["projects_n_eff"]:
+                        line += f"   N_eff {m['n_eff_per_condition']:.0f} per condition"
+                    print(line)
+                else:
+                    pairs = t["pairs"]
+                    proj = c["projects_n_eff"]
+                    if len(pairs) <= _MAX_PAIRS_LISTED or verbose:
+                        title = f"Pairs, {name}"
+                        labels = [f"{a} vs {b}" for a, b in pairs]
+                        w = max([len(title)] + [len(x) + 2 for x in labels])
+                        print(f"  {title:<{w}}  {'rho^2':>6}" + (f"  {'N_eff':>6}" if proj else ""))
+                        for lab, m in zip(labels, pairs.values()):
+                            line = f"    {lab:<{w - 2}}  {m['rho2']:>6.2f}"
+                            if proj:
+                                line += f"  {m['n_eff_per_condition']:>6.0f}"
+                            print(line)
+                    else:
+                        r2 = [m["rho2"] for m in pairs.values() if np.isfinite(m["rho2"])]
+                        line = (f"  Pairs, {name}:  rho^2 {min(r2):.2f} to {max(r2):.2f} "
+                                f"across {len(pairs)} pairs (summary(verbose=True) lists each)")
+                        print(line)
+        elif self.comparison_error:
+            print(f"  Tests compare() will run: not estimated. {self.comparison_error}")
+
+        if projects:
+            counts = (list(c["n_labeled"].values()) if c is not None
+                      else [e["n"] for e in pc["conditions"].values()] if pc is not None
+                      else [self.n_labeled])
+            same = len(set(counts)) == 1
+            had = (f"{counts[0]} per condition" if same and c is not None
+                   else f"{min(counts)} to {max(counts)} per condition" if c is not None else f"{counts[0]}")
+            print(f"  N_eff: human labels per condition with the same power; you labeled {had}.")
         print()
 
     def _summary_verbose(self) -> None:
@@ -469,11 +493,9 @@ class AlignmentResult:
                 _print_check(f"{col!r}", val)
 
         # Alignment metrics
-        score_type_note = _SCORE_TYPE_NOTES.get(
-            self.score_type, f"score type detected as {self.score_type!r}"
-        )
-        print(f"Alignment metrics (score type: {self.score_type}):")
-        print(f"  ({score_type_note})")
+        pooled = self.per_condition_metrics is not None
+        lead = "Overall agreement (all conditions pooled; " if pooled else "Agreement ("
+        print(f"{lead}{self._score_type_phrase()}):")
         print()
         verbose_label_width = max(
             (len(entry.get("label", "")) for entry in self.alignment_metrics.values()),
@@ -499,9 +521,8 @@ class AlignmentResult:
                 print(f"      -> Example paper reporting: {example}")
             print()
 
-        self._print_test_metric()
-        self._print_comparison_block(verbose=True)
-        self._print_per_condition_block(verbose=True)
+        self._print_condition_agreement_block(verbose=True)
+        self._print_efficiency_block(verbose=True)
 
         if self.bias_check is not None:
             print("Bias diagnostics:")
@@ -591,21 +612,6 @@ def _fit_continuous(llm: np.ndarray, human: np.ndarray, score_type: str) -> dict
 # ─────────────────────────────────────────────────────────────────────────────
 # Alignment metrics
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Short justification for *why* a given score type gets the metric set it does —
-# printed in AlignmentResult.summary() so users can cite/justify the choice.
-_SCORE_TYPE_NOTES = {
-    "binary": (
-        "labels are 0/1, so metrics designed for nominal categorical data are used"
-    ),
-    "likert": (
-        "labels are ordered categories, so metrics designed for ordinal data are used"
-    ),
-    "continuous": (
-        "labels are on a continuous scale, so correlation metrics are used"
-    ),
-}
-
 
 def _interpret_kappa(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str, str]:
     """Landis & Koch (1977) benchmarks for kappa-type statistics."""
@@ -1212,6 +1218,7 @@ def _compute_per_condition_alignment(
     *,
     alpha: float,
     grid_step: Optional[float] = None,
+    totals: Optional[dict] = None,
 ) -> Optional[dict]:
     """Per-condition/model breakdown of the headline alignment metric.
 
@@ -1264,9 +1271,18 @@ def _compute_per_condition_alignment(
         entry = metrics.get(primary_key)
         if entry is None:
             continue
+        # rho^2 for this condition's MEAN: a mean's influence function is the score
+        # itself, so it is the squared Pearson r of the labeled pairs. N_eff projects it
+        # onto the condition's full size.
+        r = (float(np.corrcoef(cond_llm, cond_human)[0, 1])
+             if np.std(cond_llm) > 0 and np.std(cond_human) > 0 else float("nan"))
+        n_all = int((totals or {}).get(cond) or (df[model_col] == cond).sum())
+        mult, n_eff = _n_eff(r, n, n_all)
         out[cond] = {
             "n": n, "too_few": False,
             "label": entry["label"], "estimate": entry["estimate"],
+            "r": r, "rho2": r * r if np.isfinite(r) else float("nan"),
+            "n_total": n_all, "multiplier": mult, "n_eff": n_eff,
         }
 
     if not out:
@@ -2062,6 +2078,21 @@ def _comparison_report(
     }
 
 
+def _condition_totals_from_df(df, group_col, by_condition: Optional[dict], n_total) -> dict:
+    """Full size of each condition, keyed like the column's values: the rows present,
+    unless ``n_total=`` says the data is only a validation subset of a larger dataset."""
+    counts = df[group_col].value_counts()
+    totals = {c: int(counts[c]) for c in counts.index}
+    if by_condition:
+        by_str = {str(k): int(v) for k, v in by_condition.items()}
+        for c in totals:
+            if str(c) in by_str:
+                totals[c] = by_str[str(c)]
+    elif n_total is not None and int(n_total) > len(df):
+        totals = {c: int(round(int(n_total) * v / len(df))) for c, v in totals.items()}
+    return totals
+
+
 def _check_n_total(override: Optional[int], actual: int) -> int:
     """The full-dataset size to report: the caller's ``n_total=`` if given, else
     the number of items actually passed in."""
@@ -2135,6 +2166,7 @@ def _judge_alignment_from_evaldata(
     llm_aligned = df.loc[labeled_mask, llm_metric].to_numpy(dtype=float)
     human_aligned = df.loc[labeled_mask, human_groundtruth].to_numpy(dtype=float)
     all_llm = df[llm_metric].to_numpy(dtype=float)
+    declared_type = score_type is not None
     score_type, grid_step = _resolve_score_type(score_type, auto_type, llm_aligned, human_aligned)
 
     # Structural role columns (model/item/run) are row/group identifiers, not
@@ -2155,6 +2187,7 @@ def _judge_alignment_from_evaldata(
         per_condition_metrics = _compute_per_condition_alignment(
             df, labeled_mask, group_col, llm_metric, human_groundtruth, score_type,
             alpha=alpha, grid_step=grid_step,
+            totals=_condition_totals_from_df(df, group_col, n_total_by_condition, n_total),
         )
 
     n_conditions = int(df[group_col].nunique()) if group_col is not None else 0
@@ -2176,6 +2209,9 @@ def _judge_alignment_from_evaldata(
         test=None if compares else "mean_estimate",
         warn_stacklevel=4,
     )
+
+    result.score_type_source = "declared" if declared_type else "inferred"
+    result.grid_step = grid_step
 
     if compares:
         # rho^2 and N_eff for the tests compare() will run on these conditions. A design
@@ -2268,10 +2304,11 @@ def _judge_alignment_from_arrays(
     n_total = _check_n_total(n_total, int(all_llm.size) if all_llm is not None else n_labeled)
 
     from evalstats.loader import _detect_score_type
+    declared_type = score_type is not None
     score_type, grid_step = _resolve_score_type(
         score_type, _detect_score_type(pd.Series(llm_aligned)), llm_aligned, human_aligned)
 
-    return _judge_alignment_core(
+    result = _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
         alpha=alpha, n_total=n_total, all_llm=all_llm, grid_step=grid_step,
@@ -2279,6 +2316,9 @@ def _judge_alignment_from_arrays(
         labeled_mask=position_mask, selection=selection, test=test, ci=ci,
         warn_stacklevel=4,
     )
+    result.score_type_source = "declared" if declared_type else "inferred"
+    result.grid_step = grid_step
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2313,6 +2353,15 @@ _BETWEEN_TESTS = {
     "rank": ("kruskalwallis", "mannwhitney"),
 }
 _WITHIN_TESTS = {"pairwise_ci": "ttest", "pairwise_p": "wilcoxon", "omnibus": "friedman"}
+
+# Pairs are listed individually up to this many; beyond it the summary gives a range
+# (summary(verbose=True) always lists them).
+_MAX_PAIRS_LISTED = 10
+
+_TEST_NAMES = {
+    "kruskalwallis": "Kruskal-Wallis", "anova_oneway": "one-way ANOVA", "friedman": "Friedman",
+    "mannwhitney": "Mann-Whitney U", "ttest": "t-test", "wilcoxon": "Wilcoxon",
+}
 
 _TEST_LABELS = {
     "kruskalwallis": "Kruskal-Wallis (omnibus)", "anova_oneway": "one-way ANOVA (omnibus)",

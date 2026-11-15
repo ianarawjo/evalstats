@@ -1510,7 +1510,8 @@ class TestComparisonReport:
     def test_summary_reports_rho2_for_each_test(self, capsys):
         _align(_evaldata("between", k=4)).summary()
         out = capsys.readouterr().out
-        assert "Kruskal-Wallis (omnibus)" in out and "rho^2" in out and " rho (" not in out
+        assert "Omnibus, Kruskal-Wallis" in out and "Pairs, Mann-Whitney U" in out
+        assert "rho^2" in out and " rho (" not in out
 
     def test_agrees_with_compare(self):
         """judge_alignment and compare() report the same rho^2 and N_eff for the same test."""
@@ -1562,3 +1563,64 @@ class TestNEffProjection:
         res = judge_alignment(judge, human, test="mean_estimate", selection="random", n_total=600)
         assert res.n_total == 600 and res.n_eff > 60
         assert res.test_metric["rho2"] == pytest.approx(res.test_metric["estimate"] ** 2)
+
+
+class TestReportLayout:
+    def _out(self, res, capsys, **kw):
+        res.summary(**kw)
+        return capsys.readouterr().out
+
+    def test_sections_in_order_and_pooled_is_labeled(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3)), capsys)
+        i = out.index("Overall agreement (all conditions pooled")
+        j = out.index("Agreement by condition")
+        k = out.index("Label efficiency")
+        assert i < j < k
+
+    def test_score_type_is_stated_not_rationalized(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3)), capsys)
+        assert "score type inferred: likert, half-point steps" in out
+        assert "ordered categories" not in out and "metrics designed for" not in out
+
+    def test_declared_score_type_is_marked(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3), score_type="likert"), capsys)
+        assert "score type declared: likert" in out
+
+    def test_per_condition_rho2_and_n_eff_are_stored(self):
+        pc = _align(_evaldata("between", k=3)).per_condition_metrics["conditions"]
+        for entry in pc.values():
+            assert entry["rho2"] == pytest.approx(entry["r"] ** 2)
+            assert entry["n_total"] >= entry["n"] and entry["n_eff"] >= entry["n"] * 0.999
+
+    def test_per_condition_rho2_is_the_squared_correlation_of_the_labeled_pairs(self):
+        ed = _evaldata("between", k=3)
+        res = _align(ed)
+        df = ed._df
+        for cond, entry in res.per_condition_metrics["conditions"].items():
+            lab = df[(df.condition == cond) & df.human.notna()]
+            assert entry["rho2"] == pytest.approx(np.corrcoef(lab.judge, lab.human)[0, 1] ** 2)
+
+    def test_fully_labeled_has_no_n_eff_column(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3, labeled_all=True)), capsys)
+        assert "N_eff" not in out and "rho^2" in out
+
+    def test_n_total_adds_n_eff_to_every_row(self, capsys):
+        out = self._out(_align(_evaldata("between", k=3, labeled_all=True), n_total=300), capsys)
+        assert out.count("N_eff") >= 4     # means, omnibus, pairs, footnote
+
+    def test_pairs_listed_up_to_ten_then_summarized(self, capsys):
+        few = self._out(_align(_evaldata("between", k=4)), capsys)             # 6 pairs
+        assert few.count(" vs ") == 6
+        many = self._out(_align(_evaldata("between", k=6, n_per=30)), capsys)  # 15 pairs
+        assert " vs " not in many and "across 15 pairs" in many
+
+    def test_verbose_lists_every_pair(self, capsys):
+        out = self._out(_align(_evaldata("between", k=6, n_per=30)), capsys, verbose=True)
+        assert out.count(" vs ") >= 15
+
+    def test_single_condition_report_is_short(self, capsys):
+        ed = _evaldata("between", k=2)
+        d = ed._df[ed._df.condition == "a"][["item", "condition", "judge", "human"]]
+        out = self._out(_align(es.load_from(d, metric_cols=["judge", "human"])), capsys)
+        assert "Agreement (score type" in out and "pooled" not in out
+        assert "Mean:  rho^2" in out and "Agreement by condition" not in out
